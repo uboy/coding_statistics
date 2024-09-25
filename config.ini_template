@@ -1,0 +1,29 @@
+﻿[global]
+member-list = members.xlsx
+
+[gerrit]
+gerrit-url = <gerrit-url, e.g. http://my.gerrit.com/>
+username = <your username>
+password = <your password>
+
+[gitlab]
+gitlab-url = <gitlab url, e.g. https://gitlab.com>
+token = <token>
+branch = <branch>
+
+[codehub]
+codehub-url = <codehub url, e.g. https://codehub.com/>
+token = <token>
+project = <project>
+branch = <branch>
+
+[jira]
+jira-url = <jira url, e.g. https://jira.com/
+username = <your username>
+password = <your password>
+
+[sharepoint]
+sharepoint-url = <sharepoint url, e.g. http://office.com/>
+documents_folder = <some_root>
+username = <your username>
+password = <your password>

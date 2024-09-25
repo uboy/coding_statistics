@@ -1,0 +1,13 @@
+bundle-ca
+members.xlsx
+
+**.csv
+member_cache.json
+config.ini
+__pycache__
+build
+dist
+*.spec
+gerrit_review_tracking*.xlsx
+.idea
+venv
