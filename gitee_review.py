@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import sys  ###
 import requests  ###
 import csv  ###
@@ -9,6 +10,8 @@ import re  ### for parsing ticket no from description
 from openpyxl import load_workbook  ###
 from configparser import ConfigParser  ### able to read configuration file
 from datetime import datetime  ### used for manipulations with dates
+
+#from pkg_resources import empty_provider
 
 CONFIG_POINT_LOCAL = "gitee"
 CONFIG_POINT_GLOBAL = "global"
@@ -82,34 +85,37 @@ def main():
         ids = project_name.split("/")[0]
     project_report = []
     project_num = len(ids)
+#https://gitee.com/api/v5/repos/openharmony/arkui_ace_engine/pulls?base=master&since=2024-09-25T00:00:00Z&per_page=100&page=1
+    # get comma-separated reposotories with projects
+    repositories = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY).split(",")
+    for repository in repositories:
+        branches = config.get(CONFIG_POINT_LOCAL, CONFIG_BRANCH)
+        repo_string = repository.split('/')
+        repo_owner = repo_string[0]
+        repo = repo_string[1]
 
-    #branch_list = branch.split(",")
-    project_id = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY).split("/")[0]
-    repository = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY).split("/")[1]
-
-    for branch in branch_list:
-        commits = get_all_prs(s, base_url, project_id, repository, branch, since)
-        for c in commits:
-            name = c['user']['name']
-            title = c['title']
-            commit_url = c['html_url']
-            pr_state = c['state']
-            commit_date = c['created_at']
-            description = c['body']
-            ### combining all data into array
-            project_report.append({
-                'Name': user['Name'],
-                'Project': "project_info['path_with_namespace']",
-                'Date': commit_date,
-                'Gitlab id': commit_url,
-                'branch': branch,
-                'description': description,
-                'LOC': total,
-                'Reviewed By': ';'.join(comments[2]),
-                'change_inner_group_comments_count': comments[0],
-                'change_outer_group_comments_count': comments[1]
-            })
-        idx += 1
+        for branch in branches:
+            prs = get_all_prs(s, base_url, repo_owner, repo, branch, since)
+            for c in prs:
+                user_name = c['user']['name']
+                user_login = c['user']['login']
+                pr_title = c['title']
+                pr_url = c['html_url']
+                pr_state = c['state']
+                pr_date = c['created_at']
+                pr_merged_date = c['merged_at']
+                description = c['body']
+                ### combining all data into array
+                project_report.append({
+                    'Name': user_name['Name'],
+                    'Project': "project_info['path_with_namespace']",
+                    'Date': pr_date,
+                    'Gitlab id': pr_url,
+                    'branch': branch,
+                    'description': description,
+                    'LOC': total
+                })
+            idx += 1
     ### TODO comments in other team member's code and KLOCs reviewed
     # get_users_comments
     ### Create a report file with headlines
@@ -163,6 +169,7 @@ def get_all_prs(session, base_url, project_id, repository, branch, since):
     res = []
     next_page = 1
     total_pages: int = 1 # at this stage total pages is not known
+    # see https://gitee.com/api/v5/swagger#/getV5ReposOwnerRepoPulls
     url_format = '{}/api/v5/repos/{}/{}/pulls?base={}&since={}&per_page=100&page={}'
     while True:
         url = url_format.format(base_url, project_id, repository, branch, since + "T00:00:00Z", next_page)
