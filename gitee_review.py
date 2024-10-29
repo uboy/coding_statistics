@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
-import json
 import sys  ###
 import requests  ###
 import csv  ###
 import codecs  ### used for text encoding in config parser
 import argparse  ### good argument parser
 import logging  ###
-import re  ### for parsing ticket no from description
-from openpyxl import load_workbook  ###
 from configparser import ConfigParser  ### able to read configuration file
-from datetime import datetime  ### used for manipulations with dates
+from datetime import datetime         ### used for manipulations with dates
+from openpyxl import load_workbook  ###
 
 #from pkg_resources import empty_provider
 
@@ -21,7 +19,11 @@ CONFIG_TOKEN = "token"
 CONFIG_MEMBER_LIST = "member-list"
 CONFIG_BRANCH = "branch"
 CONFIG_REPOSITORY = "repository"
-
+CONFIG_UNTIL = "date_until"
+# see https://gitee.com/api/v5/swagger#/getV5ReposOwnerRepoPulls
+GET_LIST_PR = '{}/api/v5/repos/{}/{}/pulls?base={}&state=all&since={}&per_page=100&page={}'
+#  see https://gitee.com/api/v5/swagger#/getV5ReposOwnerRepoPullsNumberFiles
+GET_PR_FILES = '{}/api/v5/repos/{}/{}/pulls/{}/files'
 
 def main():
     ### argument parsing section
@@ -47,23 +49,19 @@ def main():
     base_url = options.base_url
     token = options.token
     since = options.date_since
-    until = options.date_until
-    branch = options.branch
-    project_name = options.project
+    branch_list = options.branch
 
-    if until is None:
-        until = datetime.today().strftime('%Y-%m-%d')
     member_list_file = options.member_list_file
     ###
     ### config file section
-    config = ConfigParser()
+    config = ConfigParser(allow_no_value=False, comment_prefixes=('#', ';'),inline_comment_prefixes='#')
     config.read_file(codecs.open(CONFIG_FILE, 'r', encoding='utf-8-sig'))
 
     if base_url is None:
         base_url = config.get(CONFIG_POINT_LOCAL, CONFIG_BASE_URL)
     if token is None:
         token = config.get(CONFIG_POINT_LOCAL, CONFIG_TOKEN)
-    if branch is None:
+    if branch_list is None:
         branch_list = config.get(CONFIG_POINT_LOCAL, CONFIG_BRANCH).split(",")
     if member_list_file is None:
         member_list_file = config.get(CONFIG_POINT_GLOBAL, CONFIG_MEMBER_LIST)
@@ -71,25 +69,18 @@ def main():
 
     if base_url is None or token is None or member_list_file is None or branch_list is None:
         raise ValueError("url or token or file is invalid")
+    until = options.date_until or config.get(CONFIG_POINT_LOCAL, CONFIG_UNTIL, fallback=None) or datetime.today().strftime('%Y-%m-%d')
 
-    member_list = read_member_list("members.xlsx")
+    # member_list = read_member_list("members.xlsx") ### TODO add report for set members only
     s = requests.Session()
     s.headers = {'Private-Token': token}
     ### bundle-ca is a text file with certificate in Base64 format of intermediate CA and root CA. Used for self-signed certificates which does not exist in certifi
     #s.verify = 'bundle-ca'
-    if project_name is None:
-        #ids = get_contribute_project_ids(base_url, s, since, until)
-        ids = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY).split("/")[0]
-    else:
-        #ids = get_project_id_by_name(base_url, s, project_name)
-        ids = project_name.split("/")[0]
     project_report = []
-    project_num = len(ids)
-#https://gitee.com/api/v5/repos/openharmony/arkui_ace_engine/pulls?base=master&since=2024-09-25T00:00:00Z&per_page=100&page=1
-    # get comma-separated reposotories with projects
+    # get comma-separated repositories with projects
     repositories = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY).split(",")
     for repository in repositories:
-        branches = config.get(CONFIG_POINT_LOCAL, CONFIG_BRANCH)
+        branches = config.get(CONFIG_POINT_LOCAL, CONFIG_BRANCH).split(",")
         repo_string = repository.split('/')
         repo_owner = repo_string[0]
         repo = repo_string[1]
@@ -105,72 +96,52 @@ def main():
                 pr_date = c['created_at']
                 pr_merged_date = c['merged_at']
                 description = c['body']
+                size = get_pr_size(s, base_url, repo_owner, repo,c['number'])
                 ### combining all data into array
                 project_report.append({
-                    'Name': user_name['Name'],
-                    'Project': "project_info['path_with_namespace']",
-                    'Date': pr_date,
-                    'Gitlab id': pr_url,
+                    'Name': user_name,
+                    'Login': user_login,
+                    'PR_Name': pr_title,
+                    'PR_URL': pr_url,
+                    'PR_State': pr_state,
+                    'PR_Created_Date': pr_date,
+                    'PR_Merged_Date': pr_merged_date,
+                    'PR_Description': description,
                     'branch': branch,
-                    'description': description,
-                    'LOC': total
+                    'Repo': repo_owner+"/"+repo,
+                    'additions': size[0],
+                    'deletions': size[1]
                 })
-            idx += 1
     ### TODO comments in other team member's code and KLOCs reviewed
     # get_users_comments
     ### Create a report file with headlines
-    file_name = "gitlab-commits-" + since + ".csv"
+    file_name = "gitee-prs-since-" + since + "-until-" + until + ".csv"
     create_csv_file(file_name)
 
     with open(file_name, "a", encoding='utf-8-sig', newline='') as csvfile:
         writer = csv.writer(csvfile)
         for commit in project_report:
             writer.writerow([commit['Name'],
-                             commit['Project'],
-                             str(commit['Date']),
-                             str(commit['Gitlab id']),
+                             commit['Login'],
+                             commit['PR_Name'],
+                             commit['PR_URL'],
+                             commit['PR_State'],
+                             str(commit['PR_Created_Date']),
+                             commit['PR_Merged_Date'],
+                             #commit['PR_Description'],
                              commit['branch'],
-                             commit['description'],
-                             str(commit['LOC']),
-                             commit['Reviewed By'],
-                             commit['AR'],
-                             str(commit['change_inner_group_comments_count']),
-                             str(commit['change_outer_group_comments_count'])
+                             commit['Repo'],
+                             commit['additions'],
+                             commit['deletions']
                              ])
     print("All done!")
     return 0
 
 
-def get_contribute_project_ids(base_url, session, since, until):
-    '''
-
-    :param base_url:
-    :param session:
-    :param since:
-    :param until:
-    :return:
-    '''
-    res = {}
-    next_page = 1
-    while next_page != '':
-        ### TODO, fix after and before for events, currently they do not include borders
-        url = '{}/api/v4/events?per_page=100&page={}&action=pushed&after={}&before={}'.format(base_url, next_page, "",
-                                                                                              "")
-        resp = session.get(url)
-        next_page = resp.headers.get('X-Next-Page')
-        for event in resp.json():
-            project_id = event['project_id']
-            if not res.__contains__(project_id):
-                res[project_id] = True
-    return res
-
-
 def get_all_prs(session, base_url, project_id, repository, branch, since):
     res = []
-    next_page = 1
-    total_pages: int = 1 # at this stage total pages is not known
-    # see https://gitee.com/api/v5/swagger#/getV5ReposOwnerRepoPulls
-    url_format = '{}/api/v5/repos/{}/{}/pulls?base={}&since={}&per_page=100&page={}'
+    next_page: int = 1
+    url_format = GET_LIST_PR
     while True:
         url = url_format.format(base_url, project_id, repository, branch, since + "T00:00:00Z", next_page)
         resp = session.get(url)
@@ -183,28 +154,20 @@ def get_all_prs(session, base_url, project_id, repository, branch, since):
     return res
 
 
-def get_commit_detail(base_url, session, project_id, commit_id):
-    url = '{}/api/v5/projects/{}/repository/commits/{}'.format(base_url, project_id, commit_id)
+def get_pr_files(session, base_url, project_id, repository, pr):
+    url_format = GET_PR_FILES
+    url = url_format.format(base_url, project_id, repository, pr)
     resp = session.get(url)
     return resp.json()
 
-
-def get_commit_comments_count(base_url, session, project_id, commit_id, member_list, commit_author):
-    url = '{}/api/v4/projects/{}/repository/commits/{}/comments'.format(base_url, project_id, commit_id)
-    resp = session.get(url)
-    inner = 0
-    outer = 0
-    reviewers = []
-    for comment in resp.json():
-        if commit_author != comment['author']['username']:
-            filter_result = list(
-                filter(lambda author: author['Username'] == comment['author']['username'], member_list))
-            if filter_result:
-                inner += 1
-                reviewers.append(comment['author']['name'])
-            else:
-                outer += 1
-    return (inner, outer, reviewers)
+def get_pr_size(session, base_url, project_id, repository, pr):
+    additions = 0
+    deletions = 0
+    files_changed = get_pr_files(session, base_url, project_id, repository, pr)
+    for file in files_changed:
+        additions += int(file['additions'])
+        deletions += int(file['deletions'])
+    return [additions,deletions]
 
 
 def read_member_list(member_list_file):
@@ -228,24 +191,12 @@ def read_member_list(member_list_file):
     return member_list
 
 
-def get_project_id_by_name(base_url, session, project_name):
-    projects = project_name.split(",")
-    project_id = []
-    for project in projects:
-        url = '{}/api/v4/search?scope=projects&search={}'.format(base_url, project)
-        resp = session.get(url)
-        project_id.append(resp.json()[0]['id'])
-    return project_id
-
-
 def create_csv_file(file_name):
     # Write Title
     with open(file_name, "w", encoding='utf-8-sig', newline='') as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["Name", "Project", "Date", "Gitlab id", "branch", "description", "LOC", "Reviewed By", "AR",
-                         "change_inner_group_comments_count", "change_outer_group_comments_count"])
-
-
+        writer.writerow(["Name", "Login", "PR_Name", "PR_URL", "PR_State", "PR_Created_Date",
+                         "PR_Merged_Date", "branch", "Repo", "Additions", "Deletions"])
 
 if __name__ == '__main__':
     sys.exit(main())  ### TODO check exit code
