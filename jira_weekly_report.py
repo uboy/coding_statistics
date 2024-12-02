@@ -1,7 +1,7 @@
 from jira import JIRA
 from configparser import ConfigParser
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import argparse
 import codecs
 import os
@@ -36,11 +36,13 @@ def parse_arguments_and_config():
     return jira_url, jira_username, jira_password, args.project, args.month
 
 def fetch_jira_data(jira, project, month):
+    # Determine the first and last day of the specified month
     start_date = datetime.strptime(month, "%Y-%m")
-    end_date = (start_date.replace(day=28) + pd.DateOffset(days=4)).replace(day=1) - pd.DateOffset(days=1)
+    end_date = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     start_date_str = start_date.strftime("%Y-%m-%d")
     end_date_str = end_date.strftime("%Y-%m-%d")
 
+    # JQL query for fetching issues
     jql_query = f"project = {project} AND updated >= {start_date_str} AND updated <= {end_date_str}"
     issues = jira.search_issues(jql_query, maxResults=1000, fields=["key", "assignee", "resolutiondate", "worklog"])
 
@@ -55,42 +57,45 @@ def fetch_jira_data(jira, project, month):
         if issue.fields.worklog and issue.fields.worklog.worklogs:
             for log in issue.fields.worklog.worklogs:
                 log_date = datetime.strptime(log.started.split("T")[0], "%Y-%m-%d")
-                worklog_dates.add(log_date)
+                if start_date <= log_date <= end_date:
+                    worklog_dates.add(log_date)
 
         # Add resolved task status
         if resolved_date:
-            resolved_week = datetime.strptime(resolved_date.split("T")[0], "%Y-%m-%d")
-            data.append({
-                "Issue key": key,
-                "Assignee": assignee,
-                "Status": "Resolved",
-                "Date": resolved_week
-            })
-        else:
-            # Add in-progress status only if the task was not resolved
-            for log_date in worklog_dates:
+            resolved_date_dt = datetime.strptime(resolved_date.split("T")[0], "%Y-%m-%d")
+            if start_date <= resolved_date_dt <= end_date:
                 data.append({
                     "Issue key": key,
                     "Assignee": assignee,
-                    "Status": "In progress",
-                    "Date": log_date
+                    "Status": "Resolved",
+                    "Date": resolved_date_dt
                 })
+
+        # Add in-progress task status for unique weeks if not resolved
+        for log_date in worklog_dates:
+            data.append({
+                "Issue key": key,
+                "Assignee": assignee,
+                "Status": "In progress",
+                "Date": log_date
+            })
 
     return pd.DataFrame(data)
 
 def generate_report(data, month, project):
+    # Calculate the valid range for the specified month
     start_date = datetime.strptime(month, "%Y-%m")
-    end_date = (start_date.replace(day=28) + pd.DateOffset(days=4)).replace(day=1) - pd.DateOffset(days=1)
+    end_date = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
 
-    # Filter data to include only weeks within the specified month
+    # Filter data to include only relevant dates
     data = data[(data["Date"] >= start_date) & (data["Date"] <= end_date)]
 
     # Add week column
     data["Week"] = data["Date"].dt.strftime("%Y-W%U")
     data["Assignee"] = data["Assignee"].fillna("Unassigned")
 
-    # Keep only unique statuses per task per week
-    data = data.drop_duplicates(subset=["Issue key", "Week"])
+    # Remove duplicates to ensure one status per task per week
+    data = data.drop_duplicates(subset=["Issue key", "Week", "Status"])
 
     # Group by Assignee and Week
     grouped_data = data.groupby(["Assignee", "Week"]).apply(
