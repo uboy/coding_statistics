@@ -175,35 +175,40 @@ def generate_excel_report(data, month, project, headers, file_suffix):
 
 def generate_word_report(data, month, project, headers, file_suffix, jira_url):
     """
-    Generate a Word report including both a tabular view and a list view.
+    Generate a Word report including both the updated tabular view and a list view.
     """
-    grouped_data = data.groupby(["Assignee", "Week"]).apply(
-        lambda group: "\n".join(f"{row['Status']}: {row['Issue_key']} - {row['Summary']}" for _, row in group.iterrows())
-    ).unstack(fill_value="")
-
     document = Document()
     document.add_heading(f"JIRA Report: {project} - {month}", level=1)
 
-    # Add tabular view
+    # Add new Tabular View with the updated format
     document.add_heading("Tabular View", level=2)
-    table = document.add_table(rows=grouped_data.shape[0] + 1, cols=grouped_data.shape[1] + 1)
+    table = document.add_table(rows=1, cols=6)
     table.style = 'Table Grid'
-    table.cell(0, 0).text = "Assignee"
-    for col_idx, header in enumerate(headers, start=1):
-        table.cell(0, col_idx).text = header
-    for row_idx, (assignee, row) in enumerate(grouped_data.iterrows(), start=1):
-        table.cell(row_idx, 0).text = assignee
-        for col_idx, cell_value in enumerate(row, start=1):
-            paragraph = table.cell(row_idx, col_idx).paragraphs[0]
-            for cell_data in cell_value.split("\n"):
-                if not cell_data.strip():
-                    continue
-                status, rest = cell_data.split(": ", 1)
-                key, summary = rest.split(" - ", 1)
-                paragraph.add_run(f"{status}: ")
-                add_hyperlink(paragraph, f"{jira_url}/browse/{key}", f"{key} - {summary}")
 
-    # Add list view
+    # Add headers
+    headers = ["Name", "Week #", "Date", "Description", "Link", "Status"]
+    for col_idx, header in enumerate(headers):
+        table.cell(0, col_idx).text = header
+
+    # Add data rows
+    for assignee, group in data.groupby("Assignee"):
+        for _, row in group.iterrows():
+            # Calculate the week range
+            year, week_num = map(int, row["Week"].split("-W"))
+            week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%Y/%m/%d")
+            week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%Y/%m/%d")
+            week_range = f"{week_start} – {week_end}"
+
+            # Add a row to the table
+            row_cells = table.add_row().cells
+            row_cells[0].text = assignee
+            row_cells[1].text = row["Week"]
+            row_cells[2].text = week_range
+            row_cells[3].text = row["Summary"]
+            add_hyperlink(row_cells[4].paragraphs[0], f"{jira_url}/browse/{row['Issue_key']}", f"{row['Issue_key']}")
+            row_cells[5].text = row["Status"]
+
+    # Add List View
     document.add_heading("List View", level=2)
     for assignee, group in data.groupby("Assignee"):
         document.add_heading(assignee, level=3)

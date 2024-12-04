@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import os.path
 import sys  ###
 import requests  ###
 import csv  ###
@@ -75,7 +76,7 @@ def main():
     s = requests.Session()
     s.headers = {'Private-Token': token}
     ### bundle-ca is a text file with certificate in Base64 format of intermediate CA and root CA. Used for self-signed certificates which does not exist in certifi
-    #s.verify = 'bundle-ca'
+    s.verify = 'bundle-ca' if os.path.exists("bundle-ca") else {}
     project_report = []
     # get comma-separated repositories with projects
     repositories = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY).split(",")
