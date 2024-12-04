@@ -8,6 +8,7 @@ __pycache__
 build
 dist
 *.spec
-gerrit_review_tracking*.xlsx
+**.xlsx
 .idea
 venv
+**.exe

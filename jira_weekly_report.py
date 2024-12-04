@@ -178,7 +178,7 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url):
     Generate a Word report including both a tabular view and a list view.
     """
     grouped_data = data.groupby(["Assignee", "Week"]).apply(
-        lambda group: "\n".join(f"{row['Status']}: {row['Issue key']} - {row['Summary']}" for _, row in group.iterrows())
+        lambda group: "\n".join(f"{row['Status']}: {row['Issue_key']} - {row['Summary']}" for _, row in group.iterrows())
     ).unstack(fill_value="")
 
     document = Document()
