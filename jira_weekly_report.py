@@ -8,6 +8,7 @@ import os
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from openpyxl import load_workbook
 
 # Configuration constants
 CONFIG_FILE = "config.ini"
@@ -42,6 +43,21 @@ def parse_arguments_and_config():
         raise ValueError("JIRA URL, username, and password must be specified either as arguments or in the config file.")
 
     return jira_url, jira_username, jira_password, args.project, args.month
+
+
+def read_member_list(member_list_file):
+    """
+    Read the list of required assignees from an Excel file.
+    Assumes the assignee names are in column 'E'.
+    """
+    wb = load_workbook(member_list_file)
+    sheet = wb.active
+    assignee_column = 'E'
+
+    # Extract all unique assignees from column 'E' starting from row 2
+    assignees = [sheet[f"{assignee_column}{row}"].value for row in range(2, sheet.max_row + 1) if sheet[f"{assignee_column}{row}"].value]
+    return list(set(assignees))
+
 
 def get_all_worklogs(jira, issue_key):
     """
@@ -173,10 +189,18 @@ def generate_excel_report(data, month, project, headers, file_suffix):
     grouped_data.to_excel(output_file)
     print(f"Excel report successfully created: {output_file}")
 
-def generate_word_report(data, month, project, headers, file_suffix, jira_url):
+def generate_word_report(data, month, project, headers, file_suffix, jira_url, member_list_file):
     """
-    Generate a Word report including both the updated tabular view and a list view.
+    Generate a Word report including both the updated tabular view and a list view,
+    with tasks sorted by assignee, week, and status.
+    If an assignee from the member list has no data, add a row with empty cells for their tasks.
     """
+    # Read the required assignees from the Excel file
+    required_assignees = read_member_list(member_list_file)
+
+    # Сортируем данные по исполнителю, неделе и статусу
+    sorted_data = data.sort_values(by=["Assignee", "Week", "Status"])
+
     document = Document()
     document.add_heading(f"JIRA Report: {project} - {month}", level=1)
 
@@ -190,23 +214,35 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url):
     for col_idx, header in enumerate(headers):
         table.cell(0, col_idx).text = header
 
-    # Add data rows
-    for assignee, group in data.groupby("Assignee"):
-        for _, row in group.iterrows():
-            # Calculate the week range
-            year, week_num = map(int, row["Week"].split("-W"))
-            week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%Y/%m/%d")
-            week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%Y/%m/%d")
-            week_range = f"{week_start} – {week_end}"
+    # Add data rows, ensuring all required assignees are included
+    for assignee in required_assignees:
+        assignee_data = sorted_data[sorted_data["Assignee"] == assignee]
 
-            # Add a row to the table
+        if assignee_data.empty:
+            # Add a row with empty task details if no data for the assignee
             row_cells = table.add_row().cells
             row_cells[0].text = assignee
-            row_cells[1].text = row["Week"]
-            row_cells[2].text = week_range
-            row_cells[3].text = row["Summary"]
-            add_hyperlink(row_cells[4].paragraphs[0], f"{jira_url}/browse/{row['Issue_key']}", f"{row['Issue_key']}")
-            row_cells[5].text = row["Status"]
+            row_cells[1].text = ""
+            row_cells[2].text = ""
+            row_cells[3].text = ""
+            row_cells[4].text = ""
+            row_cells[5].text = ""
+        else:
+            # Add rows for each task of the assignee
+            for _, row in assignee_data.iterrows():
+                year, week_num = map(int, row["Week"].split("-W"))
+                week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%Y/%m/%d")
+                week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%Y/%m/%d")
+                week_range = f"{week_start} – {week_end}"
+
+        # Add a row to the table
+                row_cells = table.add_row().cells
+                row_cells[0].text = assignee
+                row_cells[1].text = row["Week"]
+                row_cells[2].text = week_range
+                row_cells[3].text = row["Summary"]
+                add_hyperlink(row_cells[4].paragraphs[0], f"{jira_url}/browse/{row['Issue_key']}", f"{row['Issue_key']}")
+                row_cells[5].text = row["Status"]
 
     # Add List View
     document.add_heading("List View", level=2)
