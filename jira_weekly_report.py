@@ -28,6 +28,7 @@ def parse_arguments_and_config():
     parser.add_argument("-l", "--url", help="JIRA base URL.")
     parser.add_argument("-proj", "--project", required=True, help="JIRA project key.")
     parser.add_argument("-m", "--month", required=True, help="Month in YYYY-MM format (e.g., 2024-11).")
+    parser.add_argument("--member-list-file", help="Path to Excel file with a list of required assignees.")
     args = parser.parse_args()
 
     # Load credentials from configuration file if not provided via command-line arguments
@@ -42,7 +43,7 @@ def parse_arguments_and_config():
     if not jira_url or not jira_username or not jira_password:
         raise ValueError("JIRA URL, username, and password must be specified either as arguments or in the config file.")
 
-    return jira_url, jira_username, jira_password, args.project, args.month
+    return jira_url, jira_username, jira_password, args.project, args.month, args.member_list_file
 
 
 def read_member_list(member_list_file):
@@ -83,7 +84,7 @@ def fetch_jira_data(jira, project, month):
     Fetch data from JIRA and format it for the report.
     """
     start_date = datetime.strptime(month, "%Y-%m")
-    end_date = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    end_date = min(datetime.now(), (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1))
 
     jql_query = f"project = {project}"
     issues = jira.search_issues(jql_query, maxResults=1000, fields=["key", "summary", "assignee", "resolutiondate", "updated"])
@@ -132,17 +133,25 @@ def fetch_jira_data(jira, project, month):
 
     return pd.DataFrame(data)
 
-def generate_week_headers(valid_weeks):
+
+def generate_week_headers(valid_weeks, data):
     """
     Generate table headers with week ranges for the report.
+    Include only weeks with existing JIRA data and that have passed.
     """
     headers = []
+    unique_weeks_with_data = set(data["Week"])
+
     for week in valid_weeks:
-        year, week_num = map(int, week.split("-W"))
-        week_start = pd.Timestamp.fromisocalendar(year, week_num, 1)
-        week_end = week_start + timedelta(days=6)
-        headers.append(f"{week}({week_start.strftime('%d/%m')}-{week_end.strftime('%d/%m')})")
+        if week in unique_weeks_with_data:
+            year, week_num = map(int, week.split("-W"))
+            week_start = pd.Timestamp.fromisocalendar(year, week_num, 1)
+            week_end = week_start + timedelta(days=6)
+            # Exclude future weeks
+            if week_start <= datetime.now():
+                headers.append(f"{week}({week_start.strftime('%d/%m')}-{week_end.strftime('%d/%m')})")
     return headers
+
 
 def generate_file_suffix():
     """
@@ -189,17 +198,22 @@ def generate_excel_report(data, month, project, headers, file_suffix):
     grouped_data.to_excel(output_file)
     print(f"Excel report successfully created: {output_file}")
 
-def generate_word_report(data, month, project, headers, file_suffix, jira_url, member_list_file):
+def generate_word_report(data, month, project, headers, file_suffix, jira_url, member_list_file=None):
     """
     Generate a Word report including both the updated tabular view and a list view,
     with tasks sorted by assignee, week, and status.
     If an assignee from the member list has no data, add a row with empty cells for their tasks.
     """
-    # Read the required assignees from the Excel file
-    required_assignees = read_member_list(member_list_file)
+    if member_list_file:
+        # Read the required assignees from the Excel file if provided
+        required_assignees = read_member_list(member_list_file)
+    else:
+        # Use all unique assignees in the data if member_list_file is not provided
+        required_assignees = data["Assignee"].unique()
 
     # Сортируем данные по исполнителю, неделе и статусу
     sorted_data = data.sort_values(by=["Assignee", "Week", "Status"])
+    required_assignees.sort()
 
     document = Document()
     document.add_heading(f"JIRA Report: {project} - {month}", level=1)
@@ -276,9 +290,13 @@ def generate_report(data, month, project, jira_url):
     """
     start_date = datetime.strptime(month, "%Y-%m")
     end_date = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-    valid_weeks = pd.date_range(start=start_date - timedelta(days=7), end=end_date, freq='W-MON').strftime("%G-W%V").tolist()
+    valid_weeks = pd.date_range(start=start_date, end=end_date, freq='W-MON').strftime("%G-W%V").tolist()
     data = data[data["Week"].isin(valid_weeks)]
-    headers = generate_week_headers(valid_weeks)
+    headers = generate_week_headers(valid_weeks, data)
+
+    # Update the data to include only valid weeks
+    data = data[data["Week"].isin(valid_weeks)]
+
     file_suffix = generate_file_suffix()
     generate_excel_report(data, month, project, headers, file_suffix)
     generate_word_report(data, month, project, headers, file_suffix, jira_url)
@@ -287,7 +305,7 @@ def main():
     """
     Main function to handle the overall process of fetching data and generating reports.
     """
-    jira_url, jira_username, jira_password, project, month = parse_arguments_and_config()
+    jira_url, jira_username, jira_password, project, month, member_list_file = parse_arguments_and_config()
     jira_options = {"verify": "bundle-ca"} if os.path.exists("bundle-ca") else {}
     jira = JIRA(server=jira_url, basic_auth=(jira_username, jira_password), options=jira_options)
     data = fetch_jira_data(jira, project, month)

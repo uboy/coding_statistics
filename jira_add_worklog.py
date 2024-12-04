@@ -3,6 +3,7 @@ import os
 import sys
 import argparse
 import logging
+import codecs
 from configparser import ConfigParser
 from datetime import datetime
 import pytz
@@ -15,17 +16,18 @@ CONFIG_BASE_URL = "jira-url"
 CONFIG_USER = "username"
 CONFIG_PASSWORD = "password"
 
+
 def main():
     # Argument parsing
     tool_description = 'Manage Log Work in JIRA using JIRA API'
     parser = argparse.ArgumentParser(description=tool_description,
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-t', '--task', dest='task', help='Task key (e.g., PROJ-123)')
     parser.add_argument('-d', '--date', dest='date', help='Date for the log work (YYYY-MM-DD)')
     parser.add_argument('-c', '--comment', dest='comment', help='Comment for the log work')
     parser.add_argument('-s', '--timeSpent', dest='timeSpent', help='Time spent (e.g., 1h, 2d)')
-    parser.add_argument('-m', '--modify', dest='modify', action='store_true', help='Modify logged work for a task')
+    parser.add_argument('--config', dest='config', default=CONFIG_FILE, help='Path to the configuration file')
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('-t', '--task', dest='task_key', help='Task key for worklog')
     options = parser.parse_args()
 
     # Set logging level
@@ -34,15 +36,15 @@ def main():
 
     # Read configuration
     config = ConfigParser(allow_no_value=False, comment_prefixes=('#', ';'), inline_comment_prefixes='#')
-    with open(CONFIG_FILE, 'r', encoding='utf-8-sig') as f:
-        config.read_file(f)
+    config.read_file(codecs.open(options.config, 'r', encoding='utf-8-sig'))
 
     base_url = config.get(CONFIG_POINT_LOCAL, CONFIG_BASE_URL)
     username = config.get(CONFIG_POINT_LOCAL, CONFIG_USER)
     password = config.get(CONFIG_POINT_LOCAL, CONFIG_PASSWORD)
 
     if not base_url or not username or not password:
-        raise ValueError("Invalid configuration: ensure base URL, username, and password are specified in the config file.")
+        raise ValueError(
+            "Invalid configuration: ensure base URL, username, and password are specified in the config file.")
 
     # Prepare JIRA options
     jira_options = {"server": base_url}
@@ -54,20 +56,19 @@ def main():
     # Connect to JIRA using Basic Authentication
     jira = JIRA(basic_auth=(username, password), options=jira_options)
 
-    if options.modify:
-        modify_logged_work(jira, username)
+    log_date = options.date or datetime.today().strftime("%Y-%m-%d")
+    time_spent = options.timeSpent
+    comment = options.comment or ""
+    task_key = options.task_key or choose_task_or_modify(jira, username)
+
+    if not task_key:
+        print("No task selected. Exiting.")
+        sys.exit(0)
+
+    if task_key.startswith("MODIFY"):
+        modify_task_key = task_key.split(" ", 1)[1]
+        modify_logged_work(jira, modify_task_key)
     else:
-        task_key = options.task
-        log_date = options.date or datetime.today().strftime("%Y-%m-%d")
-        time_spent = options.timeSpent
-        comment = options.comment or ""
-
-        if not task_key:
-            task_key = choose_task(jira, username)
-        if not task_key:
-            print("No task selected. Exiting.")
-            sys.exit(0)
-
         if not time_spent:
             time_spent = input("Enter time spent (e.g., 1h, 2d, or a number for hours): ").strip()
             if time_spent.isdigit():
@@ -77,20 +78,26 @@ def main():
         print(f"Log Work successfully added: {time_spent} to task {task_key}.")
 
 
-def choose_task(jira, user):
-    """Retrieve and display tasks assigned to the current user."""
+def choose_task_or_modify(jira, user):
+    """Prompt the user to choose a task or modify a worklog."""
     jql = f"assignee = {user} AND statusCategory != Done"
     issues = jira.search_issues(jql, maxResults=10)
 
-    if not issues:
-        print("No tasks assigned to you.")
-        return None
-
     print("Select a task:")
+    print("0. Modify worklog for task (input 0 <task number, e.g. 1, 2, 3 ... or 0 TASK-1>)")
     for idx, issue in enumerate(issues, start=1):
         print(f"{idx}. {issue.key} - {issue.fields.summary}")
-    choice = int(input("Enter task number: ")) - 1
-    return issues[choice].key if 0 <= choice < len(issues) else None
+
+    user_input = input("Enter your choice: ").strip()
+    if user_input.startswith("0"):
+        modify_key = user_input.split(" ", 1)[1]
+        return f"MODIFY {modify_key}"
+    elif user_input.isdigit():
+        idx = int(user_input) - 1
+        if 0 <= idx < len(issues):
+            return issues[idx].key
+    print("Invalid selection.")
+    return None
 
 
 def add_log_work(jira, task_key, date, time_spent, comment):
@@ -104,22 +111,8 @@ def add_log_work(jira, task_key, date, time_spent, comment):
     jira.add_worklog(issue, timeSpent=time_spent, started=started, comment=comment)
 
 
-def modify_logged_work(jira, user):
-    """Modify logged work for a selected task."""
-    print("You can either choose from your assigned tasks or enter a JIRA issue key directly.")
-    print("1. Show assigned tasks")
-    print("2. Enter a JIRA issue key manually")
-    choice = int(input("Enter your choice: ").strip())
-
-    if choice == 1:
-        task_key = choose_task(jira, user)
-    else:
-        task_key = input("Enter JIRA issue key: ").strip()
-
-    if not task_key:
-        print("No task selected. Exiting.")
-        return
-
+def modify_logged_work(jira, task_key):
+    """Modify logged work for the specified task."""
     issue = jira.issue(task_key)
     worklogs = jira.worklogs(issue)
 
