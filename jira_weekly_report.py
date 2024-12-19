@@ -86,8 +86,11 @@ def fetch_jira_data(jira, project, month):
     start_date = datetime.strptime(month, "%Y-%m")
     end_date = min(datetime.now(), (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1))
 
+    # Fetch all issues in the project
     jql_query = f"project = {project}"
-    issues = jira.search_issues(jql_query, maxResults=1000, fields=["key", "summary", "assignee", "resolutiondate", "updated"])
+    issues = jira.search_issues(jql_query, maxResults=1000, fields=[
+        "key", "summary", "assignee", "resolutiondate", "updated", "Epic Link", "customfield_10002"
+    ])  # 'Epic Link' and 'customfield_10002' assumed to be the epic fields
 
     data = []
     for issue in issues:
@@ -95,6 +98,7 @@ def fetch_jira_data(jira, project, month):
         summary = issue.fields.summary
         assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
         resolved_date = issue.fields.resolutiondate
+        epic_link = getattr(issue.fields, "customfield_10002", None)  # Adjust for actual Epic Link field
 
         worklogs = get_all_worklogs(jira, key)
         worklog_dates = set()
@@ -116,7 +120,8 @@ def fetch_jira_data(jira, project, month):
                     "Summary": summary,
                     "Assignee": assignee,
                     "Status": "Resolved",
-                    "Week": resolved_week
+                    "Week": resolved_week,
+                    "Epic Link": epic_link
                 })
 
         for log_date in worklog_dates:
@@ -128,10 +133,32 @@ def fetch_jira_data(jira, project, month):
                         "Summary": summary,
                         "Assignee": assignee,
                         "Status": "In progress",
-                        "Week": log_week
+                        "Week": log_week,
+                        "Epic Link": epic_link
                     })
 
     return pd.DataFrame(data)
+
+
+def generate_epic_report(data):
+    """
+    Generate a summary of resolved tasks grouped by epics.
+    """
+    epic_data = data[data["Status"] == "Resolved"].dropna(subset=["Epic Link"])
+    grouped = epic_data.groupby("Epic Link")
+
+    epic_summary = []
+    for epic, tasks in grouped:
+        task_details = [
+            {
+                "Task Key": row["Issue_key"],
+                "Task Summary": row["Summary"]
+            }
+            for _, row in tasks.iterrows()
+        ]
+        epic_summary.append({"Epic": epic, "Tasks": task_details})
+
+    return epic_summary
 
 
 def generate_week_headers(valid_weeks, data):
@@ -198,9 +225,9 @@ def generate_excel_report(data, month, project, headers, file_suffix):
     grouped_data.to_excel(output_file)
     print(f"Excel report successfully created: {output_file}")
 
-def generate_word_report(data, month, project, headers, file_suffix, jira_url, member_list_file=None):
+def generate_word_report(data, month, project, headers, file_suffix, jira_url, epic_summary, member_list_file=None):
     """
-    Generate a Word report including both the updated tabular view and a list view,
+    Generate a Word report including both the updated tabular view, a list view and Epic progress,
     with tasks sorted by assignee, week, and status.
     If an assignee from the member list has no data, add a row with empty cells for their tasks.
     """
@@ -211,7 +238,7 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, m
         # Use all unique assignees in the data if member_list_file is not provided
         required_assignees = data["Assignee"].unique()
 
-    # Сортируем данные по исполнителю, неделе и статусу
+    # Sort data by assignee, week and status
     sorted_data = data.sort_values(by=["Assignee", "Week", "Status"])
     required_assignees.sort()
 
@@ -277,11 +304,20 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, m
                 paragraph.add_run(f"{row.Status}: ")
                 add_hyperlink(paragraph, f"{jira_url}/browse/{row.Issue_key}", f"{row.Issue_key} - {row.Summary}")
 
+    # Add Epic Progress section
+    document.add_heading("Epic Progress", level=2)
+    if epic_summary:
+        for epic in epic_summary:
+            document.add_heading(epic["Epic"], level=3)
+            for task in epic["Tasks"]:
+                document.add_paragraph(f"- {task['Task Key']}: {task['Task Summary']}")
+    else:
+        document.add_paragraph("No resolved tasks for open epics during the specified period.")
+
     # Save the document
     output_file = f"jira_report_{project}_{month}{file_suffix}.docx"
     document.save(output_file)
     print(f"Word report successfully created: {output_file}")
-
 
 
 def generate_report(data, month, project, jira_url):
@@ -297,9 +333,12 @@ def generate_report(data, month, project, jira_url):
     # Update the data to include only valid weeks
     data = data[data["Week"].isin(valid_weeks)]
 
+    # Generate epic report data
+    epic_summary = generate_epic_report(data)
+
     file_suffix = generate_file_suffix()
     generate_excel_report(data, month, project, headers, file_suffix)
-    generate_word_report(data, month, project, headers, file_suffix, jira_url)
+    generate_word_report(data, month, project, headers, file_suffix, jira_url, epic_summary)
 
 def main():
     """

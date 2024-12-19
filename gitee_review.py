@@ -9,6 +9,7 @@ import logging  ###
 from configparser import ConfigParser  ### able to read configuration file
 from datetime import datetime         ### used for manipulations with dates
 from openpyxl import load_workbook  ###
+import openpyxl
 
 #from pkg_resources import empty_provider
 
@@ -71,15 +72,16 @@ def main():
     if base_url is None or token is None or member_list_file is None or branch_list is None:
         raise ValueError("url or token or file is invalid")
     until = options.date_until or config.get(CONFIG_POINT_LOCAL, CONFIG_UNTIL, fallback=None) or datetime.today().strftime('%Y-%m-%d')
-
+    repositories = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY).split(",")
+    print(f"Starting to prepare report from Gitee for branch: {branch_list}, repositories {repositories}, date since {since}, date until {until}")
     # member_list = read_member_list("members.xlsx") ### TODO add report for set members only
     s = requests.Session()
     s.headers = {'Private-Token': token}
     ### bundle-ca is a text file with certificate in Base64 format of intermediate CA and root CA. Used for self-signed certificates which does not exist in certifi
-    s.verify = 'bundle-ca' if os.path.exists("bundle-ca") else {}
+    s.verify = 'bundle-ca' if os.path.exists("bundle-ca") else True
     project_report = []
     # get comma-separated repositories with projects
-    repositories = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY).split(",")
+    
     for repository in repositories:
         branches = config.get(CONFIG_POINT_LOCAL, CONFIG_BRANCH).split(",")
         repo_string = repository.split('/')
@@ -135,6 +137,11 @@ def main():
                              commit['additions'],
                              commit['deletions']
                              ])
+
+    # Create an Excel report file with headlines
+    excel_file_name = "gitee-prs-since-" + since + "-until-" + until + ".xlsx"
+    create_excel_file(excel_file_name, project_report)  # Call the new function
+
     print("All done!")
     return 0
 
@@ -198,6 +205,37 @@ def create_csv_file(file_name):
         writer = csv.writer(csvfile)
         writer.writerow(["Name", "Login", "PR_Name", "PR_URL", "PR_State", "PR_Created_Date",
                          "PR_Merged_Date", "branch", "Repo", "Additions", "Deletions"])
+
+
+def create_excel_file(file_name, project_report):
+    # Create a workbook and select the active worksheet
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    
+    # Write headers
+    headers = ["Name", "Login", "PR_Name", "PR_URL", "PR_State", 
+               "PR_Created_Date", "PR_Merged_Date", "branch", "Repo", 
+               "Additions", "Deletions"]
+    ws.append(headers)
+    
+    # Write data rows
+    for commit in project_report:
+        row_data = [commit['Name'],
+                    commit['Login'],
+                    commit['PR_Name'],
+                    commit['PR_URL'],
+                    commit['PR_State'],
+                    str(commit['PR_Created_Date']),
+                    commit['PR_Merged_Date'],
+                    commit['branch'],
+                    commit['Repo'],
+                    commit['additions'],
+                    commit['deletions']
+                   ]
+        ws.append(row_data)
+    
+    # Save the workbook
+    wb.save(file_name)
 
 if __name__ == '__main__':
     sys.exit(main())  ### TODO check exit code
