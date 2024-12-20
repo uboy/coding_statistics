@@ -98,6 +98,15 @@ def fetch_jira_data(jira, project, month):
     if epic_keys:
         epics = jira.search_issues(f"issuekey in ({', '.join(epic_keys)})", maxResults=1000, fields=["key", "summary"])
         epic_names = {epic.key: epic.fields.summary for epic in epics}
+        "key", "summary", "assignee", "resolutiondate", "updated", "customfield_10000"
+    ])  # 'customfield_10000' is the Epic Link field
+
+    # Fetch all epic names
+    epic_keys = list({getattr(issue.fields, "customfield_10000", None) for issue in issues if getattr(issue.fields, "customfield_10000", None)})
+    epic_names = {}
+    if epic_keys:
+        epics = jira.search_issues(f"issuekey in ({', '.join(epic_keys)})", maxResults=1000, fields=["key", "summary"])
+        epic_names = {epic.key: epic.fields.summary for epic in epics}
 
     data = []
     for issue in issues:
@@ -105,6 +114,7 @@ def fetch_jira_data(jira, project, month):
         summary = issue.fields.summary
         assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
         resolved_date = issue.fields.resolutiondate
+        epic_link = getattr(issue.fields, "customfield_10000", None)
         epic_link = getattr(issue.fields, "customfield_10000", None)
 
         worklogs = get_all_worklogs(jira, key)
@@ -354,6 +364,7 @@ def main():
     Main function to handle the overall process of fetching data and generating reports.
     """
     jira_url, jira_username, jira_password, project, month, member_list_file = parse_arguments_and_config()
+    jira_options = {"verify": "bundle-ca"} if os.path.exists("bundle-ca") else True
     jira_options = {"verify": "bundle-ca"} if os.path.exists("bundle-ca") else True
     jira = JIRA(server=jira_url, basic_auth=(jira_username, jira_password), options=jira_options)
     data = fetch_jira_data(jira, project, month)
