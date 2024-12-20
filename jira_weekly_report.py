@@ -89,8 +89,15 @@ def fetch_jira_data(jira, project, month):
     # Fetch all issues in the project
     jql_query = f"project = {project}"
     issues = jira.search_issues(jql_query, maxResults=1000, fields=[
-        "key", "summary", "assignee", "resolutiondate", "updated", "Epic Link", "customfield_10002"
-    ])  # 'Epic Link' and 'customfield_10002' assumed to be the epic fields
+        "key", "summary", "assignee", "resolutiondate", "updated", "customfield_10000"
+    ])  # 'customfield_10000' is the Epic Link field
+
+    # Fetch all epic names
+    epic_keys = list({getattr(issue.fields, "customfield_10000", None) for issue in issues if getattr(issue.fields, "customfield_10000", None)})
+    epic_names = {}
+    if epic_keys:
+        epics = jira.search_issues(f"issuekey in ({', '.join(epic_keys)})", maxResults=1000, fields=["key", "summary"])
+        epic_names = {epic.key: epic.fields.summary for epic in epics}
 
     data = []
     for issue in issues:
@@ -98,7 +105,7 @@ def fetch_jira_data(jira, project, month):
         summary = issue.fields.summary
         assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
         resolved_date = issue.fields.resolutiondate
-        epic_link = getattr(issue.fields, "customfield_10002", None)  # Adjust for actual Epic Link field
+        epic_link = getattr(issue.fields, "customfield_10000", None)
 
         worklogs = get_all_worklogs(jira, key)
         worklog_dates = set()
@@ -121,7 +128,8 @@ def fetch_jira_data(jira, project, month):
                     "Assignee": assignee,
                     "Status": "Resolved",
                     "Week": resolved_week,
-                    "Epic Link": epic_link
+                    "Epic_Link": epic_link,
+                    "Epic_Name": epic_names.get(epic_link, "Unknown Epic")
                 })
 
         for log_date in worklog_dates:
@@ -134,7 +142,8 @@ def fetch_jira_data(jira, project, month):
                         "Assignee": assignee,
                         "Status": "In progress",
                         "Week": log_week,
-                        "Epic Link": epic_link
+                        "Epic_Link": epic_link,
+                        "Epic_Name": epic_names.get(epic_link, "Unknown Epic")
                     })
 
     return pd.DataFrame(data)
@@ -144,8 +153,8 @@ def generate_epic_report(data):
     """
     Generate a summary of resolved tasks grouped by epics.
     """
-    epic_data = data[data["Status"] == "Resolved"].dropna(subset=["Epic Link"])
-    grouped = epic_data.groupby("Epic Link")
+    epic_data = data[data["Status"] == "Resolved"].dropna(subset=["Epic_Link"])
+    grouped = epic_data.groupby("Epic_Link")
 
     epic_summary = []
     for epic, tasks in grouped:
@@ -156,7 +165,7 @@ def generate_epic_report(data):
             }
             for _, row in tasks.iterrows()
         ]
-        epic_summary.append({"Epic": epic, "Tasks": task_details})
+        epic_summary.append({"Epic": tasks.iloc[0]["Epic_Name"], "Tasks": task_details})
 
     return epic_summary
 
@@ -345,7 +354,7 @@ def main():
     Main function to handle the overall process of fetching data and generating reports.
     """
     jira_url, jira_username, jira_password, project, month, member_list_file = parse_arguments_and_config()
-    jira_options = {"verify": "bundle-ca"} if os.path.exists("bundle-ca") else {}
+    jira_options = {"verify": "bundle-ca"} if os.path.exists("bundle-ca") else True
     jira = JIRA(server=jira_url, basic_auth=(jira_username, jira_password), options=jira_options)
     data = fetch_jira_data(jira, project, month)
     generate_report(data, month, project, jira_url)
