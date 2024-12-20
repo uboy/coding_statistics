@@ -86,35 +86,38 @@ def fetch_jira_data(jira, project, month):
     start_date = datetime.strptime(month, "%Y-%m")
     end_date = min(datetime.now(), (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1))
 
-    # Fetch all issues in the project
-    jql_query = f"project = {project}"
-    issues = jira.search_issues(jql_query, maxResults=1000, fields=[
+    # Pagination variables
+    start_at = 0
+    max_results = 100
+    all_issues = []
+
+    # Fetch all issues updated during the specified period with pagination
+    while True:
+        jql_query = (
+            f"project = {project}"
+            #f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}' AND updated <= '{end_date.strftime('%Y-%m-%d')}'"
+        )
+        issues = jira.search_issues(jql_query, startAt=start_at, maxResults=max_results, fields=[
         "key", "summary", "assignee", "resolutiondate", "updated", "customfield_10000"
-    ])  # 'customfield_10000' is the Epic Link field
+        ])
+        all_issues.extend(issues)
+        if len(issues) < max_results:
+            break
+        start_at += max_results
 
     # Fetch all epic names
-    epic_keys = list({getattr(issue.fields, "customfield_10000", None) for issue in issues if getattr(issue.fields, "customfield_10000", None)})
-    epic_names = {}
-    if epic_keys:
-        epics = jira.search_issues(f"issuekey in ({', '.join(epic_keys)})", maxResults=1000, fields=["key", "summary"])
-        epic_names = {epic.key: epic.fields.summary for epic in epics}
-        "key", "summary", "assignee", "resolutiondate", "updated", "customfield_10000"
-    ])  # 'customfield_10000' is the Epic Link field
-
-    # Fetch all epic names
-    epic_keys = list({getattr(issue.fields, "customfield_10000", None) for issue in issues if getattr(issue.fields, "customfield_10000", None)})
+    epic_keys = list({getattr(issue.fields, "customfield_10000", None) for issue in all_issues if getattr(issue.fields, "customfield_10000", None)})
     epic_names = {}
     if epic_keys:
         epics = jira.search_issues(f"issuekey in ({', '.join(epic_keys)})", maxResults=1000, fields=["key", "summary"])
         epic_names = {epic.key: epic.fields.summary for epic in epics}
 
     data = []
-    for issue in issues:
+    for issue in all_issues:
         key = issue.key
         summary = issue.fields.summary
         assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
         resolved_date = issue.fields.resolutiondate
-        epic_link = getattr(issue.fields, "customfield_10000", None)
         epic_link = getattr(issue.fields, "customfield_10000", None)
 
         worklogs = get_all_worklogs(jira, key)
