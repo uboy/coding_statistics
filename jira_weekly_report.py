@@ -98,7 +98,7 @@ def fetch_jira_data(jira, project, month):
             #f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}' AND updated <= '{end_date.strftime('%Y-%m-%d')}'"
         )
         issues = jira.search_issues(jql_query, startAt=start_at, maxResults=max_results, fields=[
-        "key", "summary", "assignee", "resolutiondate", "updated", "customfield_10000"
+            "key", "summary", "assignee", "resolutiondate", "updated", "customfield_10000", "parent"
         ])
         all_issues.extend(issues)
         if len(issues) < max_results:
@@ -119,6 +119,9 @@ def fetch_jira_data(jira, project, month):
         assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
         resolved_date = issue.fields.resolutiondate
         epic_link = getattr(issue.fields, "customfield_10000", None)
+        parent = getattr(issue.fields, "parent", None)
+        parent_key = parent.key if parent else None
+        parent_summary = parent.fields.summary if parent else None
 
         worklogs = get_all_worklogs(jira, key)
         worklog_dates = set()
@@ -141,8 +144,10 @@ def fetch_jira_data(jira, project, month):
                     "Assignee": assignee,
                     "Status": "Resolved",
                     "Week": resolved_week,
-                    "Epic_Link": epic_link,
-                    "Epic_Name": epic_names.get(epic_link, "Unknown Epic")
+                    "Epic Link": epic_link,
+                    "Epic Name": epic_names.get(epic_link, "Unknown Epic"),
+                    "Parent Key": parent_key,
+                    "Parent Summary": parent_summary
                 })
 
         for log_date in worklog_dates:
@@ -155,8 +160,10 @@ def fetch_jira_data(jira, project, month):
                         "Assignee": assignee,
                         "Status": "In progress",
                         "Week": log_week,
-                        "Epic_Link": epic_link,
-                        "Epic_Name": epic_names.get(epic_link, "Unknown Epic")
+                        "Epic Link": epic_link,
+                        "Epic Name": epic_names.get(epic_link, "Unknown Epic"),
+                        "Parent Key": parent_key,
+                        "Parent Summary": parent_summary
                     })
 
     return pd.DataFrame(data)
@@ -232,6 +239,33 @@ def add_hyperlink(paragraph, url, display_text):
     run.append(text)
     hyperlink.append(run)
     paragraph._p.append(hyperlink)
+
+
+def add_resolved_tasks_section(document, resolved_tasks):
+    """
+    Add a section to the Word document for resolved tasks, grouped by week and parent tasks.
+    """
+    document.add_heading("Resolved Tasks", level=2)
+    if resolved_tasks.empty:
+        document.add_paragraph("No resolved tasks during the specified period.")
+        return
+
+    # Group tasks by week
+    resolved_tasks["Resolution Week"] = pd.to_datetime(resolved_tasks["Resolution Date"]).dt.strftime("%G-W%V")
+    for week, tasks in resolved_tasks.groupby("Resolution Week"):
+        week_start = pd.Timestamp.strptime(week + '-1', "%G-W%V-%u")
+        week_end = week_start + timedelta(days=6)
+        week_header = f"Week {week} ({week_start.strftime('%d/%m')} - {week_end.strftime('%d/%m')})"
+        document.add_heading(week_header, level=3)
+
+        for _, task in tasks[tasks["Type"] != "Sub-task"].iterrows():
+            paragraph = document.add_paragraph(style="Normal")
+            paragraph.add_run(f"{task['Issue_key']}: {task['Summary']}").bold = True
+
+            # List subtasks under parent task
+            subtasks = tasks[tasks["Parent Key"] == task["Issue_key"]]
+            for _, subtask in subtasks.iterrows():
+                document.add_paragraph(f"    - {subtask['Issue_key']}: {subtask['Summary']}", style="List Bullet")
 
 
 def generate_excel_report(data, month, project, headers, file_suffix):
@@ -335,6 +369,11 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
                 document.add_paragraph(f"- {task['Task Key']}: {task['Task Summary']}")
     else:
         document.add_paragraph("No resolved tasks for open epics during the specified period.")
+
+
+    # Add resolved tasks section
+    resolved_tasks = data[data["Status"] == "Resolved"]
+    add_resolved_tasks_section(document, resolved_tasks)
 
     # Save the document
     output_file = f"jira_report_{project}_{month}{file_suffix}.docx"
