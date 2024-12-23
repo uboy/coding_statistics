@@ -366,7 +366,7 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
         for epic in epic_summary:
             document.add_heading(epic["Epic"], level=3)
             for task in epic["Tasks"]:
-                document.add_paragraph(f"- {task['Task Key']}: {task['Task Summary']}")
+                document.add_paragraph(f"- {task['Task_Key']}: {task['Task_Summary']}")
     else:
         document.add_paragraph("No resolved tasks for open epics during the specified period.")
 
