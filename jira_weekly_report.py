@@ -277,12 +277,13 @@ def add_resolved_tasks_section(document, resolved_tasks):
 
         for _, task in tasks[tasks["Type"] != "Sub-task"].iterrows():
             paragraph = document.add_paragraph(style="Normal")
-            paragraph.add_run(f"{task['Issue_key']}: {task['Summary']}").bold = True
+            paragraph.add_run(f"{task['Issue_key']}: {task['Summary']}")
+            set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10)
 
             # List subtasks under parent task
             subtasks = tasks[tasks["Parent_Key"] == task["Issue_key"]]
             for _, subtask in subtasks.iterrows():
-                document.add_paragraph(f"    - {subtask['Issue_key']}: {subtask['Summary']}", style="List Bullet")
+                document.add_paragraph(f"{subtask['Issue_key']}: {subtask['Summary']}", style="List Bullet 2")
 
 
 def generate_excel_report(data, month, project, headers, file_suffix):
@@ -293,8 +294,9 @@ def generate_excel_report(data, month, project, headers, file_suffix):
 #        lambda group: "\n".join(f"{row['Status']}: {row['Issue_key']} - {row['Summary']}" for _, row in group.iterrows())
 #    ).unstack(fill_value="")
     grouped_data = data.groupby(["Assignee", "Week"]).agg(
-    lambda group: "\n".join(f"{row['Status']}: {row['Issue_key']} - {row['Summary']}" for _, row in group.iterrows())
+        lambda group: "\n".join(group.apply(lambda row: f"{row['Status']}: {row['Issue_key']} - {row['Summary']}", axis=1))
     ).unstack(fill_value="")
+
     grouped_data.columns = headers
 
     output_file = f"jira_report_{project}_{month}{file_suffix}.xlsx"
@@ -391,7 +393,7 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
         for epic in epic_summary:
             document.add_heading(epic["Epic"], level=3)
             for task in epic["Tasks"]:
-                paragraph = document.add_paragraph(f"- {task['Task_Key']}: {task['Task_Summary']}", style="List Bullet")
+                paragraph = document.add_paragraph(f"{task['Task_Key']}: {task['Task_Summary']}", style="List Bullet 2")
                 set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10)
     else:
         document.add_paragraph("No resolved tasks for open epics during the specified period.")
