@@ -144,10 +144,10 @@ def fetch_jira_data(jira, project, month):
                     "Assignee": assignee,
                     "Status": "Resolved",
                     "Week": resolved_week,
-                    "Epic Link": epic_link,
-                    "Epic Name": epic_names.get(epic_link, "Unknown Epic"),
-                    "Parent Key": parent_key,
-                    "Parent Summary": parent_summary
+                    "Epic_Link": epic_link,
+                    "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
+                    "Parent_Key": parent_key,
+                    "Parent_Summary": parent_summary
                 })
 
         for log_date in worklog_dates:
@@ -160,10 +160,10 @@ def fetch_jira_data(jira, project, month):
                         "Assignee": assignee,
                         "Status": "In progress",
                         "Week": log_week,
-                        "Epic Link": epic_link,
-                        "Epic Name": epic_names.get(epic_link, "Unknown Epic"),
-                        "Parent Key": parent_key,
-                        "Parent Summary": parent_summary
+                        "Epic_Link": epic_link,
+                        "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
+                        "Parent_Key": parent_key,
+                        "Parent_Summary": parent_summary
                     })
 
     return pd.DataFrame(data)
@@ -180,8 +180,8 @@ def generate_epic_report(data):
     for epic, tasks in grouped:
         task_details = [
             {
-                "Task Key": row["Issue_key"],
-                "Task Summary": row["Summary"]
+                "Task_Key": row["Issue_key"],
+                "Task_Summary": row["Summary"]
             }
             for _, row in tasks.iterrows()
         ]
@@ -263,7 +263,7 @@ def add_resolved_tasks_section(document, resolved_tasks):
             paragraph.add_run(f"{task['Issue_key']}: {task['Summary']}").bold = True
 
             # List subtasks under parent task
-            subtasks = tasks[tasks["Parent Key"] == task["Issue_key"]]
+            subtasks = tasks[tasks["Parent_Key"] == task["Issue_key"]]
             for _, subtask in subtasks.iterrows():
                 document.add_paragraph(f"    - {subtask['Issue_key']}: {subtask['Summary']}", style="List Bullet")
 
