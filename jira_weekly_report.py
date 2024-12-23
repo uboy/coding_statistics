@@ -146,7 +146,7 @@ def fetch_jira_data(jira, project, month):
                     "Summary": summary,
                     "Assignee": assignee,
                     "Status": "Resolved",
-                    "Resolution Date": resolution_date,
+                    "Resolution_Date": resolution_date,
                     "Week": resolved_week,
                     "Epic_Link": epic_link,
                     "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
@@ -258,7 +258,7 @@ def add_resolved_tasks_section(document, resolved_tasks):
     # Group tasks by week
     resolved_tasks["Resolution_Week"] = pd.to_datetime(resolved_tasks["Resolution_Date"]).dt.strftime("%G-W%V")
     for week, tasks in resolved_tasks.groupby("Resolution_Week"):
-        week_start = pd.Timestamp.strptime(week + '-1', "%G-W%V-%u")
+        week_start = pd.to_datetime(f"{week}-1", format="%G-W%V-%u")
         week_end = week_start + timedelta(days=6)
         week_header = f"Week {week} ({week_start.strftime('%d/%m')} - {week_end.strftime('%d/%m')})"
         document.add_heading(week_header, level=3)
