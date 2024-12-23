@@ -293,9 +293,11 @@ def generate_excel_report(data, month, project, headers, file_suffix):
 #    grouped_data = data.groupby(["Assignee", "Week"]).apply(
 #        lambda group: "\n".join(f"{row['Status']}: {row['Issue_key']} - {row['Summary']}" for _, row in group.iterrows())
 #    ).unstack(fill_value="")
-    grouped_data = data.groupby(["Assignee", "Week"]).agg(
-        lambda group: "\n".join(group.apply(lambda row: f"{row['Status']}: {row['Issue_key']} - {row['Summary']}", axis=1))
-    ).unstack(fill_value="")
+    grouped_data = (
+        data.groupby(["Assignee", "Week"])["Formatted"]
+        .apply("\n".join)  # Combine all rows in each group into a single string
+        .unstack(fill_value="")  # Pivot table structure
+    )
 
     grouped_data.columns = headers
 
