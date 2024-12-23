@@ -8,6 +8,7 @@ import os
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Pt
 from openpyxl import load_workbook
 
 # Configuration constants
@@ -246,6 +247,14 @@ def add_hyperlink(paragraph, url, display_text):
     paragraph._p.append(hyperlink)
 
 
+def set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10):
+    run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
+    run.font.name = font_name
+    r = run._element
+    r.rPr.rFonts.set(qn("w:eastAsia"), font_name)  # Ensures font is applied correctly
+    run.font.size = Pt(font_size)
+
+
 def add_resolved_tasks_section(document, resolved_tasks):
     """
     Add a section to the Word document for resolved tasks, grouped by week and parent tasks.
@@ -256,7 +265,10 @@ def add_resolved_tasks_section(document, resolved_tasks):
         return
 
     # Group tasks by week
-    resolved_tasks["Resolution_Week"] = pd.to_datetime(resolved_tasks["Resolution_Date"]).dt.strftime("%G-W%V")
+    resolved_tasks = resolved_tasks.copy()  # Avoid chained assignment warnings
+    resolved_tasks.loc[:, "Resolution_Week"] = pd.to_datetime(resolved_tasks["Resolution_Date"]).dt.strftime("%G-W%V")
+
+    #resolved_tasks["Resolution_Week"] = pd.to_datetime(resolved_tasks["Resolution_Date"]).dt.strftime("%G-W%V")
     for week, tasks in resolved_tasks.groupby("Resolution_Week"):
         week_start = pd.to_datetime(f"{week}-1", format="%G-W%V-%u")
         week_end = week_start + timedelta(days=6)
@@ -277,8 +289,11 @@ def generate_excel_report(data, month, project, headers, file_suffix):
     """
     Generate an Excel report summarizing the data grouped by assignee and week.
     """
-    grouped_data = data.groupby(["Assignee", "Week"]).apply(
-        lambda group: "\n".join(f"{row['Status']}: {row['Issue_key']} - {row['Summary']}" for _, row in group.iterrows())
+#    grouped_data = data.groupby(["Assignee", "Week"]).apply(
+#        lambda group: "\n".join(f"{row['Status']}: {row['Issue_key']} - {row['Summary']}" for _, row in group.iterrows())
+#    ).unstack(fill_value="")
+    grouped_data = data.groupby(["Assignee", "Week"]).agg(
+    lambda group: "\n".join(f"{row['Status']}: {row['Issue_key']} - {row['Summary']}" for _, row in group.iterrows())
     ).unstack(fill_value="")
     grouped_data.columns = headers
 
@@ -345,6 +360,10 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
                 row_cells[3].text = row["Summary"]
                 add_hyperlink(row_cells[4].paragraphs[0], f"{jira_url}/browse/{row['Issue_key']}", f"{row['Issue_key']}")
                 row_cells[5].text = row["Status"]
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=8)
 
     # Add List View
     document.add_heading("List View", level=2)
@@ -356,7 +375,8 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
             week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%d/%m")
             week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%d/%m")
             week_header = f"{week}({week_start}-{week_end}):"
-            document.add_paragraph(week_header, style="Heading 4")
+            paragraph = document.add_paragraph(week_header, style="Heading 4")
+            set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10)
 
             # Add tasks for the current week
             for idx, row in enumerate(week_data.itertuples(index=False, name="Row"), start=1):
@@ -371,9 +391,11 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
         for epic in epic_summary:
             document.add_heading(epic["Epic"], level=3)
             for task in epic["Tasks"]:
-                document.add_paragraph(f"- {task['Task_Key']}: {task['Task_Summary']}")
+                paragraph = document.add_paragraph(f"- {task['Task_Key']}: {task['Task_Summary']}", style="List Bullet")
+                set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10)
     else:
         document.add_paragraph("No resolved tasks for open epics during the specified period.")
+
 
 
     # Add resolved tasks section
