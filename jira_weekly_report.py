@@ -98,7 +98,7 @@ def fetch_jira_data(jira, project, month):
             #f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}' AND updated <= '{end_date.strftime('%Y-%m-%d')}'"
         )
         issues = jira.search_issues(jql_query, startAt=start_at, maxResults=max_results, fields=[
-            "key", "summary", "assignee", "resolutiondate", "updated", "customfield_10000", "parent"
+            "key", "summary", "assignee", "resolutiondate", "updated", "customfield_10000", "parent", "issuetype"
         ])
         all_issues.extend(issues)
         if len(issues) < max_results:
@@ -137,6 +137,8 @@ def fetch_jira_data(jira, project, month):
         if resolved_date:
             resolution_date = resolved_date.split("T")[0]
             resolved_date_dt = datetime.strptime(resolved_date.split("T")[0], "%Y-%m-%d")
+            issue_type = getattr(issue.fields, "issuetype", None)
+            issue_type_name = issue_type.name if issue_type else "Unknown"
             if start_date <= resolved_date_dt <= end_date:
                 resolved_week = resolved_date_dt.strftime("%G-W%V")
                 data.append({
@@ -150,7 +152,7 @@ def fetch_jira_data(jira, project, month):
                     "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
                     "Parent_Key": parent_key,
                     "Parent_Summary": parent_summary,
-                    "Type": issue.fields.issuetype.name  # Add Type for distinguishing subtasks
+                    "Type": issue_type_name  # Add Type for distinguishing subtasks
                 })
 
         for log_date in worklog_dates:
