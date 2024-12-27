@@ -11,7 +11,7 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": [
-                "-d 2024-12-16"
+                "-d 2024-08-01"
             ]
         }
     ]

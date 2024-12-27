@@ -7,9 +7,10 @@ import codecs  ### used for text encoding in config parser
 import argparse  ### good argument parser
 import logging  ###
 from configparser import ConfigParser  ### able to read configuration file
-from datetime import datetime         ### used for manipulations with dates
+from datetime import datetime, time, timedelta         ### used for manipulations with dates
 from openpyxl import load_workbook  ###
 import openpyxl
+from tqdm import tqdm  # show progress
 
 #from pkg_resources import empty_provider
 
@@ -22,8 +23,12 @@ CONFIG_MEMBER_LIST = "member-list"
 CONFIG_BRANCH = "branch"
 CONFIG_REPOSITORY = "repository"
 CONFIG_UNTIL = "date_until"
+# Default values, can be overridden by config
+PER_PAGE = 50
+PAUSE_AFTER_REQUESTS = 10
+PAUSE_DURATION = 2  # seconds
 # see https://gitee.com/api/v5/swagger#/getV5ReposOwnerRepoPulls
-GET_LIST_PR = '{}/api/v5/repos/{}/{}/pulls?base={}&state=all&since={}&per_page=100&page={}'
+GET_LIST_PR = '{}/api/v5/repos/{}/{}/pulls?base={}&state=all&since={}&per_page={}}&page={}'
 #  see https://gitee.com/api/v5/swagger#/getV5ReposOwnerRepoPullsNumberFiles
 GET_PR_FILES = '{}/api/v5/repos/{}/{}/pulls/{}/files'
 
@@ -50,7 +55,7 @@ def main():
 
     base_url = options.base_url
     token = options.token
-    since = options.date_since
+    since = (options.date_since).strip()
     branch_list = options.branch
 
     member_list_file = options.member_list_file
@@ -68,6 +73,13 @@ def main():
     if member_list_file is None:
         member_list_file = config.get(CONFIG_POINT_GLOBAL, CONFIG_MEMBER_LIST)
     ###
+
+    if config.has_option(CONFIG_POINT_LOCAL, 'per_page'):
+        PER_PAGE = int(config.get(CONFIG_POINT_LOCAL, 'per_page'))
+    if config.has_option(CONFIG_POINT_LOCAL, 'pause_after_requests'):
+        PAUSE_AFTER_REQUESTS = int(config.get(CONFIG_POINT_LOCAL, 'pause_after_requests'))
+    if config.has_option(CONFIG_POINT_LOCAL, 'pause_duration'):
+        PAUSE_DURATION = int(config.get(CONFIG_POINT_LOCAL, 'pause_duration'))
 
     if base_url is None or token is None or member_list_file is None or branch_list is None:
         raise ValueError("url or token or file is invalid")
@@ -88,9 +100,12 @@ def main():
         repo_owner = repo_string[0]
         repo = repo_string[1]
 
-        for branch in branches:
-            prs = get_all_prs(s, base_url, repo_owner, repo, branch, since)
-            for c in prs:
+    # Прогресс-бар для веток
+    for branch in tqdm(branches, desc=f"Processing Branches in {repository}", leave=False):
+        prs = get_all_prs(s, base_url, repo_owner, repo, branch, since)
+
+        # Прогресс-бар для страниц (в get_all_prs)
+        for c in tqdm(prs, desc=f"Processing PRs in {branch}", leave=False):
                 user_name = c['user']['name']
                 user_login = c['user']['login']
                 pr_title = c['title']
@@ -99,7 +114,7 @@ def main():
                 pr_date = c['created_at']
                 pr_merged_date = c['merged_at']
                 description = c['body']
-                size = get_pr_size(s, base_url, repo_owner, repo,c['number'])
+                size = get_pr_size(s, base_url, repo_owner, repo, c['number'])
                 ### combining all data into array
                 project_report.append({
                     'Name': user_name,
@@ -111,7 +126,7 @@ def main():
                     'PR_Merged_Date': pr_merged_date,
                     'PR_Description': description,
                     'branch': branch,
-                    'Repo': repo_owner+"/"+repo,
+                    'Repo': repo_owner + "/" + repo,
                     'additions': size[0],
                     'deletions': size[1]
                 })
@@ -148,17 +163,40 @@ def main():
 
 def get_all_prs(session, base_url, project_id, repository, branch, since):
     res = []
-    next_page: int = 1
+    next_page = 1
     url_format = GET_LIST_PR
-    while True:
-        url = url_format.format(base_url, project_id, repository, branch, since + "T00:00:00Z", next_page)
-        resp = session.get(url)
-        total_pages = int(resp.headers.get('total_page'))
-        res.extend(resp.json())
-        if total_pages - next_page == 0:
-            break
-        else:
+    request_count = 0
+
+    # Предварительное получение общего количества страниц
+    url = url_format.format(base_url, project_id, repository, branch, since + "T00:00:00Z", PER_PAGE, next_page)
+    initial_resp = session.get(url)
+    total_pages = int(initial_resp.headers.get('total_page', 1))  # Дефолтное значение - 1
+
+    # Прогресс-бар для страниц
+    with tqdm(total=total_pages, desc=f"Processing Pages for {repository}/{branch}", leave=False) as pbar:
+        while next_page <= total_pages:
+            url = url_format.format(base_url, project_id, repository, branch, since + "T00:00:00Z", PER_PAGE, next_page)
+            resp = session.get(url)
+            request_count += 1
+
+            if resp.status_code == 429:
+                logging.warning("Rate limit exceeded. Waiting for 1 second...")
+                time.sleep(1)
+                continue
+            elif resp.status_code != 200:
+                logging.error(f"Failed to fetch data for page {next_page}. Status code: {resp.status_code}")
+                break
+
+            res.extend(resp.json())
+            pbar.update(1)
             next_page += 1
+
+            # Пауза после заданного количества запросов
+            if request_count >= PAUSE_AFTER_REQUESTS:
+                logging.info(f"Pausing for {PAUSE_DURATION} seconds after {PAUSE_AFTER_REQUESTS} requests.")
+                time.sleep(PAUSE_DURATION)
+                request_count = 0
+
     return res
 
 
