@@ -277,13 +277,13 @@ def add_resolved_tasks_section(document, resolved_tasks):
 
         for _, task in tasks[tasks["Type"] != "Sub-task"].iterrows():
             paragraph = document.add_paragraph(style="Normal")
-            paragraph.add_run(f"{task['Issue_key']}: {task['Summary']}")
+            paragraph.add_run(f"{task['Issue_key']}: {task['Summary']}", style="List Bullet 2")
             set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10)
 
             # List subtasks under parent task
             subtasks = tasks[tasks["Parent_Key"] == task["Issue_key"]]
             for _, subtask in subtasks.iterrows():
-                document.add_paragraph(f"{subtask['Issue_key']}: {subtask['Summary']}", style="List Bullet 2")
+                document.add_paragraph(f"{subtask['Issue_key']}: {subtask['Summary']}", style="List Bullet 3")
 
 
 def generate_excel_report(data, month, project, headers, file_suffix):

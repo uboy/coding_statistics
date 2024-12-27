@@ -27,3 +27,13 @@ sharepoint-url = <sharepoint url, e.g. http://office.com/>
 documents_folder = <some_root>
 username = <your username>
 password = <your password>
+
+[gitee]
+per_page = 20
+pause_after_requests = 5
+pause_duration = 3
+gitee-url = https://gitee.com
+token = <token>
+# format for repository:
+repository = openharmony/arkui_ace_engine,openharmony-sig/arkcompiler_ets_frontend
+branch = master
