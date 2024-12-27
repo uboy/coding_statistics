@@ -7,10 +7,11 @@ import codecs  ### used for text encoding in config parser
 import argparse  ### good argument parser
 import logging  ###
 from configparser import ConfigParser  ### able to read configuration file
-from datetime import datetime, time, timedelta         ### used for manipulations with dates
+from datetime import datetime, timedelta         ### used for manipulations with dates
 from openpyxl import load_workbook  ###
 import openpyxl
 from tqdm import tqdm  # show progress
+import time
 
 #from pkg_resources import empty_provider
 
