@@ -245,6 +245,8 @@ def add_hyperlink(paragraph, url, display_text):
     run.append(text)
     hyperlink.append(run)
     paragraph._p.append(hyperlink)
+    set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=8)
+
 
 
 def set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10):
