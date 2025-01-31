@@ -1,3 +1,5 @@
+import re
+
 from jira import JIRA
 from configparser import ConfigParser
 import pandas as pd
@@ -377,21 +379,22 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
     # Add List View
     document.add_heading("List View", level=2)
     for assignee, group in data.groupby("Assignee"):
-        document.add_heading(assignee, level=3)
+        paragraph_assignee = document.add_paragraph(assignee, style="Heading 2")
+        set_paragraph_font(paragraph_assignee, font_name="Times New Roman", font_size=11)
 
         for week, week_data in group.groupby("Week"):
             year, week_num = map(int, week.split("-W"))
-            week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%d/%m")
-            week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%d/%m")
-            week_header = f"{week}({week_start}-{week_end}):"
-            paragraph = document.add_paragraph(week_header, style="Heading 4")
-            set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10)
+            week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%y-%m-%d")
+            week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%y-%m-%d")
+            week_header = f"ww{int(re.search(r'W(\d+)', week).group(1))} {week_start}-{week_end}"
+            paragraph = document.add_paragraph(week_header, style="Heading 3")
+            set_paragraph_font(paragraph, font_name="Times New Roman", font_size=11)
 
             # Add tasks for the current week
             for idx, row in enumerate(week_data.itertuples(index=False, name="Row"), start=1):
                 # Add a new paragraph with the style 'List Number'
-                paragraph = document.add_paragraph(style='List Number')
-                paragraph.add_run(f"{row.Status}: ")
+                paragraph = document.add_paragraph(style='List Bullet 2')
+                set_paragraph_font(paragraph, font_name="Times New Roman", font_size=11)
                 add_hyperlink(paragraph, f"{jira_url}/browse/{row.Issue_key}", f"{row.Issue_key} - {row.Summary}")
 
     # Add Epic Progress section
