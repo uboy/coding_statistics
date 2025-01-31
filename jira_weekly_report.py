@@ -224,31 +224,42 @@ def generate_file_suffix():
     now = datetime.now()
     return now.strftime("_%Y%m%d_%H%M")
 
-def add_hyperlink(paragraph, url, display_text):
+
+def add_hyperlink(paragraph, url, display_text, font_name="Calibri (Body)", font_size=8, underline=False):
     """
-    Add a clickable hyperlink to a Word paragraph.
+    Добавляет кликабельную гиперссылку в параграф Word-документа с настройками шрифта.
+
+    :param paragraph: Параграф, в который вставляется ссылка.
+    :param url: URL для гиперссылки.
+    :param display_text: Отображаемый текст ссылки.
+    :param font_name: Название шрифта.
+    :param font_size: Размер шрифта.
+    :param font_color: Цвет шрифта в HEX-формате (например, "0000FF" для синего).
+    :param underline: Подчёркивание (True или False).
     """
+
     part = paragraph.part
     hyperlink = OxmlElement("w:hyperlink")
-    r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+    r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+                          is_external=True)
     hyperlink.set(qn("r:id"), r_id)
 
-    # Create a run for the hyperlink
-    run = OxmlElement("w:r")
-    rPr = OxmlElement("w:rPr")
-    rStyle = OxmlElement("w:rStyle")
-    rStyle.set(qn("w:val"), "Hyperlink")
-    rPr.append(rStyle)
-    run.append(rPr)
+    # Создаём Run (текст внутри гиперссылки)
+    run = paragraph.add_run(display_text)
 
-    # Add the display text
-    text = OxmlElement("w:t")
-    text.text = display_text
-    run.append(text)
-    hyperlink.append(run)
+    # Настраиваем шрифт
+    run.font.name = font_name
+    run.font.size = Pt(font_size)
+    run.font.underline = underline  # True - включить подчёркивание, False - отключить
+
+    # Применяем стиль "Hyperlink", если он есть в документе
+    if "Hyperlink" in paragraph._parent._parent.styles:
+        run.style = paragraph._parent._parent.styles["Hyperlink"]
+
+    # Добавляем run в гиперссылку
+    r = run._element
+    hyperlink.append(r)
     paragraph._p.append(hyperlink)
-    set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=8)
-
 
 
 def set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10):
@@ -281,7 +292,7 @@ def add_resolved_tasks_section(document, resolved_tasks):
 
         for _, task in tasks[tasks["Type"] != "Sub-task"].iterrows():
             paragraph = document.add_paragraph(style="Normal")
-            paragraph.add_run(f"{task['Issue_key']}: {task['Summary']}", style="List Bullet 2")
+            document.add_paragraph(f"{task['Issue_key']}: {task['Summary']}", style="List Bullet 2")
             set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10)
 
             # List subtasks under parent task
