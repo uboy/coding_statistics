@@ -239,7 +239,6 @@ def add_hyperlink(paragraph, url, display_text, font_name="Calibri (Body)", font
     :param display_text: Отображаемый текст ссылки.
     :param font_name: Название шрифта.
     :param font_size: Размер шрифта (в Pt).
-    :param font_color: Цвет шрифта в HEX-формате (например, "0000FF" для синего).
     :param underline: Подчёркивание (True или False).
     """
 
@@ -400,7 +399,8 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
                 row_cells[1].text = row["Week"]
                 row_cells[2].text = week_range
                 row_cells[3].text = row["Summary"]
-                add_hyperlink(row_cells[4].paragraphs[0], f"{jira_url}/browse/{row['Issue_key']}", f"{row['Issue_key']}")
+                add_hyperlink(row_cells[4].paragraphs[0], f"{jira_url}/browse/{row['Issue_key']}",
+                              f"{row['Issue_key']}", font_size=8)
                 row_cells[5].text = row["Status"]
         for row in table.rows:
             for cell in row.cells:
@@ -409,7 +409,8 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
 
     # Add List View
     document.add_heading("List View", level=2)
-    for assignee, group in data.groupby("Assignee"):
+    resolved_data = data[data["Status"] == "Resolved"]  # Filtering only Resolved tasks
+    for assignee, group in resolved_data.groupby("Assignee"):
         paragraph_assignee = document.add_paragraph(assignee, style="Heading 2")
         set_paragraph_font(paragraph_assignee, font_name="Times New Roman", font_size=11)
 
@@ -426,7 +427,8 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
                 # Add a new paragraph with the style 'List Number'
                 paragraph = document.add_paragraph(style='List Bullet 2')
                 set_paragraph_font(paragraph, font_name="Times New Roman", font_size=11)
-                add_hyperlink(paragraph, f"{jira_url}/browse/{row.Issue_key}", f"{row.Issue_key} - {row.Summary}")
+                add_hyperlink(paragraph, f"{jira_url}/browse/{row.Issue_key}", f"{row.Issue_key} - {row.Summary}",
+                              font_name="Times New Roman", font_size=11)
 
     # Add Epic Progress section
     document.add_heading("Epic Progress", level=2)
