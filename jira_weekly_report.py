@@ -224,30 +224,61 @@ def generate_file_suffix():
     now = datetime.now()
     return now.strftime("_%Y%m%d_%H%M")
 
-def add_hyperlink(paragraph, url, display_text):
+
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Pt, RGBColor
+from docx import Document
+
+def add_hyperlink(paragraph, url, display_text, font_name="Calibri (Body)", font_size=10, underline=False):
     """
-    Add a clickable hyperlink to a Word paragraph.
+    Добавляет кликабельную гиперссылку в параграф Word-документа с настройками шрифта.
+
+    :param paragraph: Параграф, в который вставляется ссылка.
+    :param url: URL для гиперссылки.
+    :param display_text: Отображаемый текст ссылки.
+    :param font_name: Название шрифта.
+    :param font_size: Размер шрифта (в Pt).
+    :param font_color: Цвет шрифта в HEX-формате (например, "0000FF" для синего).
+    :param underline: Подчёркивание (True или False).
     """
+
     part = paragraph.part
     hyperlink = OxmlElement("w:hyperlink")
     r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
     hyperlink.set(qn("r:id"), r_id)
 
-    # Create a run for the hyperlink
-    run = OxmlElement("w:r")
-    rPr = OxmlElement("w:rPr")
-    rStyle = OxmlElement("w:rStyle")
-    rStyle.set(qn("w:val"), "Hyperlink")
-    rPr.append(rStyle)
-    run.append(rPr)
+    # Создаём новый Run для гиперссылки
+    run = paragraph.add_run(display_text)
 
-    # Add the display text
-    text = OxmlElement("w:t")
-    text.text = display_text
-    run.append(text)
-    hyperlink.append(run)
+    # Настройка шрифта
+    run.font.name = font_name
+    run.font.size = Pt(font_size)
+    run.font.underline = underline  # True - включить подчёркивание, False - отключить
+
+    # Создаём элемент <w:rPr> (свойства Run)
+    rPr = OxmlElement("w:rPr")
+
+    # Добавляем стиль "Hyperlink", если он доступен в документе
+    try:
+        doc = paragraph._element.getroottree().getroot()
+        styles = doc.find(".//w:styles", namespaces={"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"})
+        if styles is not None:
+            hyperlink_style = styles.find(".//w:style[@w:styleId='Hyperlink']", namespaces={"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"})
+            if hyperlink_style is not None:
+                rStyle = OxmlElement("w:rStyle")
+                rStyle.set(qn("w:val"), "Hyperlink")
+                rPr.append(rStyle)
+    except Exception:
+        pass  # Если стиль "Hyperlink" не найден, просто пропускаем
+
+    # Добавляем свойства в Run
+    r = run._element
+    r.insert(0, rPr)
+
+    # Вставляем Run в гиперссылку
+    hyperlink.append(r)
     paragraph._p.append(hyperlink)
-    set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=8)
 
 
 
@@ -281,7 +312,7 @@ def add_resolved_tasks_section(document, resolved_tasks):
 
         for _, task in tasks[tasks["Type"] != "Sub-task"].iterrows():
             paragraph = document.add_paragraph(style="Normal")
-            paragraph.add_run(f"{task['Issue_key']}: {task['Summary']}", style="List Bullet 2")
+            document.add_paragraph(f"{task['Issue_key']}: {task['Summary']}", style="List Bullet 2")
             set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10)
 
             # List subtasks under parent task
