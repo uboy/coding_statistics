@@ -134,29 +134,15 @@ def main():
     ### TODO comments in other team member's code and KLOCs reviewed
     # get_users_comments
     ### Create a report file with headlines
-    file_name = "gitee-prs-since-" + since + "-until-" + until + ".csv"
-    create_csv_file(file_name)
 
-    with open(file_name, "a", encoding='utf-8-sig', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        for commit in project_report:
-            writer.writerow([commit['Name'],
-                             commit['Login'],
-                             commit['PR_Name'],
-                             commit['PR_URL'],
-                             commit['PR_State'],
-                             str(commit['PR_Created_Date']),
-                             commit['PR_Merged_Date'],
-                             #commit['PR_Description'],
-                             commit['branch'],
-                             commit['Repo'],
-                             commit['additions'],
-                             commit['deletions']
-                             ])
+    file_name = ("gitee-prs-since-" + since + "-until-" + until +
+                 ", repo " + ", ".join(repositories) +
+                 ", branch " + ", ".join(branch_list) ).replace("/","-")
+
+    create_csv_file(file_name, project_report)
 
     # Create an Excel report file with headlines
-    excel_file_name = "gitee-prs-since-" + since + "-until-" + until + ".xlsx"
-    create_excel_file(excel_file_name, project_report)  # Call the new function
+    create_excel_file(file_name, project_report)  # Call the new function
 
     print("All done!")
     return 0
@@ -238,15 +224,34 @@ def read_member_list(member_list_file):
     return member_list
 
 
-def create_csv_file(file_name):
+def create_csv_file(file_name, project_report):
     # Write Title
+    file_name = file_name  + ".csv"
     with open(file_name, "w", encoding='utf-8-sig', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(["Name", "Login", "PR_Name", "PR_URL", "PR_State", "PR_Created_Date",
                          "PR_Merged_Date", "branch", "Repo", "Additions", "Deletions"])
 
+    with open(file_name, "a", encoding='utf-8-sig', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        for commit in project_report:
+            writer.writerow([commit['Name'],
+                             commit['Login'],
+                             commit['PR_Name'],
+                             commit['PR_URL'],
+                             commit['PR_State'],
+                             str(commit['PR_Created_Date']),
+                             commit['PR_Merged_Date'],
+                             #commit['PR_Description'],
+                             commit['branch'],
+                             commit['Repo'],
+                             commit['additions'],
+                             commit['deletions']
+                             ])
+
 
 def create_excel_file(file_name, project_report):
+    file_name = file_name  + ".xlsx"
     # Create a workbook and select the active worksheet
     wb = openpyxl.Workbook()
     ws = wb.active

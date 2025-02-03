@@ -271,11 +271,9 @@ def add_hyperlink(paragraph, url, display_text, font_name="Calibri (Body)", font
     except Exception:
         pass  # Если стиль "Hyperlink" не найден, просто пропускаем
 
-    # Добавляем свойства в Run
     r = run._element
     r.insert(0, rPr)
 
-    # Вставляем Run в гиперссылку
     hyperlink.append(r)
     paragraph._p.append(hyperlink)
 
