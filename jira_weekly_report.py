@@ -7,10 +7,10 @@ from datetime import datetime, timedelta
 import argparse
 import codecs
 import os
-from docx import Document
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.shared import Pt
+#from docx import Document
+#from docx.oxml import OxmlElement
+#from docx.oxml.ns import qn
+#from docx.shared import Pt
 from openpyxl import load_workbook
 
 # Configuration constants
@@ -24,13 +24,15 @@ def parse_arguments_and_config():
     """
     Parse command-line arguments and configuration file to retrieve JIRA credentials and project details.
     """
-    parser = argparse.ArgumentParser(description="Generate JIRA monthly report with extended filtering.")
+    parser = argparse.ArgumentParser(description="Generate JIRA report with custom date range.")
     parser.add_argument("-c", "--config", default=CONFIG_FILE, help="Path to config file.")
     parser.add_argument("-u", "--username", help="JIRA username.")
     parser.add_argument("-p", "--password", help="JIRA password.")
     parser.add_argument("-l", "--url", help="JIRA base URL.")
     parser.add_argument("-proj", "--project", required=True, help="JIRA project key.")
-    parser.add_argument("-m", "--month", required=True, help="Month in YYYY-MM format (e.g., 2024-11).")
+    parser.add_argument("--start-date", required=True, help="Start date in YYYY-MM-DD format.")
+    parser.add_argument("--end-date", required=True, help="End date in YYYY-MM-DD format.")
+    parser.add_argument("--include-empty-weeks", type=bool, default=True, help="Include all weeks in the date range even if no tasks exist.")
     parser.add_argument("--member-list-file", help="Path to Excel file with a list of required assignees.")
     args = parser.parse_args()
 
@@ -46,7 +48,7 @@ def parse_arguments_and_config():
     if not jira_url or not jira_username or not jira_password:
         raise ValueError("JIRA URL, username, and password must be specified either as arguments or in the config file.")
 
-    return jira_url, jira_username, jira_password, args.project, args.month, args.member_list_file
+    return jira_url, jira_username, jira_password, args.project, args.start_date, args.end_date, args.include_empty_weeks, args.member_list_file
 
 
 def read_member_list(member_list_file):
@@ -82,12 +84,12 @@ def get_all_worklogs(jira, issue_key):
         start_at += 100
     return worklogs
 
-def fetch_jira_data(jira, project, month):
+def fetch_jira_data(jira, project, start_date, end_date):
     """
-    Fetch data from JIRA and format it for the report.
+    Fetch data from JIRA and filter by date range and resolution status.
     """
-    start_date = datetime.strptime(month, "%Y-%m")
-    end_date = min(datetime.now(), (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1))
+    start_date = datetime.strptime(start_date, "%Y-%m-%d")
+    end_date = datetime.strptime(end_date, "%Y-%m-%d")
 
     # Pagination variables
     start_at = 0
@@ -144,11 +146,11 @@ def fetch_jira_data(jira, project, month):
             issue_type_name = issue_type.name if issue_type else "Unknown"
             if start_date <= resolved_date_dt <= end_date:
                 resolved_week = resolved_date_dt.strftime("%G-W%V")
-                data.append({
-                    "Issue_key": key,
-                    "Summary": summary,
-                    "Assignee": assignee,
-                    "Status": "Resolved",
+            data.append({
+                "Issue_key": key,
+                "Summary": summary,
+                "Assignee": assignee,
+                "Status": "Resolved",
                     "Resolution_Date": resolution_date,
                     "Week": resolved_week,
                     "Epic_Link": epic_link,
@@ -172,7 +174,7 @@ def fetch_jira_data(jira, project, month):
                         "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
                         "Parent_Key": parent_key,
                         "Parent_Summary": parent_summary
-                    })
+            })
 
     return pd.DataFrame(data)
 
@@ -227,7 +229,7 @@ def generate_file_suffix():
 
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, RGBColor
+from docx.shared import Pt #, RGBColor
 from docx import Document
 
 def add_hyperlink(paragraph, url, display_text, font_name="Calibri (Body)", font_size=10, underline=False):
@@ -318,7 +320,7 @@ def add_resolved_tasks_section(document, resolved_tasks):
                 document.add_paragraph(f"{subtask['Issue_key']}: {subtask['Summary']}", style="List Bullet 3")
 
 
-def generate_excel_report(data, month, project, headers, file_suffix):
+def generate_excel_report(data, start_date, end_date, project, headers, file_suffix):
     """
     Generate an Excel report summarizing the data grouped by assignee and week.
     """
@@ -336,11 +338,11 @@ def generate_excel_report(data, month, project, headers, file_suffix):
 
     grouped_data.columns = headers
 
-    output_file = f"jira_report_{project}_{month}{file_suffix}.xlsx"
+    output_file = f"jira_report_{project}_{start_date}-{end_date}{file_suffix}.xlsx"
     grouped_data.to_excel(output_file)
     print(f"Excel report successfully created: {output_file}")
 
-def generate_word_report(data, month, project, headers, file_suffix, jira_url, epic_summary, member_list_file=None):
+def generate_word_report(data, start_date, end_date, project, headers, file_suffix, jira_url, epic_summary, member_list_file=None):
     """
     Generate a Word report including both the updated tabular view, a list view and Epic progress,
     with tasks sorted by assignee, week, and status.
@@ -358,7 +360,7 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
     required_assignees.sort()
 
     document = Document()
-    document.add_heading(f"JIRA Report: {project} - {month}", level=1)
+    document.add_heading(f"JIRA Report: {project} - {start_date}-{end_date}", level=1)
 
     # Add new Tabular View with the updated format
     document.add_heading("Tabular View", level=2)
@@ -414,8 +416,8 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
 
         for week, week_data in group.groupby("Week"):
             year, week_num = map(int, week.split("-W"))
-            week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%y-%m-%d")
-            week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%y-%m-%d")
+            week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%Y-%m-%d")
+            week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%Y-%m-%d")
             week_header = f"ww{int(re.search(r'W(\d+)', week).group(1))} {week_start}-{week_end}"
             paragraph = document.add_paragraph(week_header, style="Heading 3")
             set_paragraph_font(paragraph, font_name="Times New Roman", font_size=11)
@@ -446,16 +448,16 @@ def generate_word_report(data, month, project, headers, file_suffix, jira_url, e
     add_resolved_tasks_section(document, resolved_tasks)
 
     # Save the document
-    output_file = f"jira_report_{project}_{month}{file_suffix}.docx"
+    output_file = f"jira_report_{project}_{start_date}-{end_date}{file_suffix}.docx"
     document.save(output_file)
     print(f"Word report successfully created: {output_file}")
 
 
-def generate_report(data, month, project, jira_url):
+def generate_report(data, start_date, end_date, project, jira_url, include_empty_weeks):
     """
     Generate both Excel and Word reports for the specified data.
     """
-    start_date = datetime.strptime(month, "%Y-%m")
+    start_date = datetime.strptime(start_date, "%Y-%m")
     end_date = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     valid_weeks = pd.date_range(start=start_date, end=end_date, freq='W-MON').strftime("%G-W%V").tolist()
     data = data[data["Week"].isin(valid_weeks)]
@@ -468,18 +470,22 @@ def generate_report(data, month, project, jira_url):
     epic_summary = generate_epic_report(data)
 
     file_suffix = generate_file_suffix()
-    generate_excel_report(data, month, project, headers, file_suffix)
-    generate_word_report(data, month, project, headers, file_suffix, jira_url, epic_summary)
+    generate_excel_report(data, start_date, end_date, project, headers, file_suffix)
+    generate_word_report(data, start_date, end_date, project, headers, file_suffix, jira_url, epic_summary)
 
 def main():
     """
     Main function to handle the overall process of fetching data and generating reports.
     """
-    jira_url, jira_username, jira_password, project, month, member_list_file = parse_arguments_and_config()
+    jira_url, jira_username, jira_password, project, start_date, end_date, include_empty_weeks, member_list_file = parse_arguments_and_config()
     jira_options = {"verify": "bundle-ca"} if os.path.exists("bundle-ca") else True
     jira = JIRA(server=jira_url, basic_auth=(jira_username, jira_password), options=jira_options)
-    data = fetch_jira_data(jira, project, month)
-    generate_report(data, month, project, jira_url)
+    data = fetch_jira_data(jira, project, start_date, end_date)
+    generate_report(data, start_date, end_date, project, jira_url, include_empty_weeks)
+    #TODO:
+    # 1. generate report only for members
+    # 2. generate report using jql: worklogAuthor in (members) AND worklogDate >= 2025-03-01
+    # 3. if no worklog - vacation, holiday, sickleave
 
 if __name__ == "__main__":
     main()

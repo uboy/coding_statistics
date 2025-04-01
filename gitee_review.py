@@ -7,7 +7,7 @@ import codecs  ### used for text encoding in config parser
 import argparse  ### good argument parser
 import logging  ###
 from configparser import ConfigParser  ### able to read configuration file
-from datetime import datetime, timedelta         ### used for manipulations with dates
+from datetime import datetime         ### used for manipulations with dates
 from openpyxl import load_workbook  ###
 import openpyxl
 from tqdm import tqdm  # show progress
@@ -26,8 +26,8 @@ CONFIG_REPOSITORY = "repository"
 CONFIG_UNTIL = "date_until"
 # Default values, can be overridden by config
 PER_PAGE = 50
-PAUSE_AFTER_REQUESTS = 10
-PAUSE_DURATION = 2  # seconds
+PAUSE_AFTER_REQUESTS = 20
+PAUSE_DURATION = 7  # seconds
 # see https://gitee.com/api/v5/swagger#/getV5ReposOwnerRepoPulls
 GET_LIST_PR = '{}/api/v5/repos/{}/{}/pulls?base={}&state=all&since={}&per_page={}&page={}'
 #  see https://gitee.com/api/v5/swagger#/getV5ReposOwnerRepoPullsNumberFiles
@@ -56,7 +56,7 @@ def main():
 
     base_url = options.base_url
     token = options.token
-    since = (options.date_since).strip()
+    since = options.date_since.strip()
     branch_list = options.branch
 
     member_list_file = options.member_list_file
@@ -74,7 +74,7 @@ def main():
     if member_list_file is None:
         member_list_file = config.get(CONFIG_POINT_GLOBAL, CONFIG_MEMBER_LIST)
     ###
-
+    global PER_PAGE, PAUSE_DURATION, PAUSE_AFTER_REQUESTS
     if config.has_option(CONFIG_POINT_LOCAL, 'per_page'):
         PER_PAGE = int(config.get(CONFIG_POINT_LOCAL, 'per_page'))
     if config.has_option(CONFIG_POINT_LOCAL, 'pause_after_requests'):
@@ -85,7 +85,7 @@ def main():
     if base_url is None or token is None or member_list_file is None or branch_list is None:
         raise ValueError("url or token or file is invalid")
     until = options.date_until or config.get(CONFIG_POINT_LOCAL, CONFIG_UNTIL, fallback=None) or datetime.today().strftime('%Y-%m-%d')
-    repositories = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY).split(",")
+    repositories = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY)
     print(f"Starting to prepare report from Gitee for branch: {branch_list}, repositories {repositories}, date since {since}, date until {until}")
     # member_list = read_member_list("members.xlsx") ### TODO add report for set members only
     s = requests.Session()
@@ -94,19 +94,19 @@ def main():
     s.verify = 'bundle-ca' if os.path.exists("bundle-ca") else True
     project_report = []
     # get comma-separated repositories with projects
-    
-    for repository in repositories:
-        branches = config.get(CONFIG_POINT_LOCAL, CONFIG_BRANCH).split(",")
-        repo_string = repository.split('/')
-        repo_owner = repo_string[0]
-        repo = repo_string[1]
+    branches = config.get(CONFIG_POINT_LOCAL, CONFIG_BRANCH).split(",")
+    # TODO implement multiple repositories
+    repo_string = repositories.split('/')
+    repo_owner = repo_string[0]
+    repo = repo_string[1]
 
     # Прогресс-бар для веток
-    for branch in tqdm(branches, desc=f"Processing Branches in {repository}", leave=False):
+    for branch in tqdm(branches, desc=f"Processing Branches in {repositories}", position=0, leave=False, dynamic_ncols=True):
         prs = get_all_prs(s, base_url, repo_owner, repo, branch, since)
 
         # Прогресс-бар для страниц (в get_all_prs)
-        for c in tqdm(prs, desc=f"Processing PRs in {branch}", leave=False):
+        with tqdm(total=len(prs), desc=f"Processing PRs in {branch}", position=2, leave=False, dynamic_ncols=True) as pbar:
+            for c in prs:
                 user_name = c['user']['name']
                 user_login = c['user']['login']
                 pr_title = c['title']
@@ -116,6 +116,8 @@ def main():
                 pr_merged_date = c['merged_at']
                 description = c['body']
                 size = get_pr_size(s, base_url, repo_owner, repo, c['number'])
+                #size = [0,0]
+                reviewers = [item['login'] for item in c['assignees'] if item['accept']]
                 ### combining all data into array
                 project_report.append({
                     'Name': user_name,
@@ -129,8 +131,10 @@ def main():
                     'branch': branch,
                     'Repo': repo_owner + "/" + repo,
                     'additions': size[0],
-                    'deletions': size[1]
+                    'deletions': size[1],
+                    'reviewer': ', '.join(reviewers)
                 })
+                pbar.update(1)
     ### TODO comments in other team member's code and KLOCs reviewed
     # get_users_comments
     ### Create a report file with headlines
@@ -149,6 +153,9 @@ def main():
 
 
 def get_all_prs(session, base_url, project_id, repository, branch, since):
+    global PER_PAGE
+    global PAUSE_AFTER_REQUESTS
+    global PAUSE_DURATION
     res = []
     next_page = 1
     url_format = GET_LIST_PR
@@ -160,7 +167,7 @@ def get_all_prs(session, base_url, project_id, repository, branch, since):
     total_pages = int(initial_resp.headers.get('total_page', 1))  # Дефолтное значение - 1
 
     # Прогресс-бар для страниц
-    with tqdm(total=total_pages, desc=f"Processing Pages for {repository}/{branch}", leave=False) as pbar:
+    with tqdm(total=total_pages, desc=f"Processing Pages for {repository}/{branch}", position=1, leave=False, dynamic_ncols=True) as pbar:
         while next_page <= total_pages:
             url = url_format.format(base_url, project_id, repository, branch, since + "T00:00:00Z", PER_PAGE, next_page)
             resp = session.get(url)
@@ -209,10 +216,10 @@ def read_member_list(member_list_file):
     has_name = "name" == sheet.cell(row=1, column=1).value
     has_mail = "email" == sheet.cell(row=1, column=2).value
     has_username = "username" == sheet.cell(row=1, column=3).value
-    has_giteeaccount = "gitee_account" == sheet.cell(row=1, column=4).value
+    has_gitee_account = "gitee_account" == sheet.cell(row=1, column=4).value
 
     member_list = []
-    if has_name and has_mail and has_username and has_giteeaccount:
+    if has_name and has_mail and has_username and has_gitee_account:
         for rx in range(2, sheet.max_row + 1):
             name = sheet.cell(row=rx, column=1).value
             mail = sheet.cell(row=rx, column=2).value
@@ -230,7 +237,7 @@ def create_csv_file(file_name, project_report):
     with open(file_name, "w", encoding='utf-8-sig', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(["Name", "Login", "PR_Name", "PR_URL", "PR_State", "PR_Created_Date",
-                         "PR_Merged_Date", "branch", "Repo", "Additions", "Deletions"])
+                         "PR_Merged_Date", "branch", "Repo", "Additions", "Deletions", "Reviewers"])
 
     with open(file_name, "a", encoding='utf-8-sig', newline='') as csvfile:
         writer = csv.writer(csvfile)
@@ -246,7 +253,8 @@ def create_csv_file(file_name, project_report):
                              commit['branch'],
                              commit['Repo'],
                              commit['additions'],
-                             commit['deletions']
+                             commit['deletions'],
+                             commit['reviewer']
                              ])
 
 
@@ -259,7 +267,7 @@ def create_excel_file(file_name, project_report):
     # Write headers
     headers = ["Name", "Login", "PR_Name", "PR_URL", "PR_State", 
                "PR_Created_Date", "PR_Merged_Date", "branch", "Repo", 
-               "Additions", "Deletions"]
+               "Additions", "Deletions", "Reviewers"]
     ws.append(headers)
     
     # Write data rows
@@ -274,7 +282,8 @@ def create_excel_file(file_name, project_report):
                     commit['branch'],
                     commit['Repo'],
                     commit['additions'],
-                    commit['deletions']
+                    commit['deletions'],
+                    commit['reviewer']
                    ]
         ws.append(row_data)
     
