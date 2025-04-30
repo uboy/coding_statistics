@@ -33,6 +33,7 @@ per_page = 20
 pause_after_requests = 5
 pause_duration = 3
 gitee-url = https://gitee.com
+# get new token here
 token = <token>
 # format for repository:
 repository = openharmony/arkui_ace_engine,openharmony-sig/arkcompiler_ets_frontend

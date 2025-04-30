@@ -19,6 +19,7 @@ CONFIG_POINT_LOCAL = "gitee"
 CONFIG_POINT_GLOBAL = "global"
 CONFIG_FILE = "config.ini"
 CONFIG_BASE_URL = "gitee-url"
+# get new token https://gitee.com/profile/personal_access_tokens/new
 CONFIG_TOKEN = "token"
 CONFIG_MEMBER_LIST = "member-list"
 CONFIG_BRANCH = "branch"
@@ -140,7 +141,7 @@ def main():
     ### Create a report file with headlines
 
     file_name = ("gitee-prs-since-" + since + "-until-" + until +
-                 ", repo " + ", ".join(repositories) +
+                 ", repo " + repositories +
                  ", branch " + ", ".join(branch_list) ).replace("/","-")
 
     create_csv_file(file_name, project_report)
@@ -174,8 +175,8 @@ def get_all_prs(session, base_url, project_id, repository, branch, since):
             request_count += 1
 
             if resp.status_code == 429:
-                logging.warning("Rate limit exceeded. Waiting for 1 second...")
-                time.sleep(1)
+                logging.warning(f"Rate limit exceeded. Waiting for {PAUSE_DURATION} second...")
+                time.sleep(PAUSE_DURATION)
                 continue
             elif resp.status_code != 200:
                 logging.error(f"Failed to fetch data for page {next_page}. Status code: {resp.status_code}")

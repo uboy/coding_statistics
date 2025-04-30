@@ -8,6 +8,10 @@ from configparser import ConfigParser
 from datetime import datetime
 import pytz
 from jira import JIRA
+from requests.auth import HTTPBasicAuth
+import json
+import requests
+from urllib import response
 
 # Configurations
 CONFIG_FILE = "config.ini"
@@ -28,6 +32,7 @@ def main():
     parser.add_argument('--config', dest='config', default=CONFIG_FILE, help='Path to the configuration file')
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Enable verbose logging')
     parser.add_argument('-t', '--task', dest='task_key', help='Task key for worklog')
+    parser.add_argument('-m', '--move', dest='move_key', help='Task key for worklog')
     options = parser.parse_args()
 
     # Set logging level
@@ -60,6 +65,7 @@ def main():
     time_spent = options.timeSpent
     comment = options.comment or ""
     task_key = options.task_key or choose_task_or_modify(jira, username)
+    move_key = options.move_key
 
     if not task_key:
         print("No task selected. Exiting.")
@@ -68,6 +74,8 @@ def main():
     if task_key.startswith("MODIFY"):
         modify_task_key = task_key.split(" ", 1)[1]
         modify_logged_work(jira, modify_task_key)
+    elif move_key is not None:
+        move_logged_work(jira, task_key, "OHOSUI-22", 69133)
     else:
         if not time_spent:
             time_spent = input("Enter time spent (e.g., 1h, 2d, or a number for hours): ").strip()
@@ -140,6 +148,33 @@ def modify_logged_work(jira, task_key):
     jira.update_worklog(selected_worklog, timeSpent=new_time, comment=new_comment)
     print(f"Work log updated: {new_time}, Comment: {new_comment}")
 
+
+def move_logged_work(jira, task_key_old, task_key_new, worklog_id):
+    """ Move"""
+    url = "https://jira.com/rest/api/2/issue/{}/worklog/move".format(task_key_old)
+
+    auth = HTTPBasicAuth("","")
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    payload = json.dumps({
+        "ids": [
+            worklog_id
+        ],
+        "issueIdOrKey": task_key_new
+    })
+
+    response = requests.request(
+        "POST",
+        url,
+        data=payload,
+        headers=headers,
+        auth=auth,
+        verify='bundle-ca'
+    )
+
+    print(response.text)
 
 if __name__ == "__main__":
     sys.exit(main())
