@@ -38,3 +38,14 @@ token = <token>
 # format for repository:
 repository = openharmony/arkui_ace_engine,openharmony-sig/arkcompiler_ets_frontend
 branch = master
+
+[gitcode]
+per_page = 70
+pause_after_requests = 10
+pause_duration = 6
+gitcode-url = https://gitcode.com/
+# get new token here https://gitcode.com/setting/token-classic
+token = <token>
+# format for repository:
+repository = OH_003/arkui_ace_engine
+branch = master
