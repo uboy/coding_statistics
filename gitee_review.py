@@ -227,9 +227,9 @@ def read_member_list(member_list_file):
             username = sheet.cell(row=rx, column=3).value
             gitee_account = sheet.cell(row=rx, column=4).value
             member_list.append({'Name': name, 'Email': mail, 'Username': username, 'GiteeAccount': gitee_account})
+        return member_list
     else:
         raise ValueError("The table format is incorrect")
-    return member_list
 
 
 def create_csv_file(file_name, project_report):
