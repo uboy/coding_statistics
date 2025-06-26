@@ -25,7 +25,8 @@ To allow python work with server's certificates which do not exist in "certifi" 
 2. Create a new file "bandle-ca" and put there content of exported certificates in reverse order:
 	a. Intermediate certificates
 	b. Root CA
-  
+Another option is to export certificate chain directly in Base64 format and copy-paste content into bundle-ca file
+
 Codehub
 API description:
 N/A
