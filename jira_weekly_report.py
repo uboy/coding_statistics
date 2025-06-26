@@ -458,7 +458,7 @@ def generate_report(data, start_date, end_date, project, jira_url, include_empty
     Generate both Excel and Word reports for the specified data.
     """
     start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-    end_date = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    #end_date = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     # shift monday
     start_monday = start_date - timedelta(days=start_date.weekday())
 

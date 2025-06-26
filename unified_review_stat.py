@@ -56,8 +56,8 @@ def process_gitee(url, config):
     pr = session.get(api_url).json()
     files = session.get(files_url).json()
 
-    additions = sum(f['additions'] for f in files)
-    deletions = sum(f['deletions'] for f in files)
+    additions = sum(int(f['additions']) for f in files)
+    deletions = sum(int(f['deletions']) for f in files)
     reviewers = ', '.join([r['login'] for r in pr.get('assignees', []) if r.get('accept', True)])
 
     return [
