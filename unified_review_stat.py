@@ -95,6 +95,62 @@ def process_gitlab(url, config):
     ]
 
 
+# ---------------------- CodeHub ----------------------
+def process_codehub(url, config):
+    m = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", url.replace('#/', ''))
+    if not m:
+        return None
+    domain, repo_path, mr_id = m.groups()
+    base_url = config.get("codehub", "codehub-url")
+    token = config.get("codehub", "token")
+    session = init_session(token)
+
+    encoded_path = urllib.parse.quote(repo_path, safe='')
+    api_url = f"{base_url}/api/v4/projects/{encoded_path}/merge_requests/{mr_id}"
+    changes_url = f"{api_url}/changes"
+    pr = session.get(api_url).json()
+    changes = session.get(changes_url).json()
+
+    additions = sum(int(f['additions']) for f in changes.get('changes', []))
+    deletions = sum(int(f['deletions']) for f in changes.get('changes', []))
+    reviewers = pr.get('reviewed_by', [])
+    reviewer_names = ', '.join([r['name'] for r in reviewers]) if reviewers else ""
+
+    return [
+        pr['author']['name'], pr['author']['username'], pr['title'], url,
+        pr['state'], pr['created_at'], pr['merged_at'],
+        pr['target_branch'], repo_path, additions, deletions, reviewer_names
+    ]
+
+
+# ---------------------- OpenCodeHub ----------------------
+def process_opencodehub(url, config):
+    m = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", url.replace('#/', ''))
+    if not m:
+        return None
+    domain, repo_path, mr_id = m.groups()
+    base_url = config.get("opencodehub", "opencodehub-url")
+    token = config.get("opencodehub", "token")
+    session = init_session(token)
+
+    encoded_path = urllib.parse.quote(repo_path, safe='')
+    api_url = f"{base_url}/api/v4/projects/{encoded_path}/merge_requests/{mr_id}"
+    changes_url = f"{api_url}/changes"
+    pr = session.get(api_url).json()
+    changes = session.get(changes_url).json()
+
+    additions = sum(int(f['additions']) for f in changes.get('changes', []))
+    deletions = sum(int(f['deletions']) for f in changes.get('changes', []))
+    reviewers = pr.get('reviewed_by', [])
+    reviewer_names = ', '.join([r['name'] for r in reviewers]) if reviewers else ""
+
+    return [
+        pr['author']['name'], pr['author']['username'], pr['title'], url,
+        pr['state'], pr['created_at'], pr['merged_at'],
+        pr['target_branch'], repo_path, additions, deletions, reviewer_names
+    ]
+
+
 # ---------------------- Gerrit ----------------------
 def process_gerrit(url, config):
     m = re.match(r"https?://([^/#]+)/.*/(\d+)/?", url)
@@ -150,6 +206,10 @@ def main():
                 row = process_gitee(link, config)
             elif 'gitlab' in link:
                 row = process_gitlab(link, config)
+            elif 'codehub-y' in link:
+                row = process_codehub-y(link, config)
+            elif 'open.codehub' in link:
+                row = process_opencodehub(link, config)
             elif 'gerrit' in link or 'mgit' in link:
                 row = process_gerrit(link, config)
             else:
