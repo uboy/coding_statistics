@@ -61,8 +61,8 @@ def main():
                         options['base_url'], project_info['path_with_namespace'], "files/commit", c['id'])
                     commit_date = detail['committed_date']
                     description = detail['message']
-                    #additions = stats['additions']
-                    #deletions = stats['deletions']
+                    #additions = stats['added_lines']
+                    #deletions = stats['removed_lines']
                     total = stats['total']
                     comments = get_commit_comments_count(options['base_url'], s, project_id, c['id'], member_list, name)
                     ticket_no = get_ticketno(description)

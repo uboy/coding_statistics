@@ -106,14 +106,14 @@ def process_codehub(url, config):
     session = init_session(token)
 
     encoded_path = urllib.parse.quote(repo_path, safe='')
-    api_url = f"{base_url}/api/v4/projects/{encoded_path}/merge_requests/{mr_id}"
-    changes_url = f"{api_url}/changes"
+    api_url = f"{base_url}/api/v4/projects/{encoded_path}/isource/merge_requests/{mr_id}"
+    changes_url = f"{base_url}/api/v4/projects/{encoded_path}/isource/merge_requests/{mr_id}/changes"
     pr = session.get(api_url).json()
     changes = session.get(changes_url).json()
 
-    additions = sum(int(f['additions']) for f in changes.get('changes', []))
-    deletions = sum(int(f['deletions']) for f in changes.get('changes', []))
-    reviewers = pr.get('reviewed_by', [])
+    additions = sum(int(f['added_lines']) for f in changes.get('changes', []))
+    deletions = sum(int(f['removed_lines']) for f in changes.get('changes', []))
+    reviewers = pr.get('merge_request_reviewer_list', [])
     reviewer_names = ', '.join([r['name'] for r in reviewers]) if reviewers else ""
 
     return [
@@ -125,7 +125,7 @@ def process_codehub(url, config):
 
 # ---------------------- OpenCodeHub ----------------------
 def process_opencodehub(url, config):
-    m = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", url.replace('#/', ''))
+    m = re.match(r"https://([^/]+)/OpenSourceCenter_CR/([^/]+/[^/]+)/-/change_requests/(\d+)", url.replace('#/', ''))
     if not m:
         return None
     domain, repo_path, mr_id = m.groups()
@@ -134,14 +134,14 @@ def process_opencodehub(url, config):
     session = init_session(token)
 
     encoded_path = urllib.parse.quote(repo_path, safe='')
-    api_url = f"{base_url}/api/v4/projects/{encoded_path}/merge_requests/{mr_id}"
-    changes_url = f"{api_url}/changes"
+    api_url = f"{base_url}/api/v4/projects/OpenSourceCenter_CR%2F{encoded_path}/isource/merge_requests/{mr_id}"
+    changes_url = f"{base_url}/api/v4/projects/OpenSourceCenter_CR%2F{encoded_path}/isource/merge_requests/{mr_id}/changes"
     pr = session.get(api_url).json()
     changes = session.get(changes_url).json()
 
-    additions = sum(int(f['additions']) for f in changes.get('changes', []))
-    deletions = sum(int(f['deletions']) for f in changes.get('changes', []))
-    reviewers = pr.get('reviewed_by', [])
+    additions = sum(int(f['added_lines']) for f in changes.get('changes', []))
+    deletions = sum(int(f['removed_lines']) for f in changes.get('changes', []))
+    reviewers = pr.get('merge_request_reviewer_list', [])
     reviewer_names = ', '.join([r['name'] for r in reviewers]) if reviewers else ""
 
     return [
@@ -207,7 +207,7 @@ def main():
             elif 'gitlab' in link:
                 row = process_gitlab(link, config)
             elif 'codehub-y' in link:
-                row = process_codehub-y(link, config)
+                row = process_codehub(link, config)
             elif 'open.codehub' in link:
                 row = process_opencodehub(link, config)
             elif 'gerrit' in link or 'mgit' in link:
