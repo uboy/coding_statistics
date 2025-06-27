@@ -207,7 +207,7 @@ def main():
             elif 'gitlab' in link:
                 row = process_gitlab(link, config)
             elif 'codehub-y' in link:
-                row = process_codehub-y(link, config)
+                row = process_codehub(link, config)
             elif 'open.codehub' in link:
                 row = process_opencodehub(link, config)
             elif 'gerrit' in link or 'mgit' in link:
