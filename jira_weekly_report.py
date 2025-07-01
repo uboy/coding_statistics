@@ -179,6 +179,40 @@ def fetch_jira_data(jira, project, start_date, end_date):
     return pd.DataFrame(data)
 
 
+def fill_missing_weeks(data, valid_weeks, required_assignees):
+    """
+    Добавляет фиктивные строки в датафрейм для каждого assignee и недели, если у него нет активности.
+    """
+    existing_keys = set(zip(data["Assignee"], data["Week"]))
+    filler_rows = []
+
+    for assignee in required_assignees:
+        for week in valid_weeks:
+            if (assignee, week) not in existing_keys:
+                year, week_num = map(int, week.split("-W"))
+                week_start = pd.Timestamp.fromisocalendar(year, week_num, 1)
+                resolution_date = week_start.strftime("%Y-%m-%d")
+
+                filler_rows.append({
+                    "Issue_key": "",
+                    "Summary": "",
+                    "Assignee": assignee,
+                    "Status": "",
+                    "Resolution_Date": resolution_date,
+                    "Week": week,
+                    "Epic_Link": "",
+                    "Epic_Name": "",
+                    "Parent_Key": "",
+                    "Parent_Summary": "",
+                    "Type": ""
+                })
+
+    if filler_rows:
+        data = pd.concat([data, pd.DataFrame(filler_rows)], ignore_index=True)
+
+    return data
+
+
 def generate_epic_report(data):
     """
     Generate a summary of resolved tasks grouped by epics.
@@ -453,7 +487,7 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
     print(f"Word report successfully created: {output_file}")
 
 
-def generate_report(data, start_date, end_date, project, jira_url, include_empty_weeks):
+def generate_report(data, start_date, end_date, project, jira_url, include_empty_weeks, member_list_file=None):
     """
     Generate both Excel and Word reports for the specified data.
     """
@@ -463,18 +497,25 @@ def generate_report(data, start_date, end_date, project, jira_url, include_empty
     start_monday = start_date - timedelta(days=start_date.weekday())
 
     valid_weeks = pd.date_range(start=start_monday, end=end_date, freq='W-MON').strftime("%G-W%V").tolist()
-    data = data[data["Week"].isin(valid_weeks)]
-    headers = generate_week_headers(valid_weeks, data)
 
     # Update the data to include only valid weeks
     data = data[data["Week"].isin(valid_weeks)]
 
+    if include_empty_weeks:
+        if member_list_file:
+            required_assignees = read_member_list(member_list_file)
+        else:
+            required_assignees = data["Assignee"].unique().tolist()
+
+        data = fill_missing_weeks(data, valid_weeks, required_assignees)
+
+    headers = generate_week_headers(valid_weeks, data)
     # Generate epic report data
     epic_summary = generate_epic_report(data)
 
     file_suffix = generate_file_suffix()
     generate_excel_report(data, start_date, end_date, project, headers, file_suffix)
-    generate_word_report(data, start_date, end_date, project, headers, file_suffix, jira_url, epic_summary)
+    generate_word_report(data, start_date, end_date, project, headers, file_suffix, jira_url, epic_summary, member_list_file)
 
 def main():
     """
@@ -484,11 +525,11 @@ def main():
     jira_options = {"verify": "bundle-ca"} if os.path.exists("bundle-ca") else True
     jira = JIRA(server=jira_url, basic_auth=(jira_username, jira_password), options=jira_options)
     data = fetch_jira_data(jira, project, start_date, end_date)
-    generate_report(data, start_date, end_date, project, jira_url, include_empty_weeks)
+    generate_report(data, start_date, end_date, project, jira_url, include_empty_weeks, member_list_file)
+
     #TODO:
     # 1. generate report only for members
     # 2. generate report using jql: worklogAuthor in (members) AND worklogDate >= 2025-03-01
-    # 3. if no worklog - vacation, holiday, sickleave
 
 if __name__ == "__main__":
     main()
