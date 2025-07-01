@@ -99,7 +99,7 @@ def fetch_jira_data(jira, project, start_date, end_date):
     # Fetch all issues updated during the specified period with pagination
     while True:
         jql_query = (
-            f"project = {project}"
+            f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}' AND resolution in (Resolved, done)"
             #f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}' AND updated <= '{end_date.strftime('%Y-%m-%d')}'"
         )
         issues = jira.search_issues(jql_query, startAt=start_at, maxResults=max_results, fields=[
