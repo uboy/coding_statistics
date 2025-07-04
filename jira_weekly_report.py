@@ -373,7 +373,7 @@ def generate_excel_report(data, start_date, end_date, project, headers, file_suf
 
     grouped_data.columns = headers
 
-    output_file = f"jira_report_{project}_{start_date}-{end_date}{file_suffix}.xlsx"
+    output_file = f"{file_suffix}.xlsx"
     grouped_data.to_excel(output_file)
     print(f"Excel report successfully created: {output_file}")
 
@@ -483,7 +483,7 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
     add_resolved_tasks_section(document, resolved_tasks)
 
     # Save the document
-    output_file = f"jira_report_{project}_{start_date}-{end_date}{file_suffix}.docx"
+    output_file = f"{file_suffix}.docx"
     document.save(output_file)
     print(f"Word report successfully created: {output_file}")
 
@@ -517,10 +517,11 @@ def generate_report(data, start_date, end_date, project, jira_url, include_empty
     team_metrics = calculate_team_performance(data, required_assignees)
 
     file_suffix = generate_file_suffix()
-    export_team_performance_to_excel(team_metrics, file_suffix)
-    add_team_performance_to_docx(file_suffix, team_metrics)
-    generate_excel_report(data, start_date, end_date, project, headers, file_suffix)
-    generate_word_report(data, start_date, end_date, project, headers, file_suffix, jira_url, epic_summary, member_list_file)
+    output_file = f"jira_report_{project}_{start_date}-{end_date}{file_suffix}.docx"
+    export_team_performance_to_excel(team_metrics, output_file)
+    add_team_performance_to_docx(team_metrics, output_file)
+    generate_excel_report(data, start_date, end_date, project, headers, output_file)
+    generate_word_report(data, start_date, end_date, project, headers, output_file, jira_url, epic_summary, member_list_file)
 
 def main():
     """

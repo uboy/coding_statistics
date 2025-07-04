@@ -51,15 +51,15 @@ def calculate_team_performance(data: pd.DataFrame, assignees: list[str]) -> pd.D
 
 
 def export_team_performance_to_excel(df: pd.DataFrame, output_file: str, sheet_name="Team Performance"):
-    with pd.ExcelWriter(output_file, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+    with pd.ExcelWriter(f"{output_file}.xlsx", engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
         df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
-def add_team_performance_to_docx(doc_path: str, df: pd.DataFrame):
+def add_team_performance_to_docx(df: pd.DataFrame, doc_path: str):
     from docx import Document
     from docx.shared import Pt
 
-    doc = Document(doc_path)
+    doc = Document(f"{doc_path}.docx")
     doc.add_page_break()
     doc.add_heading("Team Performance Ranking", level=1)
 
