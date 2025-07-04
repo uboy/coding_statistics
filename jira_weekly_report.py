@@ -12,6 +12,7 @@ import os
 #from docx.oxml.ns import qn
 #from docx.shared import Pt
 from openpyxl import load_workbook
+from team_performance import calculate_team_performance, export_team_performance_to_excel, add_team_performance_to_docx
 
 # Configuration constants
 CONFIG_FILE = "config.ini"
@@ -501,19 +502,23 @@ def generate_report(data, start_date, end_date, project, jira_url, include_empty
     # Update the data to include only valid weeks
     data = data[data["Week"].isin(valid_weeks)]
 
-    if include_empty_weeks:
-        if member_list_file:
-            required_assignees = read_member_list(member_list_file)
-        else:
-            required_assignees = data["Assignee"].unique().tolist()
+    if member_list_file:
+        required_assignees = read_member_list(member_list_file)
+    else:
+        required_assignees = data["Assignee"].unique().tolist()
 
+    if include_empty_weeks:
         data = fill_missing_weeks(data, valid_weeks, required_assignees)
 
     headers = generate_week_headers(valid_weeks, data)
     # Generate epic report data
     epic_summary = generate_epic_report(data)
+    # generate team performance
+    team_metrics = calculate_team_performance(data, required_assignees)
 
     file_suffix = generate_file_suffix()
+    export_team_performance_to_excel(team_metrics, file_suffix)
+    add_team_performance_to_docx(file_suffix, team_metrics)
     generate_excel_report(data, start_date, end_date, project, headers, file_suffix)
     generate_word_report(data, start_date, end_date, project, headers, file_suffix, jira_url, epic_summary, member_list_file)
 

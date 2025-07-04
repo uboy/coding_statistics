@@ -43,13 +43,14 @@ def parse_links(file_path):
 
 # ---------------------- Gitee ----------------------
 def process_gitee(url, config):
-    m = re.match(r"https://gitee.com/([^/]+)/([^/]+)/pulls/(\d+)", url)
-    if not m:
-        return None
-    owner, repo, pr_id = m.groups()
     base_url = config.get("gitee", "gitee-url")
     token = config.get("gitee", "token")
     session = init_session(token)
+    m = re.match(r"https://gitee.com/([^/]+)/([^/]+)/pulls/(\d+)", url)
+    if not m:
+        return None
+
+    owner, repo, pr_id = m.groups()
 
     api_url = f"{base_url}/api/v5/repos/{owner}/{repo}/pulls/{pr_id}"
     files_url = f"{api_url}/files"
@@ -69,13 +70,13 @@ def process_gitee(url, config):
 
 # ---------------------- GitLab ----------------------
 def process_gitlab(url, config):
+    base_url = config.get("gitlab", "gitlab-url")
+    token = config.get("gitlab", "token")
+    session = init_session(token)
     m = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", url.replace('#/', ''))
     if not m:
         return None
     domain, repo_path, mr_id = m.groups()
-    base_url = config.get("gitlab", "gitlab-url")
-    token = config.get("gitlab", "token")
-    session = init_session(token)
 
     encoded_path = urllib.parse.quote(repo_path, safe='')
     api_url = f"{base_url}/api/v4/projects/{encoded_path}/merge_requests/{mr_id}"
@@ -97,24 +98,38 @@ def process_gitlab(url, config):
 
 # ---------------------- CodeHub ----------------------
 def process_codehub(url, config):
-    m = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", url.replace('#/', ''))
-    if not m:
-        return None
-    domain, repo_path, mr_id = m.groups()
+    # check merge requests
     base_url = config.get("codehub", "codehub-url")
     token = config.get("codehub", "token")
     session = init_session(token)
+    m = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", url.replace('#/', ''))
+    if m:
+        domain, repo_path, mr_id = m.groups()
+        encoded_path = urllib.parse.quote(repo_path, safe='')
+        api_url = f"{base_url}/api/v4/projects/{encoded_path}/isource/merge_requests/{mr_id}"
+        changes_url = f"{base_url}/api/v4/projects/{encoded_path}/isource/merge_requests/{mr_id}/changes"
+        pr = session.get(api_url).json()
+        changes = session.get(changes_url).json()
 
-    encoded_path = urllib.parse.quote(repo_path, safe='')
-    api_url = f"{base_url}/api/v4/projects/{encoded_path}/isource/merge_requests/{mr_id}"
-    changes_url = f"{base_url}/api/v4/projects/{encoded_path}/isource/merge_requests/{mr_id}/changes"
-    pr = session.get(api_url).json()
-    changes = session.get(changes_url).json()
+        additions = sum(int(f['added_lines']) for f in changes.get('changes', []))
+        deletions = sum(int(f['removed_lines']) for f in changes.get('changes', []))
+        reviewers = pr.get('merge_request_reviewer_list', [])
+        reviewer_names = ', '.join([r['name'] for r in reviewers]) if reviewers else ""
+    # check commits
+    m = re.match(r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)", url.replace('#/', ''))
+    if m:
+        domain, repo_path, commit_id = m.groups()
+        encoded_path = urllib.parse.quote(repo_path, safe='')
+        api_url = f"{base_url}/api/v4/projects/{encoded_path}/repository/commits/{commit_id}"
+        commit = session.get(api_url).json()
 
-    additions = sum(int(f['added_lines']) for f in changes.get('changes', []))
-    deletions = sum(int(f['removed_lines']) for f in changes.get('changes', []))
-    reviewers = pr.get('merge_request_reviewer_list', [])
-    reviewer_names = ', '.join([r['name'] for r in reviewers]) if reviewers else ""
+        additions = sum(int(f['additions']) for f in commit.get('changes', []))
+        deletions = sum(int(f['deletions']) for f in commit.get('changes', []))
+        #reviewers = pr.get('merge_request_reviewer_list', [])
+        #reviewer_names = ', '.join([r['name'] for r in reviewers]) if reviewers else ""
+
+    if not m:
+        return None
 
     return [
         pr['author']['name'], pr['author']['username'], pr['title'], url,
