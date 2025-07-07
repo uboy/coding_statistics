@@ -46,14 +46,14 @@ def process_gitee_or_gitcode(url, config, platform):
     m_pr = re.match(r"https://(gitee\.com|gitcode\.net)/([^/]+)/([^/]+)/pulls/(\d+)", url)
     if m_pr:
         _, owner, repo, pr_id = m_pr.groups()
-    api_url = f"{base_url}/api/v5/repos/{owner}/{repo}/pulls/{pr_id}"
-    files_url = f"{api_url}/files"
-    pr = session.get(api_url).json()
-    files = session.get(files_url).json()
+        api_url = f"{base_url}/api/v5/repos/{owner}/{repo}/pulls/{pr_id}"
+        files_url = f"{api_url}/files"
+        pr = session.get(api_url).json()
+        files = session.get(files_url).json()
 
-    additions = sum(int(f['additions']) for f in files)
-    deletions = sum(int(f['deletions']) for f in files)
-    reviewers = ', '.join([r['login'] for r in pr.get('assignees', []) if r.get('accept', True)])
+        additions = sum(int(f['additions']) for f in files)
+        deletions = sum(int(f['deletions']) for f in files)
+        reviewers = ', '.join([r['login'] for r in pr.get('assignees', []) if r.get('accept', True)])
 
     return [
         pr['user']['name'], pr['user']['login'], pr['title'], url,
@@ -106,7 +106,7 @@ def process_gitlab(url, config):
 
 
 # ---------------------- CodeHub ----------------------
-def process_codehub_or_opencodehub(url, config, platform):
+def process_codehub(url, config, platform):
     base_url = config.get(platform, f"{platform}-url")
     token = config.get(platform, "token")
     session = init_session(token)
@@ -115,6 +115,12 @@ def process_codehub_or_opencodehub(url, config, platform):
         mr_match = re.match(r"https://([^/]+)/OpenSourceCenter_CR/([^/]+/[^/]+)/-/change_requests/(\d+)", url.replace('#/', ''))
         commit_match = re.match(r"https://([^/]+)/OpenSourceCenter_CR/([^/]+/[^/]+)/-/commit/([0-9A-Fa-f]+)", url.replace('#/', ''))
         project_prefix = "OpenSourceCenter_CR%2F"
+    elif platform == "codehub-y":
+        mr_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", url.replace('#/', ''))
+        commit_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)", url.replace('#/', ''))
+    elif platform == "cr-y.codehub":
+        mr_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/change_requests/(\d+)", url.replace('#/', ''))
+        commit_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)", url.replace('#/', ''))
     else:
         mr_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", url.replace('#/', ''))
         commit_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)", url.replace('#/', ''))
@@ -213,10 +219,14 @@ def main():
                 row = process_gitee_or_gitcode(link, config, 'gitcode')
             elif 'gitlab' in link:
                 row = process_gitlab(link, config)
-            elif 'codehub' in link:
-                row = process_codehub_or_opencodehub(link, config, 'codehub')
+            elif 'codehub-y' in link:
+                row = process_codehub(link, config, 'codehub-y')
+            elif 'cr-y.codehub' in link:
+                row = process_codehub(link, config, 'cr-y.codehub')
             elif 'open.codehub' in link:
-                row = process_codehub_or_opencodehub(link, config, 'opencodehub')
+                row = process_codehub(link, config, 'opencodehub')
+            elif 'codehub' in link:
+                row = process_codehub(link, config, 'codehub')
             elif 'gerrit' in link or 'mgit' in link:
                 row = process_gerrit(link, config)
             else:
