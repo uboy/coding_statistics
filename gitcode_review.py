@@ -87,8 +87,7 @@ def main():
 
     if base_url is None or token is None or member_list_file is None or branch_list is None:
         raise ValueError("url or token or file is invalid")
-    until = options.date_until or config.get(CONFIG_POINT_LOCAL, CONFIG_UNTIL,
-                                             fallback=None) or datetime.today().strftime('%Y-%m-%d')
+    until = options.date_until or config.get(CONFIG_POINT_LOCAL, CONFIG_UNTIL, fallback=None) or datetime.today().strftime('%Y-%m-%d')
     repositories = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY)
     print(
         f"Starting to prepare report from Gitee for branch: {branch_list}, repositories {repositories}, date since {since}, date until {until}")
@@ -106,13 +105,11 @@ def main():
     repo = repo_string[1]
 
     # Прогресс-бар для веток
-    for branch in tqdm(branches, desc=f"Processing Branches in {repositories}", position=0, leave=False,
-                       dynamic_ncols=True):
+    for branch in tqdm(branches, desc=f"Processing Branches in {repositories}", position=0, leave=False, dynamic_ncols=True):
         prs = get_all_prs(s, base_url, repo_owner, repo, branch, since)
 
         # Прогресс-бар для страниц (в get_all_prs)
-        with tqdm(total=len(prs), desc=f"Processing PRs in {branch}", position=2, leave=False,
-                  dynamic_ncols=True) as pbar:
+        with tqdm(total=len(prs), desc=f"Processing PRs in {branch}", position=2, leave=False, dynamic_ncols=True) as pbar:
             for c in prs:
                 user_name = c['user']['name']
                 user_login = c['user']['login']
@@ -122,8 +119,8 @@ def main():
                 pr_date = c['created_at']
                 pr_merged_date = c['merged_at']
                 description = c['body']
-                size = get_pr_size(s, base_url, repo_owner, repo, c['number'])
-                # size = [0,0]
+                #size = get_pr_size(s, base_url, repo_owner, repo, c['number'])
+                size = [c['added_lines'], c['removed_lines']]
                 reviewers = [item['login'] for item in c['assignees'] if item['accept']]
                 ### combining all data into array
                 project_report.append({
@@ -174,8 +171,7 @@ def get_all_prs(session, base_url, project_id, repository, branch, since):
     total_pages = int(initial_resp.headers.get('total_page', 1))  # Дефолтное значение - 1
 
     # Прогресс-бар для страниц
-    with tqdm(total=total_pages, desc=f"Processing Pages for {repository}/{branch}", position=1, leave=False,
-              dynamic_ncols=True) as pbar:
+    with tqdm(total=total_pages, desc=f"Processing Pages for {repository}/{branch}", position=1, leave=False, dynamic_ncols=True) as pbar:
         while next_page <= total_pages:
             url = url_format.format(base_url, project_id, repository, branch, since + "T00:00:00Z", PER_PAGE, next_page)
             resp = session.get(url)

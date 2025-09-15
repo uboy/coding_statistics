@@ -118,9 +118,11 @@ def process_codehub(url, config, platform):
     elif platform == "codehub-y":
         mr_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", url.replace('#/', ''))
         commit_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)", url.replace('#/', ''))
+        project_prefix = ""
     elif platform == "cr-y.codehub":
-        mr_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/change_requests/(\d+)", url.replace('#/', ''))
-        commit_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)", url.replace('#/', ''))
+        mr_match = re.match(r"https://([^/]+)/(.*)/-/change_requests/(\d+)", url.replace('#/', ''))
+        commit_match = re.match(r"https://([^/]+)/(.*)/files/commit/([0-9A-Fa-f]+)", url.replace('#/', ''))
+        project_prefix = ""
     else:
         mr_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", url.replace('#/', ''))
         commit_match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)", url.replace('#/', ''))

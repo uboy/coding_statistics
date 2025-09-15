@@ -34,6 +34,7 @@ GET_LIST_PR = '{}/api/v5/repos/{}/{}/pulls?base={}&state=all&since={}&per_page={
 #  see https://gitee.com/api/v5/swagger#/getV5ReposOwnerRepoPullsNumberFiles
 GET_PR_FILES = '{}/api/v5/repos/{}/{}/pulls/{}/files'
 
+
 def main():
     ### argument parsing section
     tool_description = 'Track commit by using Gitee API'
@@ -87,7 +88,8 @@ def main():
         raise ValueError("url or token or file is invalid")
     until = options.date_until or config.get(CONFIG_POINT_LOCAL, CONFIG_UNTIL, fallback=None) or datetime.today().strftime('%Y-%m-%d')
     repositories = config.get(CONFIG_POINT_LOCAL, CONFIG_REPOSITORY)
-    print(f"Starting to prepare report from Gitee for branch: {branch_list}, repositories {repositories}, date since {since}, date until {until}")
+    print(
+        f"Starting to prepare report from Gitee for branch: {branch_list}, repositories {repositories}, date since {since}, date until {until}")
     # member_list = read_member_list("members.xlsx") ### TODO add report for set members only
     s = requests.Session()
     s.headers = {'Private-Token': token}
@@ -144,7 +146,7 @@ def main():
                  ", repo " + repositories +
                  ", branch " + ", ".join(branch_list) ).replace("/","-")
 
-    create_csv_file(file_name, project_report)
+    #create_csv_file(file_name, project_report)
 
     # Create an Excel report file with headlines
     create_excel_file(file_name, project_report)  # Call the new function
@@ -200,6 +202,7 @@ def get_pr_files(session, base_url, project_id, repository, pr):
     url = url_format.format(base_url, project_id, repository, pr)
     resp = session.get(url)
     return resp.json()
+
 
 def get_pr_size(session, base_url, project_id, repository, pr):
     additions = 0
@@ -290,6 +293,7 @@ def create_excel_file(file_name, project_report):
     
     # Save the workbook
     wb.save(file_name)
+
 
 if __name__ == '__main__':
     sys.exit(main())  ### TODO check exit code

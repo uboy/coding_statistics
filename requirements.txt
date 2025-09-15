@@ -6,7 +6,7 @@ DateTime==5.5
 defusedxml==0.7.1
 et_xmlfile==2.0.0
 idna==3.10
-jira==3.8.0
+jira==3.10.5
 logging==0.4.9.6
 lxml==5.4.0
 numpy==2.2.6
