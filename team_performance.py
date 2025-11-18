@@ -3,9 +3,12 @@
 import pandas as pd
 from datetime import datetime
 import logging
+import re
 
-# Configure logging for debugging and warnings
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Configure logging only if not already configured
+logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 def calculate_team_performance(data: pd.DataFrame, assignees: list[str]) -> pd.DataFrame:
@@ -37,9 +40,36 @@ def calculate_team_performance(data: pd.DataFrame, assignees: list[str]) -> pd.D
         blocked_count = len(person_data[person_data["Summary"].str.contains("block", case=False, na=False)])
 
         # Calculate average resolution time in days
+        # Use Created_Date if available, otherwise fall back to approximation
         if not person_data["Resolution_Date"].empty:
-            duration = (person_data["Resolution_Date"].max() - person_data["Resolution_Date"].min()).days
-            avg_resolution_days = duration / len(person_data)
+            # Check if Created_Date column exists and has valid data
+            if "Created_Date" in person_data.columns:
+                person_data_with_dates = person_data[
+                    person_data["Resolution_Date"].notna() & 
+                    person_data["Created_Date"].notna() & 
+                    (person_data["Created_Date"] != "")
+                ]
+                if not person_data_with_dates.empty:
+                    # Calculate actual resolution time per task
+                    resolution_times = (
+                        pd.to_datetime(person_data_with_dates["Resolution_Date"]) - 
+                        pd.to_datetime(person_data_with_dates["Created_Date"])
+                    ).dt.days
+                    avg_resolution_days = resolution_times.mean()
+                else:
+                    # Fallback: use time span approximation
+                    if len(person_data) > 1:
+                        duration = (person_data["Resolution_Date"].max() - person_data["Resolution_Date"].min()).days
+                        avg_resolution_days = duration / len(person_data)
+                    else:
+                        avg_resolution_days = None
+            else:
+                # Fallback: use time span approximation if Created_Date not available
+                if len(person_data) > 1:
+                    duration = (person_data["Resolution_Date"].max() - person_data["Resolution_Date"].min()).days
+                    avg_resolution_days = duration / len(person_data)
+                else:
+                    avg_resolution_days = None
         else:
             avg_resolution_days = None
 
@@ -57,9 +87,10 @@ def calculate_team_performance(data: pd.DataFrame, assignees: list[str]) -> pd.D
     df = pd.DataFrame(metrics)
 
     # Calculate performance score with weighted metrics
+    # Bug fixes are now rewarded (positive) as they represent valuable work
     df["Score"] = (
             df["Resolved_Tasks"] * 2  # Reward task completion
-            - df["Bugs_Resolved"] * 1.5  # Penalize bug fixes
+            + df["Bugs_Resolved"] * 1.5  # Reward bug fixes (valuable work)
             - df["Blocked_Tasks"] * 1  # Penalize blocked tasks
             - df["Reopened_Tasks"] * 2  # Penalize reopened tasks
             - df["Avg_Resolution_Time"].fillna(0) * 0.5  # Penalize longer resolution times
@@ -79,7 +110,10 @@ def export_team_performance_to_excel(df: pd.DataFrame, output_file: str, sheet_n
         output_file (str): Path to the output Excel file.
         sheet_name (str): Name of the sheet to write to (default: "Team Performance").
     """
-    with pd.ExcelWriter(output_file, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+    import os
+    # Use append mode if file exists, otherwise create new file
+    file_mode = "a" if os.path.exists(output_file) else "w"
+    with pd.ExcelWriter(output_file, engine="openpyxl", mode=file_mode, if_sheet_exists="replace") as writer:
         df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
@@ -89,12 +123,14 @@ def add_team_performance_to_docx(df: pd.DataFrame, doc_path: str):
 
     Args:
         df (pd.DataFrame): DataFrame with team performance metrics.
-        doc_path (str): Path to the Word document.
+        doc_path (str): Path to the Word document (with or without .docx extension).
     """
     from docx import Document
     from docx.shared import Pt
 
-    doc_path = f"{doc_path}.docx"
+    # Ensure .docx extension is present
+    if not doc_path.endswith('.docx'):
+        doc_path = f"{doc_path}.docx"
     doc = Document(doc_path)
     doc.add_page_break()
     doc.add_heading("Team Performance Ranking", level=1)
@@ -146,9 +182,18 @@ def calculate_role_metrics(jira_df: pd.DataFrame, members_df: pd.DataFrame, pr_d
     if not all(col in members_df.columns for col in required_member_cols):
         raise ValueError(f"members.xlsx must contain columns: {required_member_cols}")
 
+    # Validate PR DataFrame columns only if it's not empty
     required_pr_cols = ["Login", "Additions", "Deletions", "Reviewers"]
-    if not pr_df.empty and not all(col in pr_df.columns for col in required_pr_cols):
-        raise ValueError(f"PR statistics file must contain columns: {required_pr_cols}")
+    if not pr_df.empty:
+        missing_cols = [col for col in required_pr_cols if col not in pr_df.columns]
+        if missing_cols:
+            # Create missing columns with default values instead of raising error
+            for col in missing_cols:
+                if col == "Reviewers":
+                    pr_df[col] = ""
+                else:
+                    pr_df[col] = 0
+            logger.warning(f"PR statistics file missing columns {missing_cols}, using default values")
 
     # Clean and preprocess input data
     members_df = members_df.copy()
@@ -162,7 +207,10 @@ def calculate_role_metrics(jira_df: pd.DataFrame, members_df: pd.DataFrame, pr_d
     jira_df["Priority"] = jira_df["Priority"].fillna("")
     jira_df["Creator"] = jira_df["Creator"].fillna("")
     jira_df["Links"] = jira_df["Links"].fillna("")  # Ensure Links column is available
-    pr_df["Reviewers"] = pr_df["Reviewers"].fillna("")
+    
+    # Safely handle Reviewers column in pr_df (already created if missing above, but ensure it's filled)
+    if not pr_df.empty and "Reviewers" in pr_df.columns:
+        pr_df["Reviewers"] = pr_df["Reviewers"].fillna("")
 
     # Filter for resolved tasks
     resolved = jira_df[jira_df["Status"] == "Resolved"].copy()
@@ -182,15 +230,24 @@ def calculate_role_metrics(jira_df: pd.DataFrame, members_df: pd.DataFrame, pr_d
             code_volume = person_prs[["Additions", "Deletions"]].sum().sum() if not person_prs.empty else 0
 
             # Calculate code quality: Count bugs linked to engineer's resolved tasks via "relates to"
-            bugs_on_tasks = len(jira_df[
-                                    (jira_df["Type"] == "Bug") &
-                                    (jira_df["Assignee"] != name) &
-                                    (jira_df["Links"].str.contains("relates to", case=False, na=False)) &
-                                    (jira_df["Links"].str.contains("|".join(person_data["Issue_key"]), case=False,
-                                                                   na=False))
-                                    ])
-            if bugs_on_tasks == 0:
-                logging.warning(f"No linked bugs found for engineer {name}")
+            # Escape issue keys to prevent regex interpretation
+            if not person_data.empty:
+                escaped_keys = [re.escape(key) for key in person_data["Issue_key"].unique() if key]
+                if escaped_keys:
+                    keys_pattern = "|".join(escaped_keys)
+                    bugs_on_tasks = len(jira_df[
+                                            (jira_df["Type"] == "Bug") &
+                                            (jira_df["Assignee"] != name) &
+                                            (jira_df["Links"].str.contains("relates to", case=False, na=False)) &
+                                            (jira_df["Links"].str.contains(keys_pattern, case=False, na=False, regex=True))
+                                            ])
+                else:
+                    bugs_on_tasks = 0
+            else:
+                bugs_on_tasks = 0
+            
+            if bugs_on_tasks == 0 and not person_data.empty:
+                logger.warning(f"No linked bugs found for engineer {name}")
 
             # Count documentation tasks
             doc_tasks = len(person_data[person_data["Labels"].str.contains("documentation", case=False, na=False)])
@@ -202,10 +259,13 @@ def calculate_role_metrics(jira_df: pd.DataFrame, members_df: pd.DataFrame, pr_d
                                 ])
 
             # Count PR reviews where the engineer is a reviewer but not the author
-            reviewers = len(pr_df[
-                                (pr_df["Login"] != gitee) &
-                                (pr_df["Reviewers"].str.contains(name, case=False, na=False))
-                                ])
+            if not pr_df.empty and "Reviewers" in pr_df.columns and "Login" in pr_df.columns:
+                reviewers = len(pr_df[
+                                    (pr_df["Login"] != gitee) &
+                                    (pr_df["Reviewers"].str.contains(name, case=False, na=False))
+                                    ])
+            else:
+                reviewers = 0
 
             results.append({
                 "Name": name,
@@ -220,10 +280,10 @@ def calculate_role_metrics(jira_df: pd.DataFrame, members_df: pd.DataFrame, pr_d
         elif role == "test engineer":
             # Count test scenarios: Resolved issues with testdev or test labels
             test_cases = len(person_data[
-                                 person_data["Labels"].str.contains("testdev|test", case=False, na=False)
+                                 person_data["Labels"].str.contains("testdev|test", case=False, na=False, regex=True)
                              ])
             if test_cases == 0:
-                logging.warning(f"No testdev or test labels found for test engineer {name}")
+                logger.warning(f"No testdev or test labels found for test engineer {name}")
 
             # Count bugs reported by the test engineer
             reported_bugs = len(jira_df[
@@ -233,10 +293,9 @@ def calculate_role_metrics(jira_df: pd.DataFrame, members_df: pd.DataFrame, pr_d
 
             # Count performance benchmark tasks
             benchmarks = len(person_data[
-                                 (person_data["Labels"].str.contains("testperf", case=False, na=False)) &
-                                 (person_data["Summary"].str.contains("benchmark|performance", case=False, na=False) |
-                                  person_data["Description"].str.contains("benchmark|performance", case=False,
-                                                                          na=False))
+                                 (person_data["Labels"].str.contains("testperf", case=False, na=False, regex=True)) &
+                                 (person_data["Summary"].str.contains("benchmark|performance", case=False, na=False, regex=True) |
+                                  person_data["Description"].str.contains("benchmark|performance", case=False, na=False, regex=True))
                                  ])
 
             results.append({
@@ -284,7 +343,10 @@ def export_role_metrics_to_excel(df: pd.DataFrame, team_avg: pd.Series, output_f
         team_avg (pd.Series): Series with team average metrics.
         output_file (str): Path to the output Excel file.
     """
-    with pd.ExcelWriter(output_file, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+    import os
+    # Use append mode if file exists, otherwise create new file
+    file_mode = "a" if os.path.exists(output_file) else "w"
+    with pd.ExcelWriter(output_file, engine="openpyxl", mode=file_mode, if_sheet_exists="replace") as writer:
         df.to_excel(writer, sheet_name="Role-Based Metrics", index=False)
 
         # Append team averages to the sheet
@@ -301,11 +363,14 @@ def add_role_metrics_to_docx(df: pd.DataFrame, team_avg: pd.Series, doc_path: st
     Args:
         df (pd.DataFrame): DataFrame with role-based metrics.
         team_avg (pd.Series): Series with team average metrics.
-        doc_path (str): Path to the Word document.
+        doc_path (str): Path to the Word document (with or without .docx extension).
     """
     from docx import Document
     from docx.shared import Pt
 
+    # Ensure .docx extension is present
+    if not doc_path.endswith('.docx'):
+        doc_path = f"{doc_path}.docx"
     doc = Document(doc_path)
     doc.add_page_break()
     doc.add_heading("Role-Based Team Metrics", level=1)

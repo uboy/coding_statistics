@@ -37,14 +37,21 @@ def parse_arguments_and_config():
     parser.add_argument("-proj", "--project", required=True, help="Jira project key (e.g., ABC).")
     parser.add_argument("--start-date", required=True, help="Start date in YYYY-MM-DD format.")
     parser.add_argument("--end-date", required=True, help="End date in YYYY-MM-DD format.")
-    parser.add_argument("--include-empty-weeks", type=bool, default=True, help="Include weeks with no activity for all assignees.")
+    parser.add_argument("--include-empty-weeks", action="store_true", default=True, help="Include weeks with no activity for all assignees.")
+    parser.add_argument("--exclude-empty-weeks", action="store_false", dest="include_empty_weeks", help="Exclude weeks with no activity.")
     parser.add_argument("--member-list-file", help="Path to Excel file with team member details.")
     parser.add_argument("--pr-stat-file", help="Path to Excel file with PR statistics.")
     args = parser.parse_args()
 
     # Load credentials from config file if not provided via arguments
     config = ConfigParser(allow_no_value=False, comment_prefixes=('#', ';'), inline_comment_prefixes='#')
-    config.read_file(codecs.open(args.config, 'r', encoding='utf-8-sig'))
+    try:
+        with codecs.open(args.config, 'r', encoding='utf-8-sig') as config_file:
+            config.read_file(config_file)
+    except FileNotFoundError:
+        # Config file is optional if all credentials are provided via CLI
+        if not (args.url and args.username and args.password):
+            raise FileNotFoundError(f"Config file '{args.config}' not found. Provide credentials via CLI arguments or ensure config file exists.")
 
     jira_url = args.url or config.get(CONFIG_SECTION, CONFIG_URL, fallback=None)
     jira_username = args.username or config.get(CONFIG_SECTION, CONFIG_USERNAME, fallback=None)
@@ -70,13 +77,23 @@ def read_member_list(member_list_file):
     Requirements:
         - Excel file must have a column 'E' with assignee names.
     """
-    wb = load_workbook(member_list_file)
-    sheet = wb.active
-    assignee_column = 'E'
+    if not os.path.exists(member_list_file):
+        raise FileNotFoundError(f"Member list file '{member_list_file}' not found.")
+    
+    try:
+        wb = load_workbook(member_list_file)
+        sheet = wb.active
+        assignee_column = 'E'
 
-    # Extract unique assignees from column 'E', skipping header
-    assignees = [sheet[f"{assignee_column}{row}"].value for row in range(2, sheet.max_row + 1) if sheet[f"{assignee_column}{row}"].value]
-    return list(set(assignees))
+        # Extract unique assignees from column 'E', skipping header
+        assignees = [sheet[f"{assignee_column}{row}"].value for row in range(2, sheet.max_row + 1) if sheet[f"{assignee_column}{row}"].value]
+        
+        if not assignees:
+            raise ValueError(f"No assignees found in column '{assignee_column}' of '{member_list_file}'. Ensure data starts from row 2.")
+        
+        return list(set(assignees))
+    except Exception as e:
+        raise ValueError(f"Error reading member list from '{member_list_file}': {e}")
 
 
 def get_all_worklogs(jira, issue_key):
@@ -140,7 +157,7 @@ def fetch_jira_data(jira, project, start_date, end_date):
             f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}' AND resolution in (Done, Resolved, Unresolved)"
         )
         issues = jira.search_issues(jql_query, startAt=start_at, maxResults=max_results, fields=[
-            "key", "summary", "assignee", "resolutiondate", "updated", "customfield_10000",
+            "key", "summary", "assignee", "resolutiondate", "updated", "created", "customfield_10000",
             "parent", "issuetype", "description", "labels", "priority", "creator", "issuelinks"
         ])
         all_issues.extend(issues)
@@ -148,12 +165,16 @@ def fetch_jira_data(jira, project, start_date, end_date):
             break
         start_at += max_results
 
-    # Fetch epic names for epic links
-    epic_keys = list({getattr(issue.fields, "customfield_10000", None) for issue in all_issues if getattr(issue.fields, "customfield_10000", None)})
+    # Fetch epic names for epic links (filter out None values)
+    epic_keys = [key for key in {getattr(issue.fields, "customfield_10000", None) for issue in all_issues} if key]
     epic_names = {}
     if epic_keys:
-        epics = jira.search_issues(f"issuekey in ({', '.join(epic_keys)})", maxResults=1000, fields=["key", "summary"])
-        epic_names = {epic.key: epic.fields.summary for epic in epics}
+        # Split into chunks if too many epics to avoid JQL length limits
+        chunk_size = 100
+        for i in range(0, len(epic_keys), chunk_size):
+            chunk = epic_keys[i:i + chunk_size]
+            epics = jira.search_issues(f"issuekey in ({', '.join(chunk)})", maxResults=chunk_size, fields=["key", "summary"])
+            epic_names.update({epic.key: epic.fields.summary for epic in epics})
 
     data = []
     for issue in all_issues:
@@ -162,6 +183,7 @@ def fetch_jira_data(jira, project, start_date, end_date):
         summary = issue.fields.summary
         assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
         resolved_date = issue.fields.resolutiondate
+        created_date = getattr(issue.fields, "created", None)
         epic_link = getattr(issue.fields, "customfield_10000", None)
         parent = getattr(issue.fields, "parent", None)
         parent_key = parent.key if parent else None
@@ -174,12 +196,56 @@ def fetch_jira_data(jira, project, start_date, end_date):
         creator = issue.fields.creator.displayName if issue.fields.creator else ""
 
         # Process issue links (e.g., "relates to:JIRA-123,blocks:JIRA-456")
-        links = ",".join(
-            [f"{link.get('type', {}).get('name', '')}:{link.get('outwardIssue', {}).get('key', '')}"
-             for link in issue.fields.issuelinks if "outwardIssue" in link] +
-            [f"{link.get('type', {}).get('name', '')}:{link.get('inwardIssue', {}).get('key', '')}"
-             for link in issue.fields.issuelinks if "inwardIssue" in link]
-        ) if hasattr(issue.fields, "issuelinks") else ""
+        # issuelinks is a list of IssueLink objects, not dictionaries
+        links_list = []
+        if hasattr(issue.fields, "issuelinks") and issue.fields.issuelinks:
+            try:
+                # Ensure issuelinks is iterable (handle both list and single object cases)
+                issuelinks = issue.fields.issuelinks
+                # Check if it's already a list/tuple, otherwise wrap it
+                if not isinstance(issuelinks, (list, tuple)):
+                    # If it's a single object, wrap it in a list
+                    if issuelinks is not None:
+                        issuelinks = [issuelinks]
+                    else:
+                        issuelinks = []
+                
+                for link in issuelinks:
+                    link_type_name = ""
+                    linked_key = ""
+                    
+                    # Get link type name
+                    if hasattr(link, 'type') and link.type:
+                        link_type_name = getattr(link.type, 'name', '') or getattr(link.type, 'inward', '') or getattr(link.type, 'outward', '')
+                    
+                    # Check for outward issue
+                    if hasattr(link, 'outwardIssue') and link.outwardIssue:
+                        linked_key = link.outwardIssue.key if hasattr(link.outwardIssue, 'key') else str(link.outwardIssue)
+                    # Check for inward issue
+                    elif hasattr(link, 'inwardIssue') and link.inwardIssue:
+                        linked_key = link.inwardIssue.key if hasattr(link.inwardIssue, 'key') else str(link.inwardIssue)
+                    
+                    if link_type_name and linked_key:
+                        links_list.append(f"{link_type_name}:{linked_key}")
+            except (AttributeError, TypeError) as e:
+                # Fallback: try to handle as dict if it's actually a dict
+                try:
+                    for link in issue.fields.issuelinks:
+                        if isinstance(link, dict):
+                            link_type_name = link.get('type', {}).get('name', '') if isinstance(link.get('type'), dict) else ''
+                            if 'outwardIssue' in link:
+                                linked_key = link['outwardIssue'].get('key', '') if isinstance(link['outwardIssue'], dict) else ''
+                            elif 'inwardIssue' in link:
+                                linked_key = link['inwardIssue'].get('key', '') if isinstance(link['inwardIssue'], dict) else ''
+                            else:
+                                continue
+                            if link_type_name and linked_key:
+                                links_list.append(f"{link_type_name}:{linked_key}")
+                except Exception:
+                    # If all else fails, skip links
+                    pass
+        
+        links = ",".join(links_list)
 
         # Fetch worklogs for the issue
         worklogs = get_all_worklogs(jira, key)
@@ -192,6 +258,11 @@ def fetch_jira_data(jira, project, start_date, end_date):
             except Exception:
                 continue
 
+        # Calculate created date for resolution time calculation
+        created_date_str = None
+        if created_date:
+            created_date_str = created_date.split("T")[0]
+        
         resolved_week = None
         if resolved_date:
             resolution_date = resolved_date.split("T")[0]
@@ -204,6 +275,7 @@ def fetch_jira_data(jira, project, start_date, end_date):
                     "Assignee": assignee,
                     "Status": "Resolved",
                     "Resolution_Date": resolution_date,
+                    "Created_Date": created_date_str,
                     "Week": resolved_week,
                     "Epic_Link": epic_link,
                     "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
@@ -218,15 +290,19 @@ def fetch_jira_data(jira, project, start_date, end_date):
                 })
 
         # Add worklog entries for in-progress tasks
+        # Use a set to track added (issue_key, week) combinations for O(1) lookup
+        added_combinations = {(d["Issue_key"], d["Week"]) for d in data}
         for log_date in worklog_dates:
             log_week = log_date.strftime("%G-W%V")
             if log_week != resolved_week:
-                if not any(d["Issue_key"] == key and d["Week"] == log_week for d in data):
+                if (key, log_week) not in added_combinations:
                     data.append({
                         "Issue_key": key,
                         "Summary": summary,
                         "Assignee": assignee,
                         "Status": "In progress",
+                        "Resolution_Date": "",
+                        "Created_Date": created_date_str,
                         "Week": log_week,
                         "Epic_Link": epic_link,
                         "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
@@ -239,6 +315,7 @@ def fetch_jira_data(jira, project, start_date, end_date):
                         "Creator": creator,
                         "Links": links
                     })
+                    added_combinations.add((key, log_week))
 
     return pd.DataFrame(data)
 
@@ -267,6 +344,8 @@ def fill_missing_weeks(data, valid_weeks, required_assignees):
                     "Summary": "",
                     "Assignee": assignee,
                     "Status": "",
+                    "Resolution_Date": "",
+                    "Created_Date": "",
                     "Week": week,
                     "Epic_Link": "",
                     "Epic_Name": "",
@@ -348,9 +427,11 @@ def add_hyperlink(paragraph, url, text, font_name="Calibri (Body)", font_size=10
     new_run.append(text_run)
     hyperlink.append(new_run)
     paragraph._p.append(hyperlink)
-    run = paragraph.runs[-1]
-    run.font.name = font_name
-    run.font.size = Pt(font_size)
+    # Only set font if runs exist
+    if paragraph.runs:
+        run = paragraph.runs[-1]
+        run.font.name = font_name
+        run.font.size = Pt(font_size)
 
 def set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10):
     """
@@ -365,19 +446,19 @@ def set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10):
         run.font.name = font_name
         run.font.size = Pt(font_size)
 
-def generate_excel_report(data, start_date, end_date, project, headers, file_suffix):
+def generate_excel_report(data, start_date, end_date, project, headers, base_filename):
     """
     Generate an Excel report with tasks organized by week and assignee.
 
     Args:
         data (pd.DataFrame): Jira data.
-        start_date (datetime.date): Report start date.
-        end_date (datetime.date): Report end date.
+        start_date (str): Report start date (YYYY-MM-DD).
+        end_date (str): Report end date (YYYY-MM-DD).
         project (str): Jira project key.
         headers (list): List of week headers.
-        file_suffix (str): Suffix for output file name.
+        base_filename (str): Base filename without extension.
     """
-    output_file = f"jira_report_{project}_{start_date}-{end_date}{file_suffix}.xlsx"
+    output_file = f"{base_filename}.xlsx"
     data.to_excel(output_file, index=False)
     print(f"Excel report successfully created: {output_file}")
 
@@ -415,7 +496,7 @@ def add_resolved_tasks_section(document, resolved_tasks):
             for _, subtask in subtasks.iterrows():
                 document.add_paragraph(f"{subtask['Issue_key']}: {subtask['Summary']}", style="List Bullet 3")
 
-def generate_word_report(data, start_date, end_date, project, headers, file_suffix, jira_url, epic_summary, member_list_file=None):
+def generate_word_report(data, start_date, end_date, project, headers, base_filename, jira_url, epic_summary, member_list_file=None):
     """
     Generate a Word report with tabular view, list view, epic progress, and resolved tasks.
 
@@ -425,7 +506,7 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
         end_date (str): Report end date (YYYY-MM-DD).
         project (str): Jira project key.
         headers (list): List of week headers.
-        file_suffix (str): Suffix for output file name.
+        base_filename (str): Base filename without extension.
         jira_url (str): Jira base URL for hyperlinks.
         epic_summary (list): Epic summary data.
         member_list_file (str, optional): Path to member list Excel file.
@@ -450,9 +531,9 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
     table = document.add_table(rows=1, cols=6)
     table.style = 'Table Grid'
 
-    # Add headers
-    headers = ["Name", "Week #", "Date", "Description", "Link", "Status"]
-    for col_idx, header in enumerate(headers):
+    # Add headers (use different variable name to avoid shadowing function parameter)
+    table_headers = ["Name", "Week #", "Date", "Description", "Link", "Status"]
+    for col_idx, header in enumerate(table_headers):
         table.cell(0, col_idx).text = header
 
     # Add data rows, ensuring all required assignees are included
@@ -480,7 +561,11 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
                 row_cells[1].text = row["Week"]
                 row_cells[2].text = week_range
                 row_cells[3].text = row["Summary"]
-                add_hyperlink(row_cells[4].paragraphs[0], f"{jira_url}/browse/{row['Issue_key']}", f"{row['Issue_key']}", font_size=8)
+                # Only add hyperlink if Issue_key is not empty
+                if row["Issue_key"]:
+                    add_hyperlink(row_cells[4].paragraphs[0], f"{jira_url}/browse/{row['Issue_key']}", f"{row['Issue_key']}", font_size=8)
+                else:
+                    row_cells[4].text = ""
                 row_cells[5].text = row["Status"]
         for row in table.rows:
             for cell in row.cells:
@@ -525,7 +610,7 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
     add_resolved_tasks_section(document, resolved_data)
 
     # Save the Word document
-    output_file = f"{file_suffix}.docx"
+    output_file = f"{base_filename}.docx"
     document.save(output_file)
     print(f"Word report successfully created: {output_file}")
 
@@ -546,9 +631,10 @@ def generate_report(data, start_date, end_date, project, jira_url, include_empty
     """
     from team_performance import calculate_role_metrics, export_role_metrics_to_excel, add_role_metrics_to_docx
 
-    start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-    start_monday = start_date - timedelta(days=start_date.weekday())
-    valid_weeks = pd.date_range(start=start_monday, end=end_date, freq='W-MON').strftime("%G-W%V").tolist()
+    start_date_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_date_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+    start_monday = start_date_dt - timedelta(days=start_date_dt.weekday())
+    valid_weeks = pd.date_range(start=start_monday, end=end_date_dt, freq='W-MON').strftime("%G-W%V").tolist()
 
     # Filter data to include only valid weeks
     data = data[data["Week"].isin(valid_weeks)]
@@ -567,9 +653,11 @@ def generate_report(data, start_date, end_date, project, jira_url, include_empty
     # generate team performance
     team_metrics = calculate_team_performance(data, required_assignees)
 
-    start_date = start_date.strftime("%Y-%m-%d")
+    start_date_str = start_date_dt.strftime("%Y-%m-%d")
     file_suffix = generate_file_suffix()
-    output_file = f"jira_report_{project}_{start_date}-{end_date}{file_suffix}.docx"
+    base_filename = f"jira_report_{project}_{start_date_str}-{end_date}{file_suffix}"
+    output_file_docx = f"{base_filename}.docx"
+    output_file_xlsx = f"{base_filename}.xlsx"
 
     if pr_stat_file:
         pr_stats_df = pd.read_excel(pr_stat_file)
@@ -582,13 +670,13 @@ def generate_report(data, start_date, end_date, project, jira_url, include_empty
         required_members = pd.DataFrame(columns=["name", "role", "gitee_account"])
 
     role_metrics_df, team_avg = calculate_role_metrics(data, required_members, pr_stats_df)
-    export_role_metrics_to_excel(role_metrics_df, team_avg, output_file)
-    add_role_metrics_to_docx(role_metrics_df, team_avg, output_file)
+    export_role_metrics_to_excel(role_metrics_df, team_avg, output_file_xlsx)
+    add_role_metrics_to_docx(role_metrics_df, team_avg, output_file_docx)
 
-    generate_excel_report(data, start_date, end_date, project, headers, output_file)
-    generate_word_report(data, start_date, end_date, project, headers, output_file, jira_url, epic_summary, member_list_file)
-    export_team_performance_to_excel(team_metrics, output_file)
-    add_team_performance_to_docx(team_metrics, output_file)
+    generate_excel_report(data, start_date_str, end_date, project, headers, base_filename)
+    generate_word_report(data, start_date_str, end_date, project, headers, base_filename, jira_url, epic_summary, member_list_file)
+    export_team_performance_to_excel(team_metrics, output_file_xlsx)
+    add_team_performance_to_docx(team_metrics, output_file_docx)
 
 
 def generate_file_suffix():
