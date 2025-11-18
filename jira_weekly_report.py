@@ -570,8 +570,6 @@ def generate_report(data, start_date, end_date, project, jira_url, include_empty
     start_date = start_date.strftime("%Y-%m-%d")
     file_suffix = generate_file_suffix()
     output_file = f"jira_report_{project}_{start_date}-{end_date}{file_suffix}.docx"
-    export_team_performance_to_excel(team_metrics, output_file)
-    add_team_performance_to_docx(team_metrics, output_file)
 
     if pr_stat_file:
         pr_stats_df = pd.read_excel(pr_stat_file)
@@ -589,6 +587,9 @@ def generate_report(data, start_date, end_date, project, jira_url, include_empty
 
     generate_excel_report(data, start_date, end_date, project, headers, output_file)
     generate_word_report(data, start_date, end_date, project, headers, output_file, jira_url, epic_summary, member_list_file)
+    export_team_performance_to_excel(team_metrics, output_file)
+    add_team_performance_to_docx(team_metrics, output_file)
+
 
 def generate_file_suffix():
     """

@@ -94,6 +94,7 @@ def add_team_performance_to_docx(df: pd.DataFrame, doc_path: str):
     from docx import Document
     from docx.shared import Pt
 
+    doc_path = f"{doc_path}.docx"
     doc = Document(doc_path)
     doc.add_page_break()
     doc.add_heading("Team Performance Ranking", level=1)
