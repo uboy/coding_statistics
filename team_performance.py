@@ -113,8 +113,12 @@ def export_team_performance_to_excel(df: pd.DataFrame, output_file: str, sheet_n
     import os
     # Use append mode if file exists, otherwise create new file
     file_mode = "a" if os.path.exists(output_file) else "w"
-    with pd.ExcelWriter(output_file, engine="openpyxl", mode=file_mode, if_sheet_exists="replace") as writer:
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
+    if file_mode == "a":
+        with pd.ExcelWriter(output_file, engine="openpyxl", mode=file_mode, if_sheet_exists="replace") as writer:
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+    else:
+        with pd.ExcelWriter(output_file, engine="openpyxl", mode=file_mode) as writer:
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
 def add_team_performance_to_docx(df: pd.DataFrame, doc_path: str):
@@ -125,13 +129,19 @@ def add_team_performance_to_docx(df: pd.DataFrame, doc_path: str):
         df (pd.DataFrame): DataFrame with team performance metrics.
         doc_path (str): Path to the Word document (with or without .docx extension).
     """
+    import os
     from docx import Document
     from docx.shared import Pt
 
     # Ensure .docx extension is present
     if not doc_path.endswith('.docx'):
         doc_path = f"{doc_path}.docx"
-    doc = Document(doc_path)
+    
+    # Create new document if file doesn't exist, otherwise open existing
+    if os.path.exists(doc_path):
+        doc = Document(doc_path)
+    else:
+        doc = Document()
     doc.add_page_break()
     doc.add_heading("Team Performance Ranking", level=1)
 
@@ -346,14 +356,24 @@ def export_role_metrics_to_excel(df: pd.DataFrame, team_avg: pd.Series, output_f
     import os
     # Use append mode if file exists, otherwise create new file
     file_mode = "a" if os.path.exists(output_file) else "w"
-    with pd.ExcelWriter(output_file, engine="openpyxl", mode=file_mode, if_sheet_exists="replace") as writer:
-        df.to_excel(writer, sheet_name="Role-Based Metrics", index=False)
+    if file_mode == "a":
+        with pd.ExcelWriter(output_file, engine="openpyxl", mode=file_mode, if_sheet_exists="replace") as writer:
+            df.to_excel(writer, sheet_name="Role-Based Metrics", index=False)
 
-        # Append team averages to the sheet
-        avg_row = pd.DataFrame([team_avg], columns=team_avg.index)
-        avg_row.insert(0, "Name", "Team Average")
-        avg_row.insert(1, "Role", "-")
-        avg_row.to_excel(writer, sheet_name="Role-Based Metrics", index=False, header=False, startrow=len(df) + 2)
+            # Append team averages to the sheet
+            avg_row = pd.DataFrame([team_avg], columns=team_avg.index)
+            avg_row.insert(0, "Name", "Team Average")
+            avg_row.insert(1, "Role", "-")
+            avg_row.to_excel(writer, sheet_name="Role-Based Metrics", index=False, header=False, startrow=len(df) + 2)
+    else:
+        with pd.ExcelWriter(output_file, engine="openpyxl", mode=file_mode) as writer:
+            df.to_excel(writer, sheet_name="Role-Based Metrics", index=False)
+
+            # Append team averages to the sheet
+            avg_row = pd.DataFrame([team_avg], columns=team_avg.index)
+            avg_row.insert(0, "Name", "Team Average")
+            avg_row.insert(1, "Role", "-")
+            avg_row.to_excel(writer, sheet_name="Role-Based Metrics", index=False, header=False, startrow=len(df) + 2)
 
 
 def add_role_metrics_to_docx(df: pd.DataFrame, team_avg: pd.Series, doc_path: str):
@@ -365,13 +385,19 @@ def add_role_metrics_to_docx(df: pd.DataFrame, team_avg: pd.Series, doc_path: st
         team_avg (pd.Series): Series with team average metrics.
         doc_path (str): Path to the Word document (with or without .docx extension).
     """
+    import os
     from docx import Document
     from docx.shared import Pt
 
     # Ensure .docx extension is present
     if not doc_path.endswith('.docx'):
         doc_path = f"{doc_path}.docx"
-    doc = Document(doc_path)
+    
+    # Create new document if file doesn't exist, otherwise open existing
+    if os.path.exists(doc_path):
+        doc = Document(doc_path)
+    else:
+        doc = Document()
     doc.add_page_break()
     doc.add_heading("Role-Based Team Metrics", level=1)
 
@@ -386,14 +412,28 @@ def add_role_metrics_to_docx(df: pd.DataFrame, team_avg: pd.Series, doc_path: st
     for _, row in df.iterrows():
         cells = table.add_row().cells
         for i, val in enumerate(row):
-            cells[i].text = str(val) if pd.notnull(val) else ""
+            if i < len(cells):
+                cells[i].text = str(val) if pd.notnull(val) else ""
 
     # Add team average row
     avg_cells = table.add_row().cells
-    avg_cells[0].text = "Team Average"
-    avg_cells[1].text = "-"
-    for i, val in enumerate(team_avg.items(), start=2):
-        avg_cells[i].text = f"{val[1]:.2f}" if pd.notnull(val[1]) else ""
+    # Ensure we have enough cells and match columns correctly
+    num_cols = len(df.columns)
+    if len(avg_cells) >= num_cols:
+        # First two columns are typically "Name" and "Role"
+        if num_cols > 0:
+            avg_cells[0].text = "Team Average"
+        if num_cols > 1:
+            avg_cells[1].text = "-"
+        
+        # Map team_avg values to corresponding columns (skip Name and Role)
+        team_avg_dict = team_avg.to_dict()
+        col_idx = 2
+        for col_name in df.columns[2:]:  # Skip first two columns (Name, Role)
+            if col_idx < len(avg_cells) and col_name in team_avg_dict:
+                value = team_avg_dict[col_name]
+                avg_cells[col_idx].text = f"{value:.2f}" if pd.notnull(value) else ""
+            col_idx += 1
 
     # Set font size for table content
     for row in table.rows:
