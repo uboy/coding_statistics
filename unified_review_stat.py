@@ -21,6 +21,7 @@ from time import sleep
 CONFIG_FILE = "config.ini"
 OUTPUT_FILE = "review_summary.xlsx"
 INPUT_FILE = "input.txt"
+CACHE_FILE = "cache.json"
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # секунды
 
@@ -60,6 +61,24 @@ def init_session(token: Optional[str] = None) -> requests.Session:
         s.headers = {"Private-Token": token}
     s.verify = 'bundle-ca' if os.path.exists("bundle-ca") else True
     return s
+
+
+def load_cache() -> Dict[str, List]:
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки кэша {CACHE_FILE}: {e}")
+    return {}
+
+def save_cache(cache: Dict[str, List]) -> None:
+    try:
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False, indent=4)
+        logger.info(f"✓ Кэш сохранён в {CACHE_FILE}")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения кэша {CACHE_FILE}: {e}")
 
 
 def make_api_request(session: requests.Session, url: str,
@@ -184,7 +203,7 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser,
         ]
 
     # Проверка коммита
-    m_commit = re.match(r"https://(gitee\.com|gitcode\.net|gitcode\.com)/([^/]+)/([^/]+)/commit/([0-9a-fA-F]+)", url)
+    m_commit = re.match(r"https://(gitee\.com|gitcode\.net|gitcode\.com|openharmony\.gitee\.com)/([^/]+)/([^/]+)/commit/([0-9a-fA-F]+)", url)
     if m_commit:
         _, owner, repo, sha = m_commit.groups()
         commit_url = f"{base_url}/api/v5/repos/{owner}/{repo}/commits/{sha}"
@@ -303,13 +322,13 @@ def process_codehub(url: str, config: ConfigParser, platform: str) -> Optional[L
             "mr": r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)",
             "commit": r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)",
             "prefix": "",
-            "mr_changes_api": "isource/merge_requests"
+            "mr_changes_api": "merge_requests"
         },
         "codehub": {
             "mr": r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)",
             "commit": r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)",
             "prefix": "",
-            "mr_changes_api": "merge_requests"
+            "mr_changes_api": "isource/merge_requests"
         }
     }
 
@@ -488,12 +507,20 @@ def main():
     config = load_config()
     links = parse_links(INPUT_FILE)
 
+    cache = load_cache()
+
     results = []
     processed = 0
     failed = 0
 
     for idx, link in enumerate(links, 1):
         logger.info(f"[{idx}/{len(links)}] Обработка: {link}")
+
+        if link in cache:
+            logger.info("  ✓ Данные взяты из кэша")
+            results.append(cache[link])
+            processed += 1
+            continue
 
         try:
             row = None
@@ -521,6 +548,8 @@ def main():
 
             if row:
                 results.append(row)
+                cache[link] = row
+                save_cache(cache)  # Сохраняем кэш после каждого успешного запроса
                 processed += 1
                 logger.info(f"  ✓ Успешно обработано")
             else:
