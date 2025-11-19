@@ -149,7 +149,7 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser,
     session = init_session(token)
 
     # Проверка PR
-    m_pr = re.match(r"https://(gitee\.com|gitcode\.net|gitcode\.com)/([^/]+)/([^/]+)/pull(s)?/(\d+)", url)
+    m_pr = re.match(r"https://(gitee\.com|gitcode\.net|gitcode\.com)/([^/]+)/([^/]+)/pulls?/(\d+)", url)
     if m_pr:
         _, owner, repo, pr_id = m_pr.groups()
         api_url = f"{base_url}/api/v5/repos/{owner}/{repo}/pulls/{pr_id}"
@@ -284,22 +284,32 @@ def process_codehub(url: str, config: ConfigParser, platform: str) -> Optional[L
         "opencodehub": {
             "mr": r"https://([^/]+)/OpenSourceCenter_CR/([^/]+/[^/]+)/-/change_requests/(\d+)",
             "commit": r"https://([^/]+)/OpenSourceCenter_CR/([^/]+/[^/]+)/-/commit/([0-9A-Fa-f]+)",
-            "prefix": "OpenSourceCenter_CR%2F"
+            "prefix": "OpenSourceCenter_CR%2F",
+            "mr_changes_api": "isource/merge_requests"
         },
         "codehub-y": {
             "mr": r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)",
             "commit": r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)",
-            "prefix": ""
+            "prefix": "",
+            "mr_changes_api": "isource/merge_requests"
         },
         "cr-y.codehub": {
             "mr": r"https://([^/]+)/(.*)/-/change_requests/(\d+)",
             "commit": r"https://([^/]+)/(.*)/files/commit/([0-9A-Fa-f]+)",
-            "prefix": ""
+            "prefix": "",
+            "mr_changes_api": "isource/merge_requests"
+        },
+        "open.codehub": {
+            "mr": r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)",
+            "commit": r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)",
+            "prefix": "",
+            "mr_changes_api": "isource/merge_requests"
         },
         "codehub": {
             "mr": r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)",
             "commit": r"https://([^/]+)/([^/]+/[^/]+)/files/commit/([0-9A-Fa-f]+)",
-            "prefix": ""
+            "prefix": "",
+            "mr_changes_api": "merge_requests"
         }
     }
 
@@ -311,7 +321,8 @@ def process_codehub(url: str, config: ConfigParser, platform: str) -> Optional[L
     if mr_match:
         domain, repo_path, mr_id = mr_match.groups()
         encoded_path = urllib.parse.quote(repo_path, safe='')
-        api_url = f"{base_url}/api/v4/projects/{project_prefix}{encoded_path}/isource/merge_requests/{mr_id}"
+        mr_changes_api = pattern_config["mr_changes_api"]
+        api_url = f"{base_url}/api/v4/projects/{project_prefix}{encoded_path}/{mr_changes_api}/{mr_id}"
         changes_url = f"{api_url}/changes"
 
         pr = make_api_request(session, api_url)
