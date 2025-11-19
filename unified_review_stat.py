@@ -149,7 +149,7 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser,
     session = init_session(token)
 
     # Проверка PR
-    m_pr = re.match(r"https://(gitee\.com|gitcode\.net|gitcode\.com)/([^/]+)/([^/]+)/pulls?/(\d+)", url)
+    m_pr = re.match(r"https://(gitee\.com|gitcode\.(?:net|com))/([^/]+)/([^/]+)/(?:pulls?|merge_requests)/(\d+)", url)
     if m_pr:
         _, owner, repo, pr_id = m_pr.groups()
         api_url = f"{base_url}/api/v5/repos/{owner}/{repo}/pulls/{pr_id}"
