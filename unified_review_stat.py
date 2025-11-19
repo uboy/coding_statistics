@@ -168,7 +168,7 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser,
     session = init_session(token)
 
     # Проверка PR
-    m_pr = re.match(r"https://(gitee\.com|gitcode\.(?:net|com))/([^/]+)/([^/]+)/(?:pulls?|merge_requests)/(\d+)", url)
+    m_pr = re.match(r"https://(gitee\.com|gitcode\.(?:net|com)|openharmony\.gitee\.com)/([^/]+)/([^/]+)/(?:pulls?|merge_requests)/(\d+)", url)
     if m_pr:
         _, owner, repo, pr_id = m_pr.groups()
         api_url = f"{base_url}/api/v5/repos/{owner}/{repo}/pulls/{pr_id}"
@@ -203,7 +203,7 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser,
         ]
 
     # Проверка коммита
-    m_commit = re.match(r"https://(gitee\.com|gitcode\.net|gitcode\.com|openharmony\.gitee\.com)/([^/]+)/([^/]+)/commit/([0-9a-fA-F]+)", url)
+    m_commit = re.match(r"https://(gitee\.com|gitcode\.(?:net|com)|openharmony\.gitee\.com)/([^/]+)/([^/]+)/commit/([0-9a-fA-F]+)", url)
     if m_commit:
         _, owner, repo, sha = m_commit.groups()
         commit_url = f"{base_url}/api/v5/repos/{owner}/{repo}/commits/{sha}"
