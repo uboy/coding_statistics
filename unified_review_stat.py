@@ -342,18 +342,18 @@ def process_codehub(url: str, config: ConfigParser, platform: str) -> Optional[L
         encoded_path = urllib.parse.quote(repo_path, safe='')
         mr_changes_api = pattern_config["mr_changes_api"]
         api_url = f"{base_url}/api/v4/projects/{project_prefix}{encoded_path}/{mr_changes_api}/{mr_id}"
-        changes_url = f"{api_url}/changes"
+#        changes_url = f"{api_url}/changes"
 
         pr = make_api_request(session, api_url)
         if not pr:
             return None
 
-        changes = make_api_request(session, changes_url)
-        if not changes:
-            changes = {}
+#        changes = make_api_request(session, changes_url)
+#        if not changes:
+#            changes = {}
 
-        additions = sum(int(f.get('added_lines', 0)) for f in changes.get('changes', []))
-        deletions = sum(int(f.get('removed_lines', 0)) for f in changes.get('changes', []))
+        additions = pr.get('added_lines', 0)
+        deletions = pr.get('removed_lines', 0)
         reviewers = pr.get('merge_request_reviewer_list', [])
         reviewer_names = ', '.join([r['name'] for r in reviewers]) if reviewers else ""
 

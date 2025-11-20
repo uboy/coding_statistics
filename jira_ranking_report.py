@@ -23,6 +23,8 @@ CONFIG_URL = "jira-url"
 CONFIG_USERNAME = "username"
 CONFIG_PASSWORD = "password"
 
+RESOLVED_STATUSES = set(['Done', 'Resolved', 'Closed'])
+
 
 def parse_arguments_and_config():
     """Parse command-line arguments and configuration file."""
@@ -100,12 +102,31 @@ def extract_urls_from_text(text):
     return re.findall(url_pattern, text)
 
 
+# --- New helper: извлечение чисел по паттернам из текста комментариев
+def sum_numbers_by_patterns(text, patterns):
+    """
+    Суммирует все целые числа, найденные в текстe по списку регэксп-паттернов (группирующие).
+    patterns - список регулярных выражений с одной захватывающей группой для числа.
+    Возвращает сумму (int).
+    """
+    if not text:
+        return 0
+    total = 0
+    for pat in patterns:
+        for m in re.finditer(pat, text, flags=re.IGNORECASE):
+            try:
+                total += int(m.group(1))
+            except Exception:
+                continue
+    return total
+
+
 def fetch_jira_data(jira, jql_query):
     """
     Fetch Jira issues with all details including comments.
 
     Returns:
-        list: List of dictionaries with issue details
+        tuple: (issues_df, links_df)
     """
     start_at = 0
     max_results = 100
@@ -142,20 +163,32 @@ def fetch_jira_data(jira, jql_query):
     for issue in all_issues:
         # Basic fields
         key = issue.key
-        summary = issue.fields.summary
-        assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
-        assignee_name = issue.fields.assignee.name if issue.fields.assignee else ""
-        reporter = issue.fields.reporter.displayName if issue.fields.reporter else ""
-        reporter_name = issue.fields.reporter.name if issue.fields.reporter else ""
+        summary = getattr(issue.fields, 'summary', '') or ''
+        assignee = issue.fields.assignee.displayName if getattr(issue.fields, 'assignee', None) else "Unassigned"
+        # username fields may differ between on-prem/cloud. try to fetch stable value with fallback
+        assignee_name = ''
+        reporter_name = ''
+        try:
+            assignee_name = issue.fields.assignee.name if getattr(issue.fields, 'assignee', None) and hasattr(issue.fields.assignee, 'name') else (
+                issue.fields.assignee.key if getattr(issue.fields, 'assignee', None) and hasattr(issue.fields.assignee, 'key') else '')
+        except Exception:
+            assignee_name = ''
+
+        reporter = issue.fields.reporter.displayName if getattr(issue.fields, 'reporter', None) else ''
+        try:
+            reporter_name = issue.fields.reporter.name if getattr(issue.fields, 'reporter', None) and hasattr(issue.fields.reporter, 'name') else (
+                issue.fields.reporter.key if getattr(issue.fields, 'reporter', None) and hasattr(issue.fields.reporter, 'key') else '')
+        except Exception:
+            reporter_name = ''
 
         # Dates
-        created = issue.fields.created[:10] if issue.fields.created else ""
-        resolved = issue.fields.resolutiondate[:10] if issue.fields.resolutiondate else ""
+        created = issue.fields.created[:10] if getattr(issue.fields, 'created', None) else ""
+        resolved = issue.fields.resolutiondate[:10] if getattr(issue.fields, 'resolutiondate', None) else ""
 
         # Time tracking (convert seconds to hours)
-        original_estimate = issue.fields.timeoriginalestimate / 3600 if issue.fields.timeoriginalestimate else 0
-        time_spent = issue.fields.timespent / 3600 if issue.fields.timespent else 0
-        remaining = issue.fields.timeestimate / 3600 if issue.fields.timeestimate else 0
+        original_estimate = (issue.fields.timeoriginalestimate or 0) / 3600 if getattr(issue.fields, 'timeoriginalestimate', None) else 0
+        time_spent = (issue.fields.timespent or 0) / 3600 if getattr(issue.fields, 'timespent', None) else 0
+        remaining = (issue.fields.timeestimate or 0) / 3600 if getattr(issue.fields, 'timeestimate', None) else 0
 
         # Description
         description = issue.fields.description or ""
@@ -171,12 +204,11 @@ def fetch_jira_data(jira, jql_query):
 
         # Comments
         comments = []
-        comment_links = []
-        if hasattr(issue.fields, 'comment') and issue.fields.comment.comments:
+        if getattr(issue.fields, 'comment', None) and getattr(issue.fields.comment, 'comments', None):
             for comment in issue.fields.comment.comments:
-                comment_text = comment.body
-                comment_author = comment.author.displayName if comment.author else "Unknown"
-                comment_created = comment.created[:10] if comment.created else ""
+                comment_text = comment.body or ''
+                comment_author = comment.author.displayName if getattr(comment, 'author', None) else "Unknown"
+                comment_created = comment.created[:10] if getattr(comment, 'created', None) else ""
                 comments.append(f"[{comment_created}] {comment_author}: {comment_text}")
 
                 # Extract links from comments
@@ -191,13 +223,13 @@ def fetch_jira_data(jira, jql_query):
         all_comments = "\n---\n".join(comments)
 
         # Labels
-        labels = ", ".join(issue.fields.labels) if issue.fields.labels else ""
+        labels = ", ".join(issue.fields.labels) if getattr(issue.fields, 'labels', None) else ""
 
         # Other fields
-        priority = issue.fields.priority.name if issue.fields.priority else ""
-        status = issue.fields.status.name if issue.fields.status else ""
-        resolution = issue.fields.resolution.name if issue.fields.resolution else ""
-        issue_type = issue.fields.issuetype.name if issue.fields.issuetype else ""
+        priority = issue.fields.priority.name if getattr(issue.fields, 'priority', None) else ""
+        status = issue.fields.status.name if getattr(issue.fields, 'status', None) else ""
+        resolution = issue.fields.resolution.name if getattr(issue.fields, 'resolution', None) else ""
+        issue_type = issue.fields.issuetype.name if getattr(issue.fields, 'issuetype', None) else ""
         epic_link = getattr(issue.fields, "customfield_10000", "")
 
         data.append({
@@ -208,9 +240,9 @@ def fetch_jira_data(jira, jql_query):
             'Resolution': resolution,
             'Priority': priority,
             'Assignee': assignee,
-            'Assignee_Username': assignee_name,
+            'Assignee_Username': assignee_name or '',
             'Reporter': reporter,
-            'Reporter_Username': reporter_name,
+            'Reporter_Username': reporter_name or '',
             'Created': created,
             'Resolved': resolved,
             'Original_Estimate_Hours': original_estimate,
@@ -226,7 +258,7 @@ def fetch_jira_data(jira, jql_query):
 
 
 def read_member_list(member_list_file):
-    """Read team member details from Excel file."""
+    """Read team member details from Excel file and normalize roles."""
     if not os.path.exists(member_list_file):
         print(f"Warning: Member list file '{member_list_file}' not found")
         return pd.DataFrame(columns=['name', 'email', 'username', 'role'])
@@ -237,6 +269,25 @@ def read_member_list(member_list_file):
     for col in required_columns:
         if col not in df.columns:
             raise ValueError(f"Member list file must contain '{col}' column")
+
+    # Normalize role values to canonical set: 'Engineer', 'QA Engineer', 'Project Manager'
+    def normalize_role(r):
+        if not isinstance(r, str):
+            return ''
+        s = r.strip().lower()
+        if 'qa' in s or 'test' in s:
+            return 'QA Engineer'
+        if 'engineer' in s and 'qa' not in s and 'test' not in s:
+            return 'Engineer'
+        if 'manager' in s or 'pm' in s:
+            return 'Project Manager'
+        return r.strip()
+
+    df['role'] = df['role'].apply(normalize_role)
+
+    # Ensure username and name columns are strings
+    df['username'] = df['username'].astype(str)
+    df['name'] = df['name'].astype(str)
 
     return df
 
@@ -254,36 +305,45 @@ def calculate_engineer_metrics(issues_df, members_df, code_volume_df):
     """Calculate metrics for Engineers."""
     metrics = []
 
+    if issues_df.empty or members_df.empty:
+        return pd.DataFrame(metrics)
+
+    # Preprocess issues: make columns safe to query
+    issues_df['Assignee_Username'] = issues_df['Assignee_Username'].fillna('').astype(str)
+    issues_df['Reporter_Username'] = issues_df['Reporter_Username'].fillna('').astype(str)
+    issues_df['Labels'] = issues_df['Labels'].fillna('').astype(str)
+    issues_df['Type'] = issues_df['Type'].fillna('').astype(str)
+    issues_df['Status'] = issues_df['Status'].fillna('').astype(str)
+
     engineers = members_df[members_df['role'] == 'Engineer']
 
     for _, engineer in engineers.iterrows():
-        username = engineer['username'].lower()
+        username = str(engineer['username']).lower()
         name = engineer['name']
 
-        # Get issues assigned to this engineer
+        # Get issues assigned to this engineer and resolved
         user_issues = issues_df[issues_df['Assignee_Username'].str.lower() == username]
-        resolved_issues = user_issues[user_issues['Status'].isin(['Done', 'Resolved', 'Closed'])]
+        resolved_issues = user_issues[user_issues['Status'].isin(RESOLVED_STATUSES)]
 
         # Code Volume (from external file)
         code_volume = 0
         if not code_volume_df.empty and 'username' in code_volume_df.columns:
-            cv_row = code_volume_df[code_volume_df['username'].str.lower() == username]
+            cv_row = code_volume_df[code_volume_df['username'].astype(str).str.lower() == username]
             if not cv_row.empty:
                 code_volume = cv_row.iloc[0].get('code_volume', 0)
 
         # Code Quality (Bugs / (Features + Improvements))
-        bugs = resolved_issues[resolved_issues['Type'] == 'Bug'].shape[0]
-        features = resolved_issues[resolved_issues['Type'].isin(['Story', 'New Feature', 'Improvement'])].shape[0]
+        bugs = resolved_issues[resolved_issues['Type'].str.lower() == 'bug'].shape[0]
+        features = resolved_issues[resolved_issues['Type'].str.lower().isin(['story', 'new feature', 'improvement'])].shape[0]
         code_quality = bugs / features if features > 0 else 0
 
-        # Quantity of documentation
-        doc_tasks = \
-        resolved_issues[resolved_issues['Labels'].str.contains('documentation', case=False, na=False)].shape[0]
+        # Quantity of documentation (labels)
+        doc_tasks = resolved_issues[resolved_issues['Labels'].str.contains('documentation', case=False, na=False)].shape[0]
 
-        # Outstanding contribution (manual - placeholder)
-        outstanding_contribution = 0
+        # Outstanding contribution
+        outstanding_contribution = resolved_issues[resolved_issues['Labels'].str.contains('outstanding_contribution', case=False, na=False)].shape[0]
 
-        # Assistance provided (manual - placeholder)
+        # Assistance provided (placeholder)
         assistance_provided = 0
 
         metrics.append({
@@ -303,37 +363,58 @@ def calculate_engineer_metrics(issues_df, members_df, code_volume_df):
 
 
 def calculate_qa_metrics(issues_df, members_df):
-    """Calculate metrics for QA Engineers."""
+    """Calculate metrics for QA Engineers using comments for TT patterns."""
     metrics = []
+
+    if issues_df.empty or members_df.empty:
+        return pd.DataFrame(metrics)
+
+    issues_df['Assignee_Username'] = issues_df['Assignee_Username'].fillna('').astype(str)
+    issues_df['Reporter_Username'] = issues_df['Reporter_Username'].fillna('').astype(str)
+    issues_df['Labels'] = issues_df['Labels'].fillna('').astype(str)
+    issues_df['Type'] = issues_df['Type'].fillna('').astype(str)
+    issues_df['Status'] = issues_df['Status'].fillna('').astype(str)
+    issues_df['Comments'] = issues_df['Comments'].fillna('').astype(str)
 
     qa_engineers = members_df[members_df['role'] == 'QA Engineer']
 
+    # Patterns
+    api_patterns = [r"\b(?:TT_tested_APIs|TT_tdev_APIs)\s*=\s*(\d+)\b"]
+    perf_patterns = [r"\b(?:TT_tested_perf|TT_tdev_perf)\s*=\s*(\d+)\b"]
+
     for _, qa in qa_engineers.iterrows():
-        username = qa['username'].lower()
+        username = str(qa['username']).lower()
         name = qa['name']
 
-        # Resolved test-related tasks
+        # Resolved issues assigned to this QA
         user_issues = issues_df[issues_df['Assignee_Username'].str.lower() == username]
-        resolved_issues = user_issues[user_issues['Status'].isin(['Done', 'Resolved', 'Closed'])]
-        test_scenarios = resolved_issues[resolved_issues['Type'].isin(['Test', 'Task'])].shape[0]
+        resolved_issues = user_issues[user_issues['Status'].isin(RESOLVED_STATUSES)]
 
         # Issues raised (created bugs)
-        bugs_created = issues_df[
-            (issues_df['Reporter_Username'].str.lower() == username) &
-            (issues_df['Type'] == 'Bug')
-            ].shape[0]
+        bugs_created = issues_df[(issues_df['Reporter_Username'].str.lower() == username) & (issues_df['Type'].str.lower() == 'bug')].shape[0]
 
-        # Performance benchmarks
-        perf_tasks = resolved_issues[
-            resolved_issues['Labels'].str.contains('arkoala_perf', case=False, na=False)
-        ].shape[0]
+        # Extract metrics from comments in resolved issues
+        api_tests = 0
+        perf_tests = 0
+        for _, issue in resolved_issues.iterrows():
+            comments_text = issue.get('Comments', '') or ''
+            api_tests += sum_numbers_by_patterns(comments_text, api_patterns)
+            perf_tests += sum_numbers_by_patterns(comments_text, perf_patterns)
+
+        # Documentation tasks (labels)
+        doc_tasks = resolved_issues[resolved_issues['Labels'].str.contains('documentation', case=False, na=False)].shape[0]
+
+        # Outstanding contribution
+        outstanding_contribution = resolved_issues[resolved_issues['Labels'].str.contains('outstanding_contribution', case=False, na=False)].shape[0]
 
         metrics.append({
             'Name': name,
             'Role': 'QA Engineer',
-            'Test_Scenarios_Executed': test_scenarios,
+            'Test_Scenarios_Executed': api_tests,
+            'Performance_Benchmarks': perf_tests,
             'Issues_Raised': bugs_created,
-            'Performance_Benchmarks': perf_tasks,
+            'Documentation_Tasks': doc_tasks,
+            'Outstanding_Contribution': outstanding_contribution,
             'Total_Resolved_Issues': resolved_issues.shape[0]
         })
 
@@ -344,30 +425,39 @@ def calculate_pm_metrics(issues_df, members_df, jira, jql_query):
     """Calculate metrics for Project Managers."""
     metrics = []
 
+    if issues_df.empty or members_df.empty:
+        return pd.DataFrame(metrics)
+
+    issues_df['Reporter_Username'] = issues_df['Reporter_Username'].fillna('').astype(str)
+    issues_df['Labels'] = issues_df['Labels'].fillna('').astype(str)
+    issues_df['Type'] = issues_df['Type'].fillna('').astype(str)
+    issues_df['Status'] = issues_df['Status'].fillna('').astype(str)
+
     pms = members_df[members_df['role'] == 'Project Manager']
 
-    # Count epics from the query
-    epic_count = issues_df[issues_df['Type'] == 'Epic'].shape[0]
-
     for _, pm in pms.iterrows():
-        username = pm['username'].lower()
+        username = str(pm['username']).lower()
         name = pm['name']
 
-        # Total closed tasks
-        total_closed = issues_df[issues_df['Status'].isin(['Done', 'Resolved', 'Closed'])].shape[0]
+        # Total closed tasks (for the scope of query)
+        total_closed = issues_df[issues_df['Status'].isin(RESOLVED_STATUSES)].shape[0]
 
-        # Documentation tasks
-        doc_tasks = issues_df[
-            (issues_df['Status'].isin(['Done', 'Resolved', 'Closed'])) &
-            (issues_df['Labels'].str.contains('documentation', case=False, na=False))
-            ].shape[0]
+        # Documentation tasks done (resolved)
+        doc_tasks = issues_df[(issues_df['Status'].isin(RESOLVED_STATUSES)) & (issues_df['Labels'].str.contains('documentation', case=False, na=False))].shape[0]
+
+        # Outstanding contribution (resolved)
+        outstanding_contribution = issues_df[(issues_df['Status'].isin(RESOLVED_STATUSES)) & (issues_df['Labels'].str.contains('outstanding_contribution', case=False, na=False))].shape[0]
+
+        # Epics created by this PM (by reporter) - считаем эпики, которые находятся в resolved статусах
+        epics_created = issues_df[(issues_df['Type'].str.lower() == 'epic') & (issues_df['Status'].isin(RESOLVED_STATUSES))].shape[0]
 
         metrics.append({
             'Name': name,
             'Role': 'Project Manager',
-            'Epics_Created': epic_count,
+            'Epics_Created': epics_created,
             'Total_Closed_Tasks': total_closed,
-            'Documentation_Tasks': doc_tasks
+            'Documentation_Tasks': doc_tasks,
+            'Outstanding_Contribution': outstanding_contribution
         })
 
     return pd.DataFrame(metrics)
