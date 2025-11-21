@@ -322,6 +322,7 @@ def set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=10):
     r = run._element
     r.rPr.rFonts.set(qn("w:eastAsia"), font_name)  # Ensures font is applied correctly
     run.font.size = Pt(font_size)
+    #run.font.bold = True
 
 
 def add_resolved_tasks_section(document, resolved_tasks):
@@ -444,19 +445,51 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
                     set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=8)
 
     # Add List View
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt, RGBColor
     document.add_heading("List View", level=2)
     resolved_data = data[data["Status"] == "Resolved"]  # Filtering only Resolved tasks
+
     for assignee, group in resolved_data.groupby("Assignee"):
-        paragraph_assignee = document.add_paragraph(assignee, style="Heading 2")
-        set_paragraph_font(paragraph_assignee, font_name="Times New Roman", font_size=11)
+        #paragraph_assignee = document.add_paragraph(assignee, style="Heading 2")
+        paragraph_assignee = document.add_paragraph()
+        paragraph_assignee_format = paragraph_assignee.paragraph_format
+        paragraph_assignee_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        paragraph_assignee_format.space_before = Pt(12)
+        paragraph_assignee_format.space_after = Pt(12)
+        paragraph_assignee_format.line_spacing = 1.0
+
+        paragraph_assignee.style = "Heading 2"
+
+        #set_paragraph_font(paragraph_assignee, font_name="Times New Roman", font_size=11)
+        #assignee_run = paragraph_assignee.runs[0] if paragraph_assignee.runs else paragraph_assignee.add_run()
+        assignee_run = paragraph_assignee.add_run(assignee)
+        assignee_run.font.name = "Times New Roman"
+        assignee_run.font.size = Pt(11)
+        assignee_run.font.bold = True
+        assignee_run.font.color.rgb = RGBColor(0, 0, 0)
 
         for week, week_data in group.groupby("Week"):
             year, week_num = map(int, week.split("-W"))
             week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%Y-%m-%d")
             week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%Y-%m-%d")
             week_header = f"ww{int(re.search(r'W(\d+)', week).group(1))} {week_start}-{week_end}"
-            paragraph = document.add_paragraph(week_header, style="Heading 3")
-            set_paragraph_font(paragraph, font_name="Times New Roman", font_size=11)
+            #paragraph = document.add_paragraph(week_header, style="Heading 3")
+            paragraph = document.add_paragraph()
+            #set_paragraph_font(paragraph, font_name="Times New Roman", font_size=11)
+            paragraph_format = paragraph.paragraph_format
+            paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            paragraph_format.space_before = Pt(13)
+            paragraph_format.space_after = Pt(13)
+            paragraph_format.line_spacing = 1.73
+            paragraph.style = "Heading 3"
+            #paragraph_run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
+
+            paragraph_run = paragraph.add_run(week_header)
+            paragraph_run.font.name = "Times New Roman"
+            paragraph_run.font.size = Pt(11)
+            paragraph_run.font.bold = True
+            paragraph_run.font.color.rgb = RGBColor(0, 0, 0)  # ИЗМЕНИТЬ: было None
 
             # Add tasks for the current week
             for idx, row in enumerate(week_data.itertuples(index=False, name="Row"), start=1):
