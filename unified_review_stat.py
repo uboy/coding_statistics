@@ -216,8 +216,8 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser,
         deletions = safe_get(commit, 'stats', 'deletions')
 
         return [
-            safe_get(commit, 'author', 'name', default='Unknown'),
-            safe_get(commit, 'author', 'name', default='Unknown'),
+            safe_get(commit, 'commit', 'author', 'name', default='Unknown'),
+            safe_get(commit, 'commit', 'author', 'name', default='Unknown'),
             safe_get(commit, 'commit', 'message', default='').splitlines()[0],
             url,
             'committed',

@@ -23,7 +23,7 @@ CONFIG_URL = "jira-url"
 CONFIG_USERNAME = "username"
 CONFIG_PASSWORD = "password"
 
-RESOLVED_STATUSES = set(['Done', 'Resolved', 'Closed'])
+RESOLVED_STATUSES = set(['Done', 'Resolved', 'Closed', 'Finished'])
 
 
 def parse_arguments_and_config():
