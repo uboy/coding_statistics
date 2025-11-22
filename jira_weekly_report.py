@@ -450,7 +450,19 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
     document.add_heading("List View", level=2)
     resolved_data = data[data["Status"] == "Resolved"]  # Filtering only Resolved tasks
 
-    for assignee, group in resolved_data.groupby("Assignee"):
+    # Получить список всех assignees
+    if member_list_file:
+        required_assignees = read_member_list(member_list_file)
+    else:
+        required_assignees = sorted(data["Assignee"].unique())
+
+    # Получить все недели в диапазоне
+    start_dt = datetime(start_date.year, start_date.month, start_date.day)
+    start_monday = start_dt - timedelta(days=start_dt.weekday())
+    valid_weeks = pd.date_range(start=start_monday, end=end_date, freq='W-MON').strftime("%G-W%V").tolist()
+
+    for assignee in required_assignees:
+        assignee_resolved = resolved_data[resolved_data["Assignee"] == assignee]
         #paragraph_assignee = document.add_paragraph(assignee, style="Heading 2")
         paragraph_assignee = document.add_paragraph()
         paragraph_assignee_format = paragraph_assignee.paragraph_format
@@ -469,11 +481,12 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
         assignee_run.font.bold = True
         assignee_run.font.color.rgb = RGBColor(0, 0, 0)
 
-        for week, week_data in group.groupby("Week"):
+        for week in valid_weeks:
+            week_data = assignee_resolved[assignee_resolved["Week"] == week]
             year, week_num = map(int, week.split("-W"))
             week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%Y-%m-%d")
             week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%Y-%m-%d")
-            week_header = f"ww{int(re.search(r'W(\d+)', week).group(1))} {week_start}-{week_end}"
+            week_header = f"ww{week_num} {week_start}-{week_end}"
             #paragraph = document.add_paragraph(week_header, style="Heading 3")
             paragraph = document.add_paragraph()
             #set_paragraph_font(paragraph, font_name="Times New Roman", font_size=11)
@@ -492,12 +505,22 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
             paragraph_run.font.color.rgb = RGBColor(0, 0, 0)  # ИЗМЕНИТЬ: было None
 
             # Add tasks for the current week
-            for idx, row in enumerate(week_data.itertuples(index=False, name="Row"), start=1):
-                # Add a new paragraph with the style 'List Number'
+            if week_data.empty:
+                # Нет задач - добавить "vacation"
                 paragraph = document.add_paragraph(style='List Bullet 2')
-                set_paragraph_font(paragraph, font_name="Times New Roman", font_size=11)
-                add_hyperlink(paragraph, f"{jira_url}/browse/{row.Issue_key}", f"{row.Issue_key} - {row.Summary}",
-                              font_name="Times New Roman", font_size=11)
+                vacation_run = paragraph.add_run("vacation")
+                vacation_run.font.name = "Times New Roman"
+                vacation_run.font.size = Pt(11)
+                #vacation_run.font.italic = True
+                vacation_run.font.color.rgb = RGBColor(0, 0, 0)
+            else:
+                # Есть задачи - добавить как обычно
+                for idx, row in enumerate(week_data.itertuples(index=False, name="Row"), start=1):
+                    paragraph = document.add_paragraph(style='List Bullet 2')
+                    set_paragraph_font(paragraph, font_name="Times New Roman", font_size=11)
+                    add_hyperlink(paragraph, f"{jira_url}/browse/{row.Issue_key}",
+                                  f"{row.Issue_key} - {row.Summary}",
+                                  font_name="Times New Roman", font_size=11)
 
     # Add Epic Progress section
     document.add_heading("Epic Progress", level=2)
