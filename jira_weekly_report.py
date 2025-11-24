@@ -100,7 +100,8 @@ def fetch_jira_data(jira, project, start_date, end_date):
     # Fetch all issues updated during the specified period with pagination
     while True:
         jql_query = (
-            f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}' AND resolution in (Done, Resolved, Unresolved)"
+            f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}'"
+            #f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}' AND resolution in (Done, Resolved, Unresolved)"
             #f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}' AND updated <= '{end_date.strftime('%Y-%m-%d')}'"
         )
         issues = jira.search_issues(jql_query, startAt=start_at, maxResults=max_results, fields=[
@@ -130,13 +131,24 @@ def fetch_jira_data(jira, project, start_date, end_date):
         parent_summary = parent.fields.summary if parent else None
 
         worklogs = get_all_worklogs(jira, key)
+        # собираем всех авторов worklog и авторов по неделям
+        worklog_authors = set()
+        worklog_by_week = {}
+
         worklog_dates = set()
         for log in worklogs:
             try:
+                author = log["author"]["displayName"]
                 log_date = datetime.strptime(log["started"].split("T")[0], "%Y-%m-%d")
+
                 if start_date <= log_date <= end_date:
+                    week = log_date.strftime("%G-W%V")
+
+                    worklog_authors.add(author)
+                    worklog_by_week.setdefault(week, set()).add(author)
+
                     worklog_dates.add(log_date)
-            except Exception:
+            except:
                 continue
 
         resolved_week = None
@@ -147,37 +159,65 @@ def fetch_jira_data(jira, project, start_date, end_date):
             issue_type_name = issue_type.name if issue_type else "Unknown"
             if start_date <= resolved_date_dt <= end_date:
                 resolved_week = resolved_date_dt.strftime("%G-W%V")
-            data.append({
-                "Issue_key": key,
-                "Summary": summary,
-                "Assignee": assignee,
-                "Status": "Resolved",
+            for author in worklog_authors:
+                data.append({
+                    "Issue_key": key,
+                    "Summary": summary,
+                    "Assignee": author,  # ВАЖНО
+                    "Status": "Resolved",
                     "Resolution_Date": resolution_date,
                     "Week": resolved_week,
                     "Epic_Link": epic_link,
                     "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
                     "Parent_Key": parent_key,
                     "Parent_Summary": parent_summary,
-                    "Type": issue_type_name  # Add Type for distinguishing subtasks
+                    "Type": issue_type_name
                 })
 
-        for log_date in worklog_dates:
-            log_week = log_date.strftime("%G-W%V")
-            if log_week != resolved_week:
-                if not any(d["Issue_key"] == key and d["Week"] == log_week for d in data):
-                    data.append({
-                        "Issue_key": key,
-                        "Summary": summary,
-                        "Assignee": assignee,
-                        "Status": "In progress",
-                        "Week": log_week,
-                        "Epic_Link": epic_link,
-                        "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
-                        "Parent_Key": parent_key,
-                        "Parent_Summary": parent_summary
-            })
+            for log_date in worklog_dates:
+                log_week = log_date.strftime("%G-W%V")
+                if log_week != resolved_week:
+                    for author in worklog_by_week.get(log_week, []):
+                        data.append({
+                            "Issue_key": key,
+                            "Summary": summary,
+                            "Assignee": author,  # ВАЖНО
+                            "Status": "In progress",
+                            "Week": log_week,
+                            "Epic_Link": epic_link,
+                            "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
+                            "Parent_Key": parent_key,
+                            "Parent_Summary": parent_summary
+                        })
 
     return pd.DataFrame(data)
+
+
+def mark_reassigned_tasks(df):
+    # собираем всех worklog-авторов для каждой задачи
+    worklog_authors = (
+        df.groupby("Issue_key")["Assignee"]  # assignee в строке = worklog author!
+        .unique()
+        .to_dict()
+    )
+
+    # финальный исполнитель задачи
+    final_assignee = (
+        df.groupby("Issue_key")["Assignee"]
+        .last()  # последняя строка = финальный assignee
+        .to_dict()
+    )
+
+    # формируем флаг reassigned
+    reassigned_map = {}
+    for issue, authors in worklog_authors.items():
+        final = final_assignee.get(issue)
+        reassigned_map[issue] = final not in authors
+
+    # Добавляем в DataFrame столбец:
+    df["Reassigned"] = df["Issue_key"].map(reassigned_map).fillna(False)
+
+    return df
 
 
 def fill_missing_weeks(data, valid_weeks, required_assignees):
@@ -379,6 +419,15 @@ def generate_excel_report(data, start_date, end_date, project, headers, file_suf
     grouped_data.to_excel(output_file)
     print(f"Excel report successfully created: {output_file}")
 
+
+def is_empty_task(summary, status):
+    """Определяет, является ли строка пустой (нет задачи и нет worklog)."""
+    return (
+        (not isinstance(summary, str) or summary.strip() == "") and
+        (not isinstance(status, str) or status.strip() == "")
+    )
+
+
 def generate_word_report(data, start_date, end_date, project, headers, file_suffix, jira_url, epic_summary, member_list_file=None):
     """
     Generate a Word report including both the updated tabular view, a list view and Epic progress,
@@ -419,7 +468,7 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
             row_cells[0].text = assignee
             row_cells[1].text = ""
             row_cells[2].text = ""
-            row_cells[3].text = ""
+            row_cells[3].text = "vacation"
             row_cells[4].text = ""
             row_cells[5].text = ""
         else:
@@ -435,20 +484,30 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
                 row_cells[0].text = assignee
                 row_cells[1].text = row["Week"]
                 row_cells[2].text = week_range
-                row_cells[3].text = row["Summary"]
-                add_hyperlink(row_cells[4].paragraphs[0], f"{jira_url}/browse/{row['Issue_key']}",
-                              f"{row['Issue_key']}", font_size=8)
-                row_cells[5].text = row["Status"]
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=8)
+                if is_empty_task(row["Summary"], row["Status"]):
+                    row_cells[3].text = "vacation"
+                    row_cells[5].text = "vacation"
+                else:
+                    desc = row["Summary"]
+                    if row["Reassigned"]:
+                        desc = "[reassigned] " + desc
+                    row_cells[3].text = desc
+                    row_cells[5].text = row["Status"]
+                if isinstance(row["Issue_key"], str) and row["Issue_key"].strip():
+                    add_hyperlink(row_cells[4].paragraphs[0], f"{jira_url}/browse/{row['Issue_key']}",
+                                  f"{row['Issue_key']}", font_size=8)
+
+    for row in table.rows:
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                set_paragraph_font(paragraph, font_name="Calibri (Body)", font_size=8)
 
     # Add List View
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt, RGBColor
     document.add_heading("List View", level=2)
-    resolved_data = data[data["Status"] == "Resolved"]  # Filtering only Resolved tasks
+    #resolved_data = data[data["Status"] == "Resolved"]  # Filtering only Resolved tasks
+    all_data = data  # Используем ВСЕ данные, не только Resolved
 
     # Получить список всех assignees
     if member_list_file:
@@ -462,7 +521,8 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
     valid_weeks = pd.date_range(start=start_monday, end=end_date, freq='W-MON').strftime("%G-W%V").tolist()
 
     for assignee in required_assignees:
-        assignee_resolved = resolved_data[resolved_data["Assignee"] == assignee]
+        #assignee_resolved = resolved_data[resolved_data["Assignee"] == assignee]
+        assignee_data = all_data[all_data["Assignee"] == assignee]
         #paragraph_assignee = document.add_paragraph(assignee, style="Heading 2")
         paragraph_assignee = document.add_paragraph()
         paragraph_assignee_format = paragraph_assignee.paragraph_format
@@ -482,7 +542,8 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
         assignee_run.font.color.rgb = RGBColor(0, 0, 0)
 
         for week in valid_weeks:
-            week_data = assignee_resolved[assignee_resolved["Week"] == week]
+            #week_data = assignee_resolved[assignee_resolved["Week"] == week]
+            week_data = assignee_data[assignee_data["Week"] == week]
             year, week_num = map(int, week.split("-W"))
             week_start = pd.Timestamp.fromisocalendar(year, week_num, 1).strftime("%Y-%m-%d")
             week_end = (pd.Timestamp.fromisocalendar(year, week_num, 1) + timedelta(days=6)).strftime("%Y-%m-%d")
@@ -505,7 +566,13 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
             paragraph_run.font.color.rgb = RGBColor(0, 0, 0)  # ИЗМЕНИТЬ: было None
 
             # Add tasks for the current week
-            if week_data.empty:
+            # Проверяем: есть ли хоть одна нормальная задача
+            has_real_task = any(
+                not is_empty_task(summary, status)
+                for summary, status in zip(week_data["Summary"], week_data["Status"])
+            )
+
+            if week_data.empty or not has_real_task:
                 # Нет задач - добавить "vacation"
                 paragraph = document.add_paragraph(style='List Bullet 2')
                 vacation_run = paragraph.add_run("vacation")
@@ -513,14 +580,30 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
                 vacation_run.font.size = Pt(11)
                 #vacation_run.font.italic = True
                 vacation_run.font.color.rgb = RGBColor(0, 0, 0)
+                continue
             else:
                 # Есть задачи - добавить как обычно
                 for idx, row in enumerate(week_data.itertuples(index=False, name="Row"), start=1):
                     paragraph = document.add_paragraph(style='List Bullet 2')
-                    set_paragraph_font(paragraph, font_name="Times New Roman", font_size=11)
-                    add_hyperlink(paragraph, f"{jira_url}/browse/{row.Issue_key}",
-                                  f"{row.Issue_key} - {row.Summary}",
-                                  font_name="Times New Roman", font_size=11)
+
+                    # Определить префикс на основе статуса
+                    if row.Status == "Resolved":
+                        prefix = "Resolved task - "
+                    elif row.Status == "In progress":
+                        prefix = "Task in progress - "
+                    else:
+                        prefix = ""
+
+                    # Добавить префикс обычным текстом
+                    if prefix:
+                        prefix_run = paragraph.add_run(prefix)
+                        prefix_run.font.name = "Times New Roman"
+                        prefix_run.font.size = Pt(11)
+
+                    if isinstance(row.Issue_key, str) and row.Issue_key.strip():
+                        add_hyperlink(paragraph, f"{jira_url}/browse/{row.Issue_key}",
+                                      f"{row.Issue_key} - {row.Summary}",
+                                      font_name="Times New Roman", font_size=11)
 
     # Add Epic Progress section
     document.add_heading("Epic Progress", level=2)
@@ -566,6 +649,7 @@ def generate_report(data, start_date, end_date, project, jira_url, include_empty
 
     if include_empty_weeks:
         data = fill_missing_weeks(data, valid_weeks, required_assignees)
+        data = mark_reassigned_tasks(data)
 
     headers = generate_week_headers(valid_weeks, data)
     # Generate epic report data
