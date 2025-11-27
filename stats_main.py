@@ -1,15 +1,9 @@
-# -* coding: utf-8 -*-
+"""
+Unified entry point for the refactored tooling.
+"""
 
-import csv  #
-import codecs  # used for text encoding in config parser
-import argparse  # good argument parser
-import re  # for parsing ticket no from description
-from openpyxl import load_workbook  #
-from configparser import ConfigParser  # able to read configuration file
-
-from config_loader import config_loader
+from stats_core.cli import main
 
 
-def main():
-    print("test")
-    config = config_loader()
+if __name__ == "__main__":
+    main()
