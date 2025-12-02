@@ -3,6 +3,7 @@ members.xlsx
 
 **.csv
 member_cache.json
+cache.json
 config.ini
 __pycache__
 build

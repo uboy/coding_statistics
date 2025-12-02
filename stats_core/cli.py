@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd = sub.add_parser("run", help="Execute a report.")
     run_cmd.add_argument("--config", default=str(config_utils.DEFAULT_CONFIG_FILE), help="Path to config.ini.")
     run_cmd.add_argument("--report", required=True, choices=report_registry.available_reports())
-    run_cmd.add_argument("--sources", nargs="+", help="Optional list of sources to pull from.")
+    run_cmd.add_argument("--sources", nargs="+", help="Optional list of sources to pull from. Defaults to 'jira' for jira_weekly report.")
     run_cmd.add_argument("--start", help="Start date (YYYY-MM-DD)")
     run_cmd.add_argument("--end", help="End date (YYYY-MM-DD)")
     run_cmd.add_argument("--members", help="Path to member list (if applicable).")
@@ -92,9 +92,13 @@ def cmd_run(args: argparse.Namespace) -> None:
     if links_file:
         extra_params.setdefault("links_file", links_file)
 
-    sources = args.sources or _available_sources(config)
-    if not sources:
-        sources = []
+    # Default to 'jira' for jira_weekly report if no sources specified
+    if args.report == "jira_weekly" and not args.sources:
+        sources = ["jira"]
+    else:
+        sources = args.sources or _available_sources(config)
+        if not sources:
+            sources = []
 
     if sources:
         missing = config_utils.ensure_tokens(config, sources)

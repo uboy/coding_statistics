@@ -64,3 +64,51 @@ def _apply_paragraph_style(paragraphs: Iterable[Paragraph], font_name: str, font
             r_fonts.set(qn("w:ascii"), font_name)
             r_fonts.set(qn("w:hAnsi"), font_name)
 
+
+def add_hyperlink(paragraph: Paragraph, url: str, display_text: str, font_name: str = "Calibri (Body)", font_size: int = 10, underline: bool = False) -> None:
+    """
+    Add a clickable hyperlink to a paragraph with font settings.
+
+    Args:
+        paragraph: Paragraph to add hyperlink to
+        url: URL for hyperlink
+        display_text: Display text for hyperlink
+        font_name: Font name
+        font_size: Font size in Pt
+        underline: Whether to underline
+    """
+    part = paragraph.part
+    hyperlink = OxmlElement("w:hyperlink")
+    r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+    hyperlink.set(qn("r:id"), r_id)
+
+    # Create new Run for hyperlink
+    run = paragraph.add_run(display_text)
+
+    # Set font properties
+    run.font.name = font_name
+    run.font.size = Pt(font_size)
+    run.font.underline = underline
+
+    # Create <w:rPr> element (Run properties)
+    rPr = OxmlElement("w:rPr")
+
+    # Add "Hyperlink" style if available in document
+    try:
+        doc = paragraph._element.getroottree().getroot()
+        styles = doc.find(".//w:styles", namespaces={"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"})
+        if styles is not None:
+            hyperlink_style = styles.find(".//w:style[@w:styleId='Hyperlink']", namespaces={"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"})
+            if hyperlink_style is not None:
+                rStyle = OxmlElement("w:rStyle")
+                rStyle.set(qn("w:val"), "Hyperlink")
+                rPr.append(rStyle)
+    except Exception:
+        pass  # If "Hyperlink" style not found, skip
+
+    r = run._element
+    r.insert(0, rPr)
+
+    hyperlink.append(r)
+    paragraph._p.append(hyperlink)
+

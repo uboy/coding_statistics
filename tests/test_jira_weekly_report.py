@@ -1,90 +1,316 @@
-import unittest
-from unittest.mock import MagicMock, patch
+"""
+Tests for Jira weekly report covering various scenarios.
+"""
+
+import pytest
+from datetime import datetime, timedelta
+from unittest.mock import Mock, MagicMock, patch
 import pandas as pd
-from datetime import datetime
-import os
-from jira_weekly_report import get_all_worklogs, fetch_jira_data, generate_report
+
+from stats_core.reports.jira_utils import (
+    fetch_jira_data,
+    mark_reassigned_tasks,
+    fill_missing_weeks,
+    norm_name,
+    is_empty_task,
+)
+from stats_core.reports.jira_weekly import JiraWeeklyReport
+from stats_core.sources.jira import JiraSource
 
 
-class TestJiraReport(unittest.TestCase):
-
-    @patch("main_script.JIRA")
-    def test_get_all_worklogs(self, mock_jira):
-        """Test fetching all worklogs for an issue."""
-        mock_session = MagicMock()
-        mock_session.get.side_effect = [
-            MagicMock(
-                json=lambda: {
-                    "worklogs": [{"id": "1", "started": "2024-11-01T10:00:00.000+0000"}],
-                    "total": 1,
-                }
-            )
-        ]
-        mock_jira._session = mock_session
-        mock_jira._options = {"server": "https://jira.example.com"}
-
-        worklogs = get_all_worklogs(mock_jira, "TEST-123")
-        self.assertEqual(len(worklogs), 1)
-        self.assertEqual(worklogs[0]["id"], "1")
-
-    @patch("main_script.JIRA")
-    def test_fetch_jira_data(self, mock_jira):
-        """Test fetching and filtering data from JIRA."""
-        mock_issue = MagicMock()
-        mock_issue.key = "TEST-123"
-        mock_issue.fields = MagicMock(
-            assignee=MagicMock(displayName="John Doe"),
-            summary="Test issue",
-            resolutiondate="2024-11-05T00:00:00.000+0000",
-            updated="2024-11-10T00:00:00.000+0000"
-        )
-
-        mock_jira.search_issues.return_value = [mock_issue]
-
-        def mock_get_all_worklogs(_, issue_key):
-            if issue_key == "TEST-123":
-                return [{"started": "2024-11-03T00:00:00.000+0000"}]
-            return []
-
-        with patch("main_script.get_all_worklogs", mock_get_all_worklogs):
-            data = fetch_jira_data(mock_jira, "TEST", "2024-11")
-
-        self.assertEqual(len(data), 2)
-        self.assertTrue(any(data["Status"] == "Resolved"))
-        self.assertTrue(any(data["Status"] == "In progress"))
-
-    @patch("main_script.Document")
-    @patch("main_script.pd.ExcelWriter")
-    def test_generate_report(self, mock_excel_writer, mock_document):
-        """Test generating reports in Excel and Word formats."""
-        data = pd.DataFrame({
-            "Assignee": ["John Doe", "John Doe"],
-            "Week": ["2024-W45", "2024-W46"],
-            "Status": ["Resolved", "In progress"],
-            "Issue key": ["TEST-123", "TEST-456"],
-            "Summary": ["Resolved Task", "In Progress Task"],
-            "URL": ["https://jira.example.com/browse/TEST-123", "https://jira.example.com/browse/TEST-456"],
-        })
-
-        mock_writer_instance = MagicMock()
-        mock_excel_writer.return_value = mock_writer_instance
-
-        generate_report(data, "2024-11", "TEST")
-
-        # Check Excel file was written
-        mock_writer_instance.__enter__.assert_called()
-        mock_writer_instance.sheets.__getitem__.assert_called_with("Report")
-
-        # Check Word document was created
-        mock_document.return_value.save.assert_called_once()
-        self.assertTrue(mock_document.return_value.save.call_args[0][0].endswith(".docx"))
-
-    def tearDown(self):
-        """Clean up after tests."""
-        for file in os.listdir():
-            if file.startswith("jira_report_TEST_") and (file.endswith(".xlsx") or file.endswith(".docx")):
-                os.remove(file)
+@pytest.fixture
+def mock_jira_source():
+    """Create a mock JiraSource."""
+    source = Mock(spec=JiraSource)
+    source.jira_url = "https://test-jira.com"
+    return source
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.fixture
+def sample_issues():
+    """Create sample Jira issues for testing."""
+    issues = []
+    
+    # Issue 1: Task closed in the same week it was taken
+    issue1 = Mock()
+    issue1.key = "TEST-1"
+    issue1.fields.summary = "Task closed same week"
+    issue1.fields.assignee = Mock(displayName="John Doe")
+    issue1.fields.resolutiondate = "2025-01-15T10:00:00.000+0000"  # Wednesday of week 2025-W03
+    issue1.fields.created = "2025-01-13T09:00:00.000+0000"  # Monday of week 2025-W03
+    issue1.fields.customfield_10000 = None  # No epic
+    issue1.fields.parent = None
+    issue1.fields.issuetype = Mock(name="Task")
+    issues.append(issue1)
+    
+    # Issue 2: Task stretched across multiple weeks
+    issue2 = Mock()
+    issue2.key = "TEST-2"
+    issue2.fields.summary = "Task across weeks"
+    issue2.fields.assignee = Mock(displayName="Jane Smith")
+    issue2.fields.resolutiondate = "2025-01-25T10:00:00.000+0000"  # Saturday of week 2025-W04
+    issue2.fields.created = "2025-01-06T09:00:00.000+0000"  # Monday of week 2025-W02
+    issue2.fields.customfield_10000 = None
+    issue2.fields.parent = None
+    issue2.fields.issuetype = Mock(name="Task")
+    issues.append(issue2)
+    
+    # Issue 3: Task with no worklogs (no activity)
+    issue3 = Mock()
+    issue3.key = "TEST-3"
+    issue3.fields.summary = "No worklogs task"
+    issue3.fields.assignee = Mock(displayName="Bob Wilson")
+    issue3.fields.resolutiondate = None  # Not resolved
+    issue3.fields.created = "2025-01-20T09:00:00.000+0000"  # Monday of week 2025-W04
+    issue3.fields.customfield_10000 = None
+    issue3.fields.parent = None
+    issue3.fields.issuetype = Mock(name="Task")
+    issues.append(issue3)
+    
+    # Issue 4: Task reassigned (worklogs by one person, final assignee different)
+    issue4 = Mock()
+    issue4.key = "TEST-4"
+    issue4.fields.summary = "Reassigned task"
+    issue4.fields.assignee = Mock(displayName="Alice Brown")  # Final assignee
+    issue4.fields.resolutiondate = "2025-01-22T10:00:00.000+0000"  # Wednesday of week 2025-W04
+    issue4.fields.created = "2025-01-13T09:00:00.000+0000"  # Monday of week 2025-W03
+    issue4.fields.customfield_10000 = None
+    issue4.fields.parent = None
+    issue4.fields.issuetype = Mock(name="Task")
+    issues.append(issue4)
+    
+    return issues
+
+
+@pytest.fixture
+def sample_worklogs():
+    """Create sample worklogs for testing."""
+    worklogs = {
+        "TEST-1": [
+            {
+                "author": {"displayName": "John Doe"},
+                "started": "2025-01-13T09:00:00.000+0000",  # Monday week 2025-W03
+            },
+            {
+                "author": {"displayName": "John Doe"},
+                "started": "2025-01-15T10:00:00.000+0000",  # Wednesday week 2025-W03 (resolved same day)
+            },
+        ],
+        "TEST-2": [
+            {
+                "author": {"displayName": "Jane Smith"},
+                "started": "2025-01-06T09:00:00.000+0000",  # Monday week 2025-W02
+            },
+            {
+                "author": {"displayName": "Jane Smith"},
+                "started": "2025-01-13T09:00:00.000+0000",  # Monday week 2025-W03
+            },
+            {
+                "author": {"displayName": "Jane Smith"},
+                "started": "2025-01-20T09:00:00.000+0000",  # Monday week 2025-W04
+            },
+            {
+                "author": {"displayName": "Jane Smith"},
+                "started": "2025-01-25T10:00:00.000+0000",  # Saturday week 2025-W04 (resolved)
+            },
+        ],
+        "TEST-3": [],  # No worklogs
+        "TEST-4": [
+            {
+                "author": {"displayName": "John Doe"},  # Different from final assignee
+                "started": "2025-01-13T09:00:00.000+0000",  # Monday week 2025-W03
+            },
+            {
+                "author": {"displayName": "John Doe"},
+                "started": "2025-01-15T09:00:00.000+0000",  # Wednesday week 2025-W03
+            },
+            # Note: Final assignee is Alice Brown, but worklogs are by John Doe
+        ],
+    }
+    return worklogs
+
+
+def test_task_closed_same_week(mock_jira_source, sample_issues, sample_worklogs):
+    """Test: Engineer has a task and closed it in the same week it was taken."""
+    # Mock JiraSource methods
+    mock_jira_source.fetch_issues = Mock(return_value=[sample_issues[0]])
+    mock_jira_source.get_all_worklogs = Mock(return_value=sample_worklogs["TEST-1"])
+    mock_jira_source.fetch_epic_names = Mock(return_value={})
+    
+    start_date = "2025-01-13"
+    end_date = "2025-01-19"
+    
+    data = fetch_jira_data(mock_jira_source, "TEST", start_date, end_date)
+    
+    # Should have one row with Status="Resolved" and Week="2025-W03"
+    assert not data.empty
+    resolved_rows = data[data["Status"] == "Resolved"]
+    assert len(resolved_rows) == 1
+    assert resolved_rows.iloc[0]["Week"] == "2025-W03"
+    assert resolved_rows.iloc[0]["Assignee"] == "John Doe"
+    assert resolved_rows.iloc[0]["Issue_key"] == "TEST-1"
+
+
+def test_task_stretched_multiple_weeks(mock_jira_source, sample_issues, sample_worklogs):
+    """Test: Task stretched across multiple weeks."""
+    # Mock JiraSource methods
+    mock_jira_source.fetch_issues = Mock(return_value=[sample_issues[1]])
+    mock_jira_source.get_all_worklogs = Mock(return_value=sample_worklogs["TEST-2"])
+    mock_jira_source.fetch_epic_names = Mock(return_value={})
+    
+    start_date = "2025-01-06"
+    end_date = "2025-01-26"
+    
+    data = fetch_jira_data(mock_jira_source, "TEST", start_date, end_date)
+    
+    # Should have rows for multiple weeks
+    assert not data.empty
+    test2_rows = data[data["Issue_key"] == "TEST-2"]
+    
+    # Should have "In progress" rows for weeks 2025-W02, 2025-W03, 2025-W04
+    # and "Resolved" row for week 2025-W04
+    weeks = set(test2_rows["Week"].unique())
+    assert "2025-W02" in weeks
+    assert "2025-W03" in weeks
+    assert "2025-W04" in weeks
+    
+    # Should have one "Resolved" status
+    resolved = test2_rows[test2_rows["Status"] == "Resolved"]
+    assert len(resolved) == 1
+    assert resolved.iloc[0]["Week"] == "2025-W04"
+    
+    # Should have "In progress" for earlier weeks
+    in_progress = test2_rows[test2_rows["Status"] == "In progress"]
+    assert len(in_progress) >= 2  # At least W02 and W03
+
+
+def test_no_tasks_no_logs(mock_jira_source, sample_issues, sample_worklogs):
+    """Test: No tasks and no logs (empty data)."""
+    # Mock JiraSource methods - return empty list
+    mock_jira_source.fetch_issues = Mock(return_value=[])
+    mock_jira_source.get_all_worklogs = Mock(return_value=[])
+    mock_jira_source.fetch_epic_names = Mock(return_value={})
+    
+    start_date = "2025-01-13"
+    end_date = "2025-01-19"
+    
+    data = fetch_jira_data(mock_jira_source, "TEST", start_date, end_date)
+    
+    # Should return empty DataFrame
+    assert data.empty
+
+
+def test_task_reassigned(mock_jira_source, sample_issues, sample_worklogs):
+    """Test: Task had worklogs but was reassigned (final assignee not in worklog authors)."""
+    # Mock JiraSource methods
+    mock_jira_source.fetch_issues = Mock(return_value=[sample_issues[3]])
+    mock_jira_source.get_all_worklogs = Mock(return_value=sample_worklogs["TEST-4"])
+    mock_jira_source.fetch_epic_names = Mock(return_value={})
+    
+    start_date = "2025-01-13"
+    end_date = "2025-01-26"
+    
+    data = fetch_jira_data(mock_jira_source, "TEST", start_date, end_date)
+    
+    # Mark reassigned tasks
+    data = mark_reassigned_tasks(data)
+    
+    # Should have rows with worklog author (John Doe) and reassigned flag
+    test4_rows = data[data["Issue_key"] == "TEST-4"]
+    assert not test4_rows.empty
+    
+    # Check that reassigned flag is set correctly
+    # The worklogs are by John Doe, but final assignee is Alice Brown
+    # So rows with John Doe as Assignee should exist, and reassigned should be True
+    # (because final assignee Alice Brown is not in worklog authors)
+    john_rows = test4_rows[test4_rows["Assignee"] == "John Doe"]
+    if not john_rows.empty:
+        # The reassigned flag indicates that the final assignee (Alice) is not in worklog authors
+        # So for John's rows, reassigned should be True
+        assert john_rows["Reassigned"].any() or john_rows["Reassigned"].all()
+
+
+def test_fill_missing_weeks():
+    """Test: Fill missing weeks for assignees with no activity."""
+    data = pd.DataFrame([
+        {
+            "Issue_key": "TEST-1",
+            "Summary": "Task 1",
+            "Assignee": "John Doe",
+            "Status": "Resolved",
+            "Week": "2025-W03",
+            "Assignee_norm": "john doe",
+        }
+    ])
+    
+    valid_weeks = ["2025-W02", "2025-W03", "2025-W04"]
+    required_assignees = ["John Doe", "Jane Smith"]
+    
+    filled = fill_missing_weeks(data, valid_weeks, required_assignees)
+    
+    # Should have rows for all assignees and weeks
+    assert len(filled) > len(data)
+    
+    # Check that Jane Smith has filler rows for all weeks
+    jane_rows = filled[filled["Assignee"] == "Jane Smith"]
+    assert len(jane_rows) == 3  # One for each week
+    
+    # Check that John Doe has filler rows for missing weeks
+    john_rows = filled[filled["Assignee"] == "John Doe"]
+    assert len(john_rows) >= 3  # Original + fillers
+
+
+def test_is_empty_task():
+    """Test: Check if task is empty (no summary and no status)."""
+    assert is_empty_task("", "") is True
+    assert is_empty_task("   ", "   ") is True
+    assert is_empty_task("Task summary", "Resolved") is False
+    assert is_empty_task("Task summary", "") is False
+    assert is_empty_task(None, None) is True
+
+
+def test_norm_name():
+    """Test: Name normalization."""
+    assert norm_name("John Doe") == "john doe"
+    assert norm_name("  Jane  Smith  ") == "jane smith"
+    assert norm_name("Bob\tWilson\n") == "bob wilson"
+    assert norm_name("") == ""
+    assert norm_name(None) == ""
+
+
+@patch('stats_core.reports.jira_weekly.JiraSource')
+def test_jira_weekly_report_run(mock_jira_class, tmp_path):
+    """Test: JiraWeeklyReport.run generates reports correctly."""
+    # Create mock config
+    from configparser import ConfigParser
+    config = ConfigParser()
+    config.add_section("jira")
+    config.set("jira", "jira-url", "https://test-jira.com")
+    config.set("jira", "username", "testuser")
+    config.set("jira", "password", "testpass")
+    
+    # Create mock JiraSource instance
+    mock_jira_source = Mock(spec=JiraSource)
+    mock_jira_source.jira_url = "https://test-jira.com"
+    mock_jira_source.fetch_issues = Mock(return_value=[])
+    mock_jira_source.get_all_worklogs = Mock(return_value=[])
+    mock_jira_source.fetch_epic_names = Mock(return_value={})
+    mock_jira_class.return_value = mock_jira_source
+    
+    # Create report instance
+    report = JiraWeeklyReport()
+    
+    # Run report
+    extra_params = {
+        "project": "TEST",
+        "start": "2025-01-13",
+        "end": "2025-01-19",
+    }
+    
+    # Should not raise exception
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["excel", "word"],
+        extra_params=extra_params,
+    )
