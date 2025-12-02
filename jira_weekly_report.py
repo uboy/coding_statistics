@@ -66,6 +66,12 @@ def read_member_list(member_list_file):
     return list(set(assignees))
 
 
+def norm_name(name: str) -> str:
+    if not isinstance(name, str):
+        return ""
+    return re.sub(r"\s+", " ", name).strip().casefold()
+
+
 def get_all_worklogs(jira, issue_key):
     """
     Fetch all work logs for an issue using pagination.
@@ -221,14 +227,20 @@ def mark_reassigned_tasks(df):
 
 def fill_missing_weeks(data, valid_weeks, required_assignees):
     """
-    Добавляет фиктивные строки в датафрейм для каждого assignee и недели, если у него нет активности.
+    Добавляет фиктивные строки в датафрейм для каждого assignee и недели,
+    если у него нет активности. Сопоставление делаем по нормализованным именам.
     """
-    existing_keys = set(zip(data["Assignee"], data["Week"]))
+    data = data.copy()
+    data["Assignee_norm"] = data["Assignee"].map(norm_name)
+
+    required_assignees_norm = [(a, norm_name(a)) for a in required_assignees]
+
+    existing_keys = set(zip(data["Assignee_norm"], data["Week"]))
     filler_rows = []
 
-    for assignee in required_assignees:
+    for assignee_display, assignee_norm in required_assignees_norm:
         for week in valid_weeks:
-            if (assignee, week) not in existing_keys:
+            if (assignee_norm, week) not in existing_keys:
                 year, week_num = map(int, week.split("-W"))
                 week_start = pd.Timestamp.fromisocalendar(year, week_num, 1)
                 resolution_date = week_start.strftime("%Y-%m-%d")
@@ -236,7 +248,8 @@ def fill_missing_weeks(data, valid_weeks, required_assignees):
                 filler_rows.append({
                     "Issue_key": "",
                     "Summary": "",
-                    "Assignee": assignee,
+                    "Assignee": assignee_display,   # в отчёте показываем как в Excel
+                    "Assignee_norm": assignee_norm, # тех. поле
                     "Status": "",
                     "Resolution_Date": resolution_date,
                     "Week": week,
@@ -459,7 +472,7 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
 
     # Add data rows, ensuring all required assignees are included
     for assignee in required_assignees:
-        assignee_data = sorted_data[sorted_data["Assignee"] == assignee]
+        assignee_data = sorted_data[sorted_data["Assignee_norm"] == norm_name(assignee)]
 
         if assignee_data.empty:
             # Add a row with empty task details if no data for the assignee
@@ -485,7 +498,7 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
                 row_cells[2].text = week_range
                 if is_empty_task(row["Summary"], row["Status"]):
                     row_cells[3].text = "vacation"
-                    row_cells[5].text = "vacation"
+                    row_cells[5].text = ""
                 else:
                     desc = row["Summary"]
                     if row["Reassigned"]:
@@ -521,7 +534,7 @@ def generate_word_report(data, start_date, end_date, project, headers, file_suff
 
     for assignee in required_assignees:
         #assignee_resolved = resolved_data[resolved_data["Assignee"] == assignee]
-        assignee_data = all_data[all_data["Assignee"] == assignee]
+        assignee_data = all_data[all_data["Assignee_norm"] == norm_name(assignee)]
         #paragraph_assignee = document.add_paragraph(assignee, style="Heading 2")
         paragraph_assignee = document.add_paragraph()
         paragraph_assignee_format = paragraph_assignee.paragraph_format
