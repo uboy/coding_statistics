@@ -135,7 +135,6 @@ def fetch_jira_data(jira, project, start_date, end_date):
         worklog_authors = set()
         worklog_by_week = {}
 
-        worklog_dates = set()
         for log in worklogs:
             try:
                 author = log["author"]["displayName"]
@@ -143,12 +142,9 @@ def fetch_jira_data(jira, project, start_date, end_date):
 
                 if start_date <= log_date <= end_date:
                     week = log_date.strftime("%G-W%V")
-
                     worklog_authors.add(author)
                     worklog_by_week.setdefault(week, set()).add(author)
-
-                    worklog_dates.add(log_date)
-            except:
+            except Exception:
                 continue
 
         resolved_week = None
@@ -174,23 +170,26 @@ def fetch_jira_data(jira, project, start_date, end_date):
                     "Type": issue_type_name
                 })
 
-            for log_date in worklog_dates:
-                log_week = log_date.strftime("%G-W%V")
-                if log_week != resolved_week:
-                    for author in worklog_by_week.get(log_week, []):
-                        data.append({
-                            "Issue_key": key,
-                            "Summary": summary,
-                            "Assignee": author,  # ВАЖНО
-                            "Status": "In progress",
-                            "Week": log_week,
-                            "Epic_Link": epic_link,
-                            "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
-                            "Parent_Key": parent_key,
-                            "Parent_Summary": parent_summary
-                        })
+            for log_week, authors_in_week in worklog_by_week.items():
+                if log_week == resolved_week:
+                    continue
+                for author in authors_in_week:
+                    data.append({
+                        "Issue_key": key,
+                        "Summary": summary,
+                        "Assignee": author,  # ВАЖНО
+                        "Status": "In progress",
+                        "Week": log_week,
+                        "Epic_Link": epic_link,
+                        "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
+                        "Parent_Key": parent_key,
+                        "Parent_Summary": parent_summary,
+                        "Type": issue_type_name
+                    })
 
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+    df = df.drop_duplicates(subset=["Issue_key", "Assignee", "Week", "Status"], keep="last")
+    return df
 
 
 def mark_reassigned_tasks(df):
