@@ -12,7 +12,7 @@ from configparser import ConfigParser
 import requests
 
 from ..sources import base as source_base
-from ..sources import gitee, gitlab, github, codehub, gerrit
+from ..sources import gitee, gitlab, github, codehub, gerrit, jira
 
 
 @dataclass(slots=True)
@@ -42,6 +42,7 @@ SOURCE_BUILDERS: dict[str, Any] = {
     "cr-y.codehub": codehub.CodeHubSource,
     "opencodehub": codehub.CodeHubSource,
     "gerrit": gerrit.GerritSource,
+    "jira": jira.JiraSource
 }
 
 
@@ -60,7 +61,8 @@ def build_source(config: ConfigParser, name: str) -> source_base.BaseSource:
         return builder(session, cfg)
     if name == "gerrit":
         return builder(session, cfg)
-
+    if name == "jira":
+        return builder(cfg)
     raise ValueError(f"Unknown source {name}")
 
 

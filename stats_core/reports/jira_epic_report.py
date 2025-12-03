@@ -59,9 +59,10 @@ def add_epic_progress_to_document(
             for task in epic["Tasks"]:
                 paragraph = document.add_paragraph(
                     f"{task['Task_Key']}: {task['Task_Summary']}",
-                    style="List Bullet 2"
+                    style="List Bullet 2",
                 )
-                _apply_paragraph_style(paragraph.paragraphs, font_name="Calibri (Body)", font_size=10)
+                # Apply font to this single paragraph
+                _apply_paragraph_style([paragraph], font_name="Calibri (Body)", font_size=10)
     else:
         document.add_paragraph("No resolved tasks for open epics during the specified period.")
 
@@ -95,9 +96,12 @@ def add_resolved_tasks_section(
         document.add_heading(week_header, level=3)
 
         for _, task in tasks[tasks["Type"] != "Sub-task"].iterrows():
-            paragraph = document.add_paragraph(style="Normal")
-            document.add_paragraph(f"{task['Issue_key']}: {task['Summary']}", style="List Bullet 2")
-            _apply_paragraph_style(paragraph.paragraphs, font_name="Calibri (Body)", font_size=10)
+            # Parent task line
+            paragraph = document.add_paragraph(
+                f"{task['Issue_key']}: {task['Summary']}",
+                style="List Bullet 2",
+            )
+            _apply_paragraph_style([paragraph], font_name="Calibri (Body)", font_size=10)
 
             # List subtasks under parent task
             subtasks = tasks[tasks["Parent_Key"] == task["Issue_key"]]

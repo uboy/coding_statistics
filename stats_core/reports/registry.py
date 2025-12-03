@@ -25,9 +25,16 @@ class Report(Protocol):
 _REGISTRY: Dict[str, Report] = {}
 
 
-def register(report: Report) -> Report:
-    _REGISTRY[report.name] = report
-    return report
+def register(report_cls):
+    """
+    Decorator used on report classes.
+
+    It instantiates the class once and stores the instance in the registry,
+    so the CLI can later call ``run`` as an instance method.
+    """
+    instance: Report = report_cls()  # type: ignore[assignment]
+    _REGISTRY[instance.name] = instance
+    return report_cls
 
 
 def get(name: str) -> Report:

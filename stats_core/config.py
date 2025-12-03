@@ -150,7 +150,7 @@ def create_cache_manager(config: ConfigParser):
     Returns:
         CacheManager instance configured from [cache] section
     """
-    from ..cache import CacheManager
+    from .cache import CacheManager
 
     if config.has_section("cache"):
         cache_section = config["cache"]

@@ -123,7 +123,7 @@ class JiraWeeklyReport:
         else:
             required_assignees = data["Assignee"].unique().tolist() if not data.empty else []
 
-        if include_empty_weeks:
+        if include_empty:
             data = fill_missing_weeks(data, valid_weeks, required_assignees)
             data = mark_reassigned_tasks(data)
 

@@ -11,6 +11,7 @@ from typing import Any
 from jira import JIRA
 from pathlib import Path
 
+
 logger = logging.getLogger(__name__)
 
 

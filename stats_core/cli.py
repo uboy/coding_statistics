@@ -80,6 +80,7 @@ def cmd_setup(config_path: pathlib.Path | str) -> None:
 def cmd_run(args: argparse.Namespace) -> None:
     config = config_utils.load_config(args.config)
     extra_params = parse_key_value_pairs(args.params)
+    report_name = args.report
     start = args.start or extra_params.get("start")
     end = args.end or extra_params.get("end")
     if start:
@@ -92,33 +93,42 @@ def cmd_run(args: argparse.Namespace) -> None:
     if links_file:
         extra_params.setdefault("links_file", links_file)
 
-    # Default to 'jira' for jira_weekly report if no sources specified
-    if args.report == "jira_weekly" and not args.sources:
-        sources = ["jira"]
-    else:
-        sources = args.sources or _available_sources(config)
-        if not sources:
-            sources = []
-
-    if sources:
-        missing = config_utils.ensure_tokens(config, sources)
+    # Jira weekly report has its own data collection flow and does not use Collector.
+    # We still validate Jira credentials, but we do NOT call collect_stats for it.
+    if report_name == "jira_weekly":
+        missing = config_utils.ensure_tokens(config, ["jira"])
         if missing:
             print("⚠️  Не хватает токенов для следующих сервисов:")
             for service in missing:
                 hint = config_utils.TOKEN_HINTS.get(service, "Добавьте необходимые данные в config.ini.")
                 print(f"  - [{service}] {hint}")
             raise SystemExit("Заполните токены и повторите команду.")
+        dataset = {}
+    else:
+        # For Git-like reports we use the unified collector.
+        sources = args.sources or _available_sources(config)
+        if not sources:
+            sources = []
 
-    collector_params = CollectorParams(
-        sources=sources,
-        start=start,
-        end=end,
-        members_file=args.members,
-        extra=extra_params,
-    )
-    dataset = collect_stats(config, collector_params)
+        if sources:
+            missing = config_utils.ensure_tokens(config, sources)
+            if missing:
+                print("⚠️  Не хватает токенов для следующих сервисов:")
+                for service in missing:
+                    hint = config_utils.TOKEN_HINTS.get(service, "Добавьте необходимые данные в config.ini.")
+                    print(f"  - [{service}] {hint}")
+                raise SystemExit("Заполните токены и повторите команду.")
 
-    report = report_registry.get(args.report)
+        collector_params = CollectorParams(
+            sources=sources,
+            start=start,
+            end=end,
+            members_file=args.members,
+            extra=extra_params,
+        )
+        dataset = collect_stats(config, collector_params)
+
+    report = report_registry.get(report_name)
     report.run(
         dataset=dataset,
         config=config,
