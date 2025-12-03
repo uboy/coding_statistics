@@ -10,6 +10,7 @@ import pandas as pd
 from docx import Document
 
 from ..export.word import add_hyperlink
+from ..utils.members import read_member_list
 from .jira_utils import norm_name, is_empty_task
 
 
@@ -28,8 +29,6 @@ def add_table_view_to_document(
         jira_url: Base Jira URL for hyperlinks
         member_list_file: Optional path to Excel file with member list
     """
-    from .jira_list_view import read_member_list
-
     document.add_heading("Tabular View", level=2)
     table = document.add_table(rows=1, cols=6)
     table.style = 'Table Grid'

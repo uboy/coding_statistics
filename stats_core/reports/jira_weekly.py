@@ -20,11 +20,12 @@ from .jira_utils import (
     get_valid_weeks,
     norm_name,
 )
-from .jira_list_view import add_list_view_to_document, read_member_list
+from .jira_list_view import add_list_view_to_document
 from .jira_table_view import add_table_view_to_document
 from .jira_epic_report import generate_epic_report, add_epic_progress_to_document, add_resolved_tasks_section
 from ..sources.jira import JiraSource
 from ..export import excel as excel_export
+from ..utils.members import read_member_list
 
 
 def _parse_bool(value: str | bool | None, default: bool) -> bool:

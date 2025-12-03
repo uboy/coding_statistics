@@ -13,32 +13,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt, RGBColor
 
 from ..export.word import add_hyperlink
+from ..utils.members import read_member_list
 from .jira_utils import norm_name, is_empty_task, get_valid_weeks
-
-
-def read_member_list(member_list_file: str) -> list[str]:
-    """
-    Read the list of required assignees from an Excel file.
-    Assumes the assignee names are in column 'E'.
-
-    Args:
-        member_list_file: Path to Excel file
-
-    Returns:
-        List of assignee names
-    """
-    from openpyxl import load_workbook
-
-    wb = load_workbook(member_list_file)
-    sheet = wb.active
-    assignee_column = 'E'
-
-    assignees = [
-        sheet[f"{assignee_column}{row}"].value
-        for row in range(2, sheet.max_row + 1)
-        if sheet[f"{assignee_column}{row}"].value
-    ]
-    return list(set(assignees))
 
 
 def add_list_view_to_document(

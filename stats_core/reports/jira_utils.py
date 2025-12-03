@@ -29,6 +29,12 @@ def fetch_jira_data(
     """
     Fetch data from JIRA and filter by date range and resolution status.
 
+    Args:
+        jira_source: JiraSource instance
+        project: Jira project key
+        start_date: Start date string (YYYY-MM-DD)
+        end_date: End date string (YYYY-MM-DD)
+
     Returns:
         DataFrame with columns: Issue_key, Summary, Assignee, Status, Resolution_Date,
         Week, Epic_Link, Epic_Name, Parent_Key, Parent_Summary, Type, Created_Date
@@ -38,6 +44,7 @@ def fetch_jira_data(
 
     all_issues = jira_source.fetch_issues(project, start_dt, end_dt)
 
+    # Fetch all epic names
     epic_keys = list({
         getattr(issue.fields, "customfield_10000", None)
         for issue in all_issues
@@ -49,26 +56,19 @@ def fetch_jira_data(
     for issue in all_issues:
         key = issue.key
         summary = issue.fields.summary
-
-        # финальный assignee на момент выгрузки
         assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
-
         resolved_date = issue.fields.resolutiondate
         created_date = getattr(issue.fields, "created", None)
-        created_date_str = created_date.split("T")[0] if created_date else ""
-
         epic_link = getattr(issue.fields, "customfield_10000", None)
-
         parent = getattr(issue.fields, "parent", None)
         parent_key = parent.key if parent else None
         parent_summary = parent.fields.summary if parent else None
 
-        issue_type = getattr(issue.fields, "issuetype", None)
-        issue_type_name = issue_type.name if issue_type else "Unknown"
-
         worklogs = jira_source.get_all_worklogs(key)
+        # собираем всех авторов worklog и авторов по неделям
+        worklog_authors = set()
+        worklog_by_week = {}
 
-        worklog_by_week: dict[str, set[str]] = {}
         for log in worklogs:
             try:
                 author = log["author"]["displayName"]
@@ -76,54 +76,56 @@ def fetch_jira_data(
 
                 if start_dt <= log_date <= end_dt:
                     week = log_date.strftime("%G-W%V")
+                    worklog_authors.add(author)
                     worklog_by_week.setdefault(week, set()).add(author)
             except Exception:
                 continue
 
-        # --- Resolved: только финальному assignee ---
         resolved_week = None
-        resolution_date_str = ""
         if resolved_date:
-            resolution_date_str = resolved_date.split("T")[0]
-            resolved_date_dt = datetime.strptime(resolution_date_str, "%Y-%m-%d")
+            resolution_date = resolved_date.split("T")[0]
+            resolved_date_dt = datetime.strptime(resolution_date, "%Y-%m-%d")
+            issue_type = getattr(issue.fields, "issuetype", None)
+            issue_type_name = issue_type.name if issue_type else "Unknown"
             if start_dt <= resolved_date_dt <= end_dt:
                 resolved_week = resolved_date_dt.strftime("%G-W%V")
+            
+            created_date_str = created_date.split("T")[0] if created_date else ""
+            
+            for author in worklog_authors:
                 data.append({
                     "Issue_key": key,
                     "Summary": summary,
-                    "Assignee": assignee,  # Resolved только финальному assignee
+                    "Assignee": author,  # ВАЖНО: assignee = worklog author
                     "Status": "Resolved",
-                    "Resolution_Date": resolution_date_str,
+                    "Resolution_Date": resolution_date,
                     "Created_Date": created_date_str,
                     "Week": resolved_week,
                     "Epic_Link": epic_link,
                     "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
                     "Parent_Key": parent_key,
                     "Parent_Summary": parent_summary,
-                    "Type": issue_type_name,
+                    "Type": issue_type_name
                 })
 
-        # --- In progress: по worklog авторам, всегда (независимо от resolved_date) ---
-        for log_week, authors_in_week in worklog_by_week.items():
-            for author in authors_in_week:
-                # В неделю резолва финальному исполнителю не ставим In progress (у него будет Resolved)
-                if resolved_week and log_week == resolved_week and author == assignee:
+            for log_week, authors_in_week in worklog_by_week.items():
+                if log_week == resolved_week:
                     continue
-
-                data.append({
-                    "Issue_key": key,
-                    "Summary": summary,
-                    "Assignee": author,
-                    "Status": "In progress",
-                    "Resolution_Date": "",
-                    "Created_Date": created_date_str,
-                    "Week": log_week,
-                    "Epic_Link": epic_link,
-                    "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
-                    "Parent_Key": parent_key,
-                    "Parent_Summary": parent_summary,
-                    "Type": issue_type_name,
-                })
+                for author in authors_in_week:
+                    data.append({
+                        "Issue_key": key,
+                        "Summary": summary,
+                        "Assignee": author,  # ВАЖНО: assignee = worklog author
+                        "Status": "In progress",
+                        "Resolution_Date": "",
+                        "Created_Date": created_date_str,
+                        "Week": log_week,
+                        "Epic_Link": epic_link,
+                        "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
+                        "Parent_Key": parent_key,
+                        "Parent_Summary": parent_summary,
+                        "Type": issue_type_name
+                    })
 
     df = pd.DataFrame(data)
     if not df.empty:
@@ -143,17 +145,15 @@ def mark_reassigned_tasks(df: pd.DataFrame) -> pd.DataFrame:
     """
     # собираем всех worklog-авторов для каждой задачи
     worklog_authors = (
-        df[df["Status"] == "In progress"]
-        .groupby("Issue_key")["Assignee"]
+        df.groupby("Issue_key")["Assignee"]  # assignee в строке = worklog author!
         .unique()
         .to_dict()
     )
 
     # финальный исполнитель задачи
     final_assignee = (
-        df[df["Status"] == "Resolved"]
-        .groupby("Issue_key")["Assignee"]
-        .last()
+        df.groupby("Issue_key")["Assignee"]
+        .last()  # последняя строка = финальный assignee
         .to_dict()
     )
 
@@ -165,7 +165,9 @@ def mark_reassigned_tasks(df: pd.DataFrame) -> pd.DataFrame:
 
     # Добавляем в DataFrame столбец:
     df = df.copy()
-    df["Reassigned"] = df["Issue_key"].map(reassigned_map).fillna(False)
+    reassigned_series = df["Issue_key"].map(reassigned_map)
+    reassigned_series = reassigned_series.infer_objects(copy=False).fillna(False)
+    df["Reassigned"] = reassigned_series.astype(bool)
     return df
 
 
