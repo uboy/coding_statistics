@@ -5,7 +5,7 @@ Unified review statistics report (migrated from legacy unified_review_stat.py).
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from configparser import ConfigParser
 from pathlib import Path
 
@@ -118,7 +118,13 @@ class UnifiedReviewReport:
         if not value:
             return None
         try:
-            return datetime.fromisoformat(value)
+            dt = datetime.fromisoformat(value)
+            # Normalise to UTC-aware for consistent comparison with API timestamps
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt
         except ValueError:
             logger.warning("Неверный формат даты %s. Ожидалось YYYY-MM-DD.", value)
             return None
@@ -144,6 +150,18 @@ class UnifiedReviewReport:
         start: datetime | None,
         end: datetime | None,
     ) -> bool:
+        # Normalise all datetimes to naive UTC to avoid offset-aware/naive comparison issues
+        def _norm(dt: datetime | None) -> datetime | None:
+            if not dt:
+                return None
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt
+
+        value = _norm(value)
+        start = _norm(start)
+        end = _norm(end)
+
         if not start and not end:
             return True
         if not value:

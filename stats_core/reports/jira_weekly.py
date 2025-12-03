@@ -110,6 +110,27 @@ class JiraWeeklyReport:
         # Fetch data
         data = fetch_jira_data(jira_source, project, start_date, end_date)
 
+        # If there is no JIRA data at all, create an empty frame with expected columns
+        # so that downstream utilities (fill_missing_weeks, epic reports) work safely.
+        if data.empty:
+            data = pd.DataFrame(
+                columns=[
+                    "Issue_key",
+                    "Summary",
+                    "Assignee",
+                    "Final_Assignee",
+                    "Status",
+                    "Resolution_Date",
+                    "Created_Date",
+                    "Week",
+                    "Epic_Link",
+                    "Epic_Name",
+                    "Parent_Key",
+                    "Parent_Summary",
+                    "Type",
+                ]
+            )
+
         # Process data
         start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()

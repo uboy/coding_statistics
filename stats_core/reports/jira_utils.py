@@ -56,7 +56,7 @@ def fetch_jira_data(
     for issue in all_issues:
         key = issue.key
         summary = issue.fields.summary
-        assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
+        jira_assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
         resolved_date = issue.fields.resolutiondate
         created_date = getattr(issue.fields, "created", None)
         epic_link = getattr(issue.fields, "customfield_10000", None)
@@ -96,7 +96,8 @@ def fetch_jira_data(
                 data.append({
                     "Issue_key": key,
                     "Summary": summary,
-                    "Assignee": author,  # ВАЖНО: assignee = worklog author
+                    "Assignee": author,  # assignee = worklog author
+                    "Final_Assignee": jira_assignee,
                     "Status": "Resolved",
                     "Resolution_Date": resolution_date,
                     "Created_Date": created_date_str,
@@ -113,9 +114,10 @@ def fetch_jira_data(
                     continue
                 for author in authors_in_week:
                     data.append({
-                        "Issue_key": key,
-                        "Summary": summary,
-                        "Assignee": author,  # ВАЖНО: assignee = worklog author
+                    "Issue_key": key,
+                    "Summary": summary,
+                    "Assignee": author,  # assignee = worklog author
+                    "Final_Assignee": jira_assignee,
                         "Status": "In progress",
                         "Resolution_Date": "",
                         "Created_Date": created_date_str,
@@ -135,36 +137,49 @@ def fetch_jira_data(
 
 def mark_reassigned_tasks(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Mark tasks that were reassigned (final assignee is not in worklog authors).
+    Mark tasks that were reassigned.
 
-    Args:
-        df: DataFrame with Issue_key, Assignee columns
-
-    Returns:
-        DataFrame with added Reassigned column
+    Логика:
+      - собираем всех worklog-авторов (поле Assignee) для каждой Issue_key;
+      - берём финального исполнителя из Jira (поле Final_Assignee);
+      - считаем задачу переназначенной, если финальный исполнитель НЕ логировал время.
     """
-    # собираем всех worklog-авторов для каждой задачи
+    df = df.copy()
+
+    # If required columns are missing (e.g. completely empty input from fetch_jira_data),
+    # there is nothing to mark – return DataFrame with a False flag.
+    for col in ("Issue_key", "Assignee", "Final_Assignee"):
+        if col not in df.columns:
+            df["Reassigned"] = False
+            return df
+
+    # Игнорируем заполнители без ключа задачи
+    real_issues = df[df["Issue_key"] != ""]
+    if real_issues.empty:
+        df["Reassigned"] = False
+        return df
+
     worklog_authors = (
-        df.groupby("Issue_key")["Assignee"]  # assignee в строке = worklog author!
+        real_issues.groupby("Issue_key")["Assignee"]
         .unique()
         .to_dict()
     )
 
-    # финальный исполнитель задачи
     final_assignee = (
-        df.groupby("Issue_key")["Assignee"]
-        .last()  # последняя строка = финальный assignee
+        real_issues.groupby("Issue_key")["Final_Assignee"]
+        .last()
         .to_dict()
     )
 
-    # формируем флаг reassigned
-    reassigned_map = {}
+    reassigned_map: dict[str, bool] = {}
     for issue, authors in worklog_authors.items():
         final = final_assignee.get(issue)
-        reassigned_map[issue] = final not in authors
+        # Если финальный исполнитель отсутствует или пустой — считаем, что не переназначено
+        if final is None or str(final).strip() == "":
+            reassigned_map[issue] = False
+        else:
+            reassigned_map[issue] = final not in authors
 
-    # Добавляем в DataFrame столбец:
-    df = df.copy()
     reassigned_series = df["Issue_key"].map(reassigned_map)
     reassigned_series = reassigned_series.infer_objects(copy=False).fillna(False)
     df["Reassigned"] = reassigned_series.astype(bool)
@@ -189,6 +204,13 @@ def fill_missing_weeks(
         DataFrame with filler rows added
     """
     data = data.copy()
+
+    # Ensure required columns exist even for empty DataFrames
+    if "Assignee" not in data.columns:
+        data["Assignee"] = ""
+    if "Week" not in data.columns:
+        data["Week"] = ""
+
     data["Assignee_norm"] = data["Assignee"].map(norm_name)
 
     required_assignees_norm = [(a, norm_name(a)) for a in required_assignees]

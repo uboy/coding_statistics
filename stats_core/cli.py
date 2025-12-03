@@ -93,16 +93,19 @@ def cmd_run(args: argparse.Namespace) -> None:
     if links_file:
         extra_params.setdefault("links_file", links_file)
 
-    # Jira weekly report has its own data collection flow and does not use Collector.
-    # We still validate Jira credentials, but we do NOT call collect_stats for it.
-    if report_name == "jira_weekly":
-        missing = config_utils.ensure_tokens(config, ["jira"])
-        if missing:
-            print("⚠️  Не хватает токенов для следующих сервисов:")
-            for service in missing:
-                hint = config_utils.TOKEN_HINTS.get(service, "Добавьте необходимые данные в config.ini.")
-                print(f"  - [{service}] {hint}")
-            raise SystemExit("Заполните токены и повторите команду.")
+    # Some reports have their own data collection flow and do not use Collector.
+    # - jira_weekly: pulls Jira issues directly.
+    # - unified_review: работает только по списку ссылок и сам ходит в Git-сервисы.
+    if report_name in {"jira_weekly", "unified_review"}:
+        if report_name == "jira_weekly":
+            missing = config_utils.ensure_tokens(config, ["jira"])
+            if missing:
+                print("⚠️  Не хватает токенов для следующих сервисов:")
+                for service in missing:
+                    hint = config_utils.TOKEN_HINTS.get(service, "Добавьте необходимые данные в config.ini.")
+                    print(f"  - [{service}] {hint}")
+                raise SystemExit("Заполните токены и повторите команду.")
+        # Reports with custom data-collection flows don't use the shared dataset.
         dataset = {}
     else:
         # For Git-like reports we use the unified collector.

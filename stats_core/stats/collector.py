@@ -5,7 +5,7 @@ High level data collection orchestrator.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Sequence, Any
 
 from configparser import ConfigParser
@@ -25,11 +25,26 @@ class CollectorParams:
 
     @property
     def start_dt(self) -> datetime | None:
-        return datetime.fromisoformat(self.start) if self.start else None
+        if not self.start:
+            return None
+        dt = datetime.fromisoformat(self.start)
+        # Normalise to UTC-aware for consistent comparison with API timestamps
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
 
     @property
     def end_dt(self) -> datetime | None:
-        return datetime.fromisoformat(self.end) if self.end else None
+        if not self.end:
+            return None
+        dt = datetime.fromisoformat(self.end)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
 
 
 SOURCE_BUILDERS: dict[str, Any] = {
@@ -136,6 +151,18 @@ def _within_range(
     start: datetime | None,
     end: datetime | None,
 ) -> bool:
+    # Normalise all datetimes to naive UTC to avoid offset-aware/naive comparison issues
+    def _norm(dt: datetime | None) -> datetime | None:
+        if not dt:
+            return None
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+
+    value = _norm(value)
+    start = _norm(start)
+    end = _norm(end)
+
     if not value:
         return not start and not end
     if start and value < start:
