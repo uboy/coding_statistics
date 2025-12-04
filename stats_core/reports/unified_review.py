@@ -4,7 +4,10 @@ Unified review statistics report (migrated from legacy unified_review_stat.py).
 
 from __future__ import annotations
 
+import atexit
 import logging
+import signal
+import sys
 from datetime import datetime, timezone
 from configparser import ConfigParser
 from pathlib import Path
@@ -27,12 +30,60 @@ class UnifiedReviewReport:
         output_formats: list[str],
         extra_params: dict | None = None,
     ) -> None:
-        from ..config import create_cache_manager
+        from ..config import create_cache_manager, get_proxy_config, get_ssl_config
         from . import unified_review_utils
 
         # Initialize cache manager
         cache_manager = create_cache_manager(config)
         unified_review_utils.set_cache_manager(cache_manager)
+        
+        # Get SSL configuration
+        ssl_config = get_ssl_config(config)
+        unified_review_utils.set_ssl_config(ssl_config)
+        
+        # Register cache save on exit (for Ctrl+C, errors, normal exit)
+        def save_cache_on_exit():
+            try:
+                cache_manager.save()
+                cache_stats = cache_manager.get_stats()
+                logger.info("Cache saved on exit: %s links, %s API responses", 
+                           cache_stats.get("link_entries", 0),
+                           cache_stats.get("api_entries", 0))
+            except Exception as e:
+                logger.error("Failed to save cache on exit: %s", e)
+        
+        # Register for normal exit
+        atexit.register(save_cache_on_exit)
+        
+        # Register for signal handlers (Ctrl+C, SIGTERM)
+        def signal_handler(signum, frame):
+            logger.info("Received signal %s, saving cache...", signum)
+            save_cache_on_exit()
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        if hasattr(signal, 'SIGTERM'):
+            signal.signal(signal.SIGTERM, signal_handler)
+        
+        # Get proxy configuration
+        proxy_config = get_proxy_config(config)
+        unified_review_utils.set_proxy_config(proxy_config)
+        
+        # Log cache status
+        if cache_manager.enabled:
+            cache_stats = cache_manager.get_stats()
+            logger.info("Cache enabled: file=%s, existing entries: %s links, %s API responses",
+                       cache_manager.cache_file,
+                       cache_stats.get("link_entries", 0),
+                       cache_stats.get("api_entries", 0))
+        else:
+            logger.warning("Cache is disabled")
+        
+        # Log proxy status
+        if proxy_config:
+            logger.info("Proxy configured: %s", {k: v if "password" not in str(v).lower() else "***" for k, v in proxy_config.items() if k != "no_proxy"})
+        else:
+            logger.debug("No proxy configuration found")
 
         extra_params = extra_params or {}
         links_file = extra_params.get("links_file") or _get_reporting_value(config, "links_file", "input.txt")
@@ -46,15 +97,20 @@ class UnifiedReviewReport:
             logger.warning("Links file is not configured. Set [reporting] links_file or pass --links-file.")
             return
 
-        rows = self._rows_from_links(
-            links_file=links_file,
-            config=config,
-            start_str=extra_params.get("start"),
-            end_str=extra_params.get("end"),
-        )
-
-        # Save cache after processing
-        cache_manager.save()
+        try:
+            rows = self._rows_from_links(
+                links_file=links_file,
+                config=config,
+                start_str=extra_params.get("start"),
+                end_str=extra_params.get("end"),
+            )
+        finally:
+            # Always save cache, even if processing fails
+            cache_manager.save()
+            cache_stats = cache_manager.get_stats()
+            logger.info("Cache saved: %s link entries, %s API entries", 
+                       cache_stats.get("link_entries", 0),
+                       cache_stats.get("api_entries", 0))
 
         if not rows:
             logger.warning("No review data collected, skipping export.")

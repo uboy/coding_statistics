@@ -60,9 +60,10 @@ class CacheManager:
     def _load(self) -> None:
         """Load cache from file."""
         if not self.enabled:
+            logger.info("Cache is disabled")
             return
         if not os.path.exists(self.cache_file):
-            logger.debug(f"Cache file {self.cache_file} does not exist, starting with empty cache")
+            logger.info(f"Cache file {self.cache_file} does not exist, starting with empty cache")
             return
         try:
             with open(self.cache_file, "r", encoding="utf-8") as f:
@@ -72,7 +73,9 @@ class CacheManager:
                 self._cache["api"] = {}
             if "links" not in self._cache:
                 self._cache["links"] = {}
-            logger.info(f"Loaded cache from {self.cache_file}")
+            link_count = len(self._cache.get("links", {}))
+            api_count = len(self._cache.get("api", {}))
+            logger.info(f"Loaded cache from {self.cache_file}: {link_count} links, {api_count} API responses")
         except Exception as e:
             logger.warning(f"Failed to load cache from {self.cache_file}: {e}")
             self._cache = {"api": {}, "links": {}}
@@ -80,11 +83,14 @@ class CacheManager:
     def save(self) -> None:
         """Save cache to file."""
         if not self.enabled:
+            logger.debug("Cache is disabled, skipping save")
             return
         try:
             with open(self.cache_file, "w", encoding="utf-8") as f:
                 json.dump(self._cache, f, ensure_ascii=False, indent=2)
-            logger.debug(f"Cache saved to {self.cache_file}")
+            link_count = len(self._cache.get("links", {}))
+            api_count = len(self._cache.get("api", {}))
+            logger.info(f"Cache saved to {self.cache_file}: {link_count} links, {api_count} API responses")
         except Exception as e:
             logger.error(f"Failed to save cache to {self.cache_file}: {e}")
 
@@ -142,11 +148,14 @@ class CacheManager:
             Cached data or None if not found/expired
         """
         if not self.enabled:
+            logger.debug(f"Cache disabled, not checking cache for: {url}")
             return None
         entry = self._cache["links"].get(url)
         if not entry:
+            logger.debug(f"Cache miss for link: {url}")
             return None
         if self._is_expired(entry.get("cached_at")):
+            logger.debug(f"Cache entry expired for link: {url}")
             del self._cache["links"][url]
             return None
         logger.info(f"Cache hit for link: {url}")
@@ -155,12 +164,14 @@ class CacheManager:
     def set_link_result(self, url: str, data: Any) -> None:
         """Cache processed link result."""
         if not self.enabled:
+            logger.debug(f"Cache disabled, not caching link: {url}")
             return
         self._cache["links"][url] = {
             "data": data,
             "cached_at": datetime.utcnow().isoformat(),
         }
         logger.debug(f"Cached link result for: {url}")
+        logger.info(f"Link cached: {url} (total cached links: {len(self._cache.get('links', {}))})")
 
     def _is_expired(self, cached_at: Optional[str]) -> bool:
         """Check if cache entry is expired."""

@@ -165,3 +165,90 @@ def create_cache_manager(config: ConfigParser):
     return CacheManager(cache_file=cache_file, enabled=enabled, ttl_days=ttl_days)
 
 
+def get_ssl_config(config: ConfigParser) -> dict[str, Any]:
+    """
+    Get SSL configuration from config file.
+    
+    Returns:
+        Dict with 'verify', 'bundle_ca_path', 'check_hostname' keys
+    """
+    ssl_config = {
+        "verify": True,
+        "bundle_ca_path": None,
+        "check_hostname": True,
+    }
+    
+    if config.has_section("ssl"):
+        ssl_section = config["ssl"]
+        # Allow disabling SSL verification (not recommended but sometimes needed)
+        verify_str = ssl_section.get("verify", "true")
+        ssl_config["verify"] = verify_str.lower() not in ("false", "0", "no", "off")
+        
+        # Custom bundle-ca path
+        bundle_ca = ssl_section.get("bundle_ca", raw=True) or ssl_section.get("bundle-ca", raw=True)
+        if bundle_ca:
+            if os.path.exists(bundle_ca) and os.path.isfile(bundle_ca):
+                ssl_config["bundle_ca_path"] = os.path.abspath(bundle_ca)
+            else:
+                logger.warning("SSL bundle-ca file not found: %s", bundle_ca)
+        else:
+            # Default: check for bundle-ca in current directory
+            if os.path.exists("bundle-ca") and os.path.isfile("bundle-ca"):
+                ssl_config["bundle_ca_path"] = os.path.abspath("bundle-ca")
+        
+        # Check hostname setting
+        check_hostname_str = ssl_section.get("check_hostname", "true")
+        ssl_config["check_hostname"] = check_hostname_str.lower() not in ("false", "0", "no", "off")
+    else:
+        # Default: check for bundle-ca in current directory
+        if os.path.exists("bundle-ca") and os.path.isfile("bundle-ca"):
+            ssl_config["bundle_ca_path"] = os.path.abspath("bundle-ca")
+    
+    return ssl_config
+
+
+def get_proxy_config(config: ConfigParser) -> dict[str, str | None] | None:
+    """
+    Get proxy configuration from config file or environment variables.
+    
+    Priority:
+    1. [proxy] section in config.ini (http, https, no_proxy)
+    2. Environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
+    
+    Returns:
+        Dict with 'http', 'https', 'no_proxy' keys, or None if no proxy configured
+    """
+    proxies = {}
+    
+    # Check config file first
+    if config.has_section("proxy"):
+        proxy_section = config["proxy"]
+        # Use raw=True to avoid ConfigParser interpreting % as variable substitution
+        # This allows URLs with %-encoded characters (like %40 for @)
+        http_proxy = proxy_section.get("http", raw=True) or proxy_section.get("HTTP_PROXY", raw=True)
+        https_proxy = proxy_section.get("https", raw=True) or proxy_section.get("HTTPS_PROXY", raw=True)
+        no_proxy = proxy_section.get("no_proxy", raw=True) or proxy_section.get("NO_PROXY", raw=True)
+        
+        if http_proxy:
+            proxies["http"] = http_proxy
+        if https_proxy:
+            proxies["https"] = https_proxy
+        if no_proxy:
+            proxies["no_proxy"] = no_proxy
+    
+    # Fallback to environment variables if not in config
+    if not proxies.get("http"):
+        proxies["http"] = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    if not proxies.get("https"):
+        proxies["https"] = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if not proxies.get("no_proxy"):
+        proxies["no_proxy"] = os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
+    
+    # Return None if no proxy configured
+    if not proxies.get("http") and not proxies.get("https"):
+        return None
+    
+    # Remove None values
+    return {k: v for k, v in proxies.items() if v}
+
+

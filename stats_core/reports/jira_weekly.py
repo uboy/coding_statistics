@@ -154,7 +154,13 @@ class JiraWeeklyReport:
 
         # Generate file suffix
         file_suffix = generate_file_suffix()
-        output_file = Path(f"jira_report_{project}_{start_date}-{end_date}{file_suffix}")
+        
+        # Все отчеты сохраняются в папку reports по умолчанию
+        output_dir = extra_params.get("output_dir") or config.get("reporting", "output_dir", fallback="reports")
+        output_base = Path(output_dir)
+        output_base.mkdir(parents=True, exist_ok=True)
+        
+        output_file = output_base / f"jira_report_{project}_{start_date}-{end_date}{file_suffix}"
 
         # Generate Excel report if requested
         if "excel" in output_formats:

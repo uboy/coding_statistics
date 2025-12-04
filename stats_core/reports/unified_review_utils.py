@@ -47,19 +47,109 @@ def parse_links(file_path: str) -> List[str]:
         return [line.strip() for line in fh if line.strip()]
 
 
-def init_session(token: Optional[str] = None) -> requests.Session:
+def init_session(token: Optional[str] = None, proxy_config: Optional[dict] = None, ssl_config: Optional[dict] = None) -> requests.Session:
+    """
+    Initialize a requests Session with token and proxy support.
+    
+    Args:
+        token: Optional token for Private-Token header (GitLab style)
+        proxy_config: Optional proxy config dict with 'http', 'https', 'no_proxy' keys
+    """
     session = requests.Session()
     if token:
         session.headers["Private-Token"] = token
-    session.verify = "bundle-ca" if os.path.exists("bundle-ca") else True
+    
+    # Простое поведение как в старом скрипте unified_review_stat.py
+    # Используем строку 'bundle-ca' если файл существует, иначе True
+    if ssl_config and not ssl_config.get("verify", True):
+        session.verify = False
+        logger.warning("SSL verification is DISABLED (not recommended for production)")
+    else:
+        session.verify = 'bundle-ca' if os.path.exists("bundle-ca") else True
+        if session.verify == 'bundle-ca':
+            logger.info("Using SSL certificate bundle: bundle-ca")
+        else:
+            logger.debug("Using default SSL verification (bundle-ca not found)")
+    
+    # Apply proxy configuration
+    if proxy_config:
+        # Build proxies dict for requests
+        proxies = {}
+        if proxy_config.get("http"):
+            proxies["http"] = proxy_config["http"]
+        if proxy_config.get("https"):
+            proxies["https"] = proxy_config["https"]
+        
+        if proxies:
+            session.proxies = proxies
+            logger.info("Proxy configured: %s", {k: v if "password" not in str(v).lower() else "***" for k, v in proxies.items()})
+        
+        # Handle NO_PROXY
+        if proxy_config.get("no_proxy"):
+            # requests doesn't directly support NO_PROXY, but we can log it
+            logger.debug("NO_PROXY configured: %s", proxy_config["no_proxy"])
+    else:
+        # Fallback to environment variables (requests automatically uses these)
+        proxy_vars = {
+            "HTTP_PROXY": os.environ.get("HTTP_PROXY"),
+            "HTTPS_PROXY": os.environ.get("HTTPS_PROXY"),
+            "http_proxy": os.environ.get("http_proxy"),
+            "https_proxy": os.environ.get("https_proxy"),
+            "NO_PROXY": os.environ.get("NO_PROXY"),
+            "no_proxy": os.environ.get("no_proxy"),
+        }
+        active_proxies = {k: v for k, v in proxy_vars.items() if v}
+        if active_proxies:
+            logger.debug("Proxy from environment variables: %s", {k: v if "password" not in str(v).lower() else "***" for k, v in active_proxies.items()})
+        
+        # Explicitly disable proxy if NO_PROXY is set
+        if os.environ.get("NO_PROXY") or os.environ.get("no_proxy"):
+            logger.debug("NO_PROXY set, disabling proxies")
+            session.proxies = {"http": None, "https": None}
+    
+    logger.debug("Session created: verify=%s, headers=%s, proxies=%s", 
+                 session.verify, 
+                 {k: v if k.lower() not in ("private-token", "authorization") else "***" for k, v in session.headers.items()},
+                 session.proxies if hasattr(session, 'proxies') else "default")
+    
     return session
 
 
-def init_github_session(token: str | None) -> requests.Session:
+def init_github_session(token: str | None, proxy_config: Optional[dict] = None, ssl_config: Optional[dict] = None) -> requests.Session:
+    """
+    Initialize a requests Session for GitHub API with token and proxy support.
+    
+    Args:
+        token: GitHub token for Authorization header
+        proxy_config: Optional proxy config dict with 'http', 'https', 'no_proxy' keys
+    """
     session = requests.Session()
     if token:
         session.headers["Authorization"] = f"token {token}"
     session.headers["Accept"] = "application/vnd.github+json"
+    
+    # Простое поведение как в старом скрипте unified_review_stat.py
+    if ssl_config and not ssl_config.get("verify", True):
+        session.verify = False
+        logger.warning("SSL verification is DISABLED for GitHub (not recommended)")
+    else:
+        session.verify = 'bundle-ca' if os.path.exists("bundle-ca") else True
+        if session.verify == 'bundle-ca':
+            logger.info("Using SSL certificate bundle for GitHub: bundle-ca")
+        else:
+            logger.debug("Using default SSL verification for GitHub (bundle-ca not found)")
+    
+    # Apply proxy configuration (same as init_session)
+    if proxy_config:
+        proxies = {}
+        if proxy_config.get("http"):
+            proxies["http"] = proxy_config["http"]
+        if proxy_config.get("https"):
+            proxies["https"] = proxy_config["https"]
+        if proxies:
+            session.proxies = proxies
+            logger.info("Proxy configured for GitHub: %s", {k: v if "password" not in str(v).lower() else "***" for k, v in proxies.items()})
+    
     return session
 
 
@@ -67,26 +157,91 @@ def make_api_request(
     session: requests.Session,
     url: str,
     auth: Optional[HTTPBasicAuth] = None,
+    params: Optional[Dict[str, Any]] = None,
     max_retries: int = MAX_RETRIES,
 ) -> Optional[Dict[Any, Any]]:
+    """
+    Make an API request with detailed logging and error handling.
+    
+    Args:
+        session: Requests session with headers/verify configured
+        url: Full URL to request
+        auth: Optional HTTPBasicAuth for authentication
+        params: Optional query parameters dict
+        max_retries: Maximum number of retry attempts
+        
+    Returns:
+        Parsed JSON response or None on failure
+    """
+    params = params or {}
     for attempt in range(max_retries):
         try:
-            resp = session.get(url, auth=auth, timeout=30)
+            # Log request details (hide sensitive tokens in params)
+            log_params = dict(params)
+            if "access_token" in log_params:
+                log_params["access_token"] = "***" if log_params["access_token"] else None
+            logger.debug(
+                "API request [attempt %d/%d]: %s | headers: %s | params: %s",
+                attempt + 1,
+                max_retries,
+                url,
+                {k: v if k.lower() not in ("private-token", "authorization") else "***" for k, v in session.headers.items()},
+                log_params,
+            )
+            
+            resp = session.get(url, auth=auth, params=params, timeout=30)
+            logger.debug("API response: %s %s | headers: %s", resp.status_code, resp.reason, dict(resp.headers))
+            
             resp.raise_for_status()
             text = resp.text
             if text.startswith(")]}'\n"):
                 text = text[5:]
             return json.loads(text)
         except requests.exceptions.HTTPError as exc:
-            logger.warning("HTTP error %s for %s", getattr(exc.response, "status_code", "?"), url)
+            status_code = getattr(exc.response, "status_code", "?")
+            response_text = ""
+            try:
+                if exc.response is not None:
+                    response_text = exc.response.text[:500]  # First 500 chars
+            except Exception:
+                pass
+            
+            logger.error(
+                "HTTP error %s for %s | Response: %s | Headers sent: %s",
+                status_code,
+                url,
+                response_text,
+                {k: v if k.lower() not in ("private-token", "authorization") else "***" for k, v in session.headers.items()},
+            )
             if exc.response is not None and exc.response.status_code in (401, 404):
+                logger.warning("Request failed with %s, stopping retries", status_code)
                 return None
+        except requests.exceptions.SSLError as exc:
+            bundle_ca_exists = os.path.exists("bundle-ca")
+            bundle_ca_path = os.path.abspath("bundle-ca") if bundle_ca_exists else None
+            logger.error(
+                "SSL error for %s: %s | verify=%s | bundle-ca exists: %s | bundle-ca path: %s | current dir: %s",
+                url,
+                exc,
+                session.verify,
+                bundle_ca_exists,
+                bundle_ca_path,
+                os.getcwd(),
+            )
+            # Log more SSL details if available
+            if hasattr(exc, 'args') and exc.args:
+                logger.error("SSL error details: %s", exc.args)
+        except requests.exceptions.ConnectionError as exc:
+            logger.error("Connection error for %s: %s", url, exc)
+        except requests.exceptions.Timeout as exc:
+            logger.error("Timeout error for %s: %s", url, exc)
         except requests.exceptions.RequestException as exc:
-            logger.warning("Attempt %s/%s failed for %s: %s", attempt + 1, max_retries, url, exc)
+            logger.error("Request exception [attempt %d/%d] for %s: %s", attempt + 1, max_retries, url, exc)
         except json.JSONDecodeError as exc:
-            logger.error("JSON parse error for %s: %s", url, exc)
+            logger.error("JSON parse error for %s: %s | Response text (first 200 chars): %s", url, exc, resp.text[:200] if 'resp' in locals() else "N/A")
             return None
         if attempt < max_retries - 1:
+            logger.debug("Retrying after %s seconds...", RETRY_DELAY)
             sleep(RETRY_DELAY)
     logger.error("Failed to fetch data after %s attempts: %s", max_retries, url)
     return None
@@ -108,7 +263,13 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser, platform: str) -> O
         logger.error("Base URL for %s is not configured.", platform)
         return None
     token = config.get(platform, "token", fallback=None)
-    session = init_session(token)
+    # Gitee API v5 supports token via:
+    # 1. Authorization header: "Bearer <token>" or "token <token>"
+    # 2. Query parameter: access_token=<token>
+    # We'll use query parameter approach (like in gitee.py source) for consistency
+    session = init_session(None, proxy_config=_proxy_config, ssl_config=_ssl_config)
+    # Note: Token will be passed via params in make_api_request if needed
+    # But for now, try without token first (as user indicated params=None works)
 
     # Support both classic /pulls/ URLs and GitLab-like /merge_requests/ URLs
     pr_match = re.match(
@@ -119,10 +280,13 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser, platform: str) -> O
         _, owner, repo, _, pr_id = pr_match.groups()
         api_url = f"{base_url}/api/v5/repos/{owner}/{repo}/pulls/{pr_id}"
         files_url = f"{api_url}/files"
-        pr = make_api_request(session, api_url)
+        # Gitee API: token can be passed via access_token query param or Authorization header
+        # Use query param approach (like gitee.py) - add token to params if available
+        params = {"access_token": token} if token else None
+        pr = make_api_request(session, api_url, params=params)
         if not pr:
             return None
-        files = make_api_request(session, files_url) or []
+        files = make_api_request(session, files_url, params=params) or []
         additions = sum(int(f.get("additions", 0)) for f in files)
         deletions = sum(int(f.get("deletions", 0)) for f in files)
         reviewers = ", ".join([r["login"] for r in pr.get("assignees", []) if r.get("accept", True)])
@@ -145,7 +309,9 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser, platform: str) -> O
     if commit_match:
         _, owner, repo, sha = commit_match.groups()
         commit_url = f"{base_url}/api/v5/repos/{owner}/{repo}/commits/{sha}"
-        commit = make_api_request(session, commit_url)
+        # Gitee API: token can be passed via access_token query param or Authorization header
+        params = {"access_token": token} if token else None
+        commit = make_api_request(session, commit_url, params=params)
         if not commit:
             return None
         additions = safe_get(commit, "stats", "additions")
@@ -172,7 +338,7 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser, platform: str) -> O
 def process_gitlab(url: str, config: ConfigParser) -> Optional[List]:
     base_url = config.get("gitlab", "gitlab-url", fallback=config.get("gitlab", "url", fallback=""))
     token = config.get("gitlab", "token", fallback=None)
-    session = init_session(token)
+    session = init_session(token, proxy_config=_proxy_config, ssl_config=_ssl_config)
     cleaned = url.replace("#/", "")
     match = re.match(r"https://([^/]+)/([^/]+/[^/]+)/merge_requests/(\d+)", cleaned)
     if not match:
@@ -210,7 +376,7 @@ def process_gitlab(url: str, config: ConfigParser) -> Optional[List]:
 def process_codehub(url: str, config: ConfigParser, platform: str) -> Optional[List]:
     base_url = config.get(platform, f"{platform}-url", fallback=config.get(platform, "url", fallback=""))
     token = config.get(platform, "token", fallback=None)
-    session = init_session(token)
+    session = init_session(token, proxy_config=_proxy_config, ssl_config=_ssl_config)
     url_clean = url.replace("#/", "")
     patterns = {
         "opencodehub": {
@@ -308,7 +474,7 @@ def process_gerrit(url: str, config: ConfigParser) -> Optional[List]:
     if not base_url or not username or not password:
         logger.error("Gerrit credentials are missing in config.")
         return None
-    session = init_session()
+    session = init_session(proxy_config=_proxy_config, ssl_config=_ssl_config)
     auth = HTTPBasicAuth(username, password)
     api_url = f"{base_url}/a/changes/{change_id}/detail"
     data = make_api_request(session, api_url, auth=auth)
@@ -346,7 +512,7 @@ def process_github(url: str, config: ConfigParser) -> Optional[List]:
     if not token:
         logger.error("GitHub token not configured.")
         return None
-    session = init_github_session(token)
+    session = init_github_session(token, proxy_config=_proxy_config, ssl_config=_ssl_config)
 
     pr_match = re.match(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)", url)
     if pr_match:
@@ -404,12 +570,28 @@ def process_github(url: str, config: ConfigParser) -> Optional[List]:
 
 # Global cache manager instance (set by report)
 _cache_manager: Optional[Any] = None
+# Global proxy configuration (set by report)
+_proxy_config: Optional[dict] = None
+# Global SSL configuration (set by report)
+_ssl_config: Optional[dict] = None
 
 
 def set_cache_manager(cache_manager: Any) -> None:
     """Set the global cache manager for link processing."""
     global _cache_manager
     _cache_manager = cache_manager
+
+
+def set_proxy_config(proxy_config: Optional[dict]) -> None:
+    """Set the global proxy configuration for API requests."""
+    global _proxy_config
+    _proxy_config = proxy_config
+
+
+def set_ssl_config(ssl_config: Optional[dict]) -> None:
+    """Set the global SSL configuration for API requests."""
+    global _ssl_config
+    _ssl_config = ssl_config
 
 
 def process_link(url: str, config: ConfigParser) -> Optional[List]:

@@ -109,9 +109,32 @@ class GiteeLikeSource(BaseSource):
         params = dict(params or {})
         if self.token:
             params.setdefault("access_token", self.token)
-        resp = self.session.get(url, params=params, timeout=30)
-        resp.raise_for_status()
-        return resp.json()
+        
+        # Log request details (hide token)
+        log_params = dict(params)
+        if "access_token" in log_params:
+            log_params["access_token"] = "***" if log_params["access_token"] else None
+        logger.debug(
+            "Gitee API request: %s | headers: %s | params: %s",
+            url,
+            {k: v if k.lower() not in ("private-token", "authorization") else "***" for k, v in self.session.headers.items()},
+            log_params,
+        )
+        
+        try:
+            resp = self.session.get(url, params=params, timeout=30)
+            logger.debug("Gitee API response: %s %s", resp.status_code, resp.reason)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.error(
+                "Gitee API error for %s | params: %s | error: %s | response: %s",
+                url,
+                log_params,
+                exc,
+                getattr(exc, "response", {}).get("text", "")[:500] if hasattr(exc, "response") else "",
+            )
+            raise
 
     def _paginate(self, path: str, params: dict | None = None) -> Iterator[Any]:
         base_params = dict(params or {})

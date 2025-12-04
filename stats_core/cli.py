@@ -10,6 +10,7 @@ Provides two primary commands:
 from __future__ import annotations
 
 import argparse
+import logging
 import pathlib
 from typing import Sequence
 
@@ -38,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--links-file", help="Path to file with explicit links (for review stats).")
     run_cmd.add_argument("--output-formats", nargs="+", default=["excel"])
     run_cmd.add_argument("--params", nargs="*", help="Extra key=value pairs passed to the report.")
+    run_cmd.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO", help="Set logging level.")
 
     return parser
 
@@ -78,6 +80,14 @@ def cmd_setup(config_path: pathlib.Path | str) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    # Configure logging level
+    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    
     config = config_utils.load_config(args.config)
     extra_params = parse_key_value_pairs(args.params)
     report_name = args.report

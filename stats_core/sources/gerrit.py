@@ -113,12 +113,38 @@ class GerritSource(BaseSource):
 
     def _request(self, path: str, params: dict | None = None) -> list[dict]:
         url = f"{self.base_url}{path}"
-        resp = self.session.get(url, params=params, timeout=30)
-        resp.raise_for_status()
-        text = resp.text
-        if text.startswith(GERRIT_PREFIX):
-            text = text[len(GERRIT_PREFIX) :]
-        return json.loads(text)
+        
+        # Log request details (hide credentials)
+        logger.debug(
+            "Gerrit API request: %s | headers: %s | params: %s",
+            url,
+            {k: v if k.lower() not in ("private-token", "authorization") else "***" for k, v in self.session.headers.items()},
+            params or {},
+        )
+        
+        try:
+            resp = self.session.get(url, params=params, timeout=30)
+            logger.debug("Gerrit API response: %s %s", resp.status_code, resp.reason)
+            resp.raise_for_status()
+            text = resp.text
+            if text.startswith(GERRIT_PREFIX):
+                text = text[len(GERRIT_PREFIX) :]
+            return json.loads(text)
+        except Exception as exc:
+            response_text = ""
+            if hasattr(exc, "response") and exc.response is not None:
+                try:
+                    response_text = exc.response.text[:500]
+                except Exception:
+                    pass
+            logger.error(
+                "Gerrit API error for %s | params: %s | error: %s | response: %s",
+                url,
+                params or {},
+                exc,
+                response_text,
+            )
+            raise
 
 
 def _parse_iso(value: str | None) -> datetime | None:

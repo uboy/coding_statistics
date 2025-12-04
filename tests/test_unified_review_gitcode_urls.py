@@ -67,7 +67,7 @@ def test_gitcode_pr_url_variants(monkeypatch, url_path):
 
     calls = {"count": 0}
 
-    def fake_make_api_request(session, url, auth=None, max_retries=3):
+    def fake_make_api_request(session, url, auth=None, params=None, max_retries=3):
         calls["count"] += 1
         if url.endswith("/files"):
             return [

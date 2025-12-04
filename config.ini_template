@@ -49,3 +49,29 @@ token = <token>
 # format for repository:
 repository = OH_003/arkui_ace_engine
 branch = master
+
+[proxy]
+# Optional: Proxy configuration for all API requests
+# If not set, will use HTTP_PROXY/HTTPS_PROXY environment variables
+# For URLs with special characters in password, use URL encoding:
+#   @ -> %40
+#   : -> %3A
+#   / -> %2F
+#   % -> %25 (double % to escape)
+# Example: http://username:password%40@proxy.example.com:8080
+# http = http://proxy.example.com:8080
+# https = https://proxy.example.com:8080
+# no_proxy = localhost,127.0.0.1,.local
+
+[ssl]
+# Optional: SSL certificate verification settings
+# verify = true
+# bundle_ca = bundle-ca
+# check_hostname = true
+# 
+# If bundle-ca causes "basic constraints" or "CERTIFICATE_VERIFY_FAILED" errors:
+# 1. The code now uses urllib3 custom SSL context which is more lenient
+# 2. Try using a different bundle-ca file (re-export from your CA)
+# 3. Set check_hostname = false (less secure, but may help with some certificates)
+# 4. Set verify = false (NOT RECOMMENDED, completely disables SSL verification)
+# 5. Leave unset to use default system certificates (if bundle-ca not found)
