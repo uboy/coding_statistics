@@ -110,7 +110,11 @@ def process_gitee_or_gitcode(url: str, config: ConfigParser, platform: str) -> O
     token = config.get(platform, "token", fallback=None)
     session = init_session(token)
 
-    pr_match = re.match(r"https://(gitee\.com|gitcode\.net|gitcode\.com)/([^/]+)/([^/]+)/pull(s)?/(\d+)", url)
+    # Support both classic /pulls/ URLs and GitLab-like /merge_requests/ URLs
+    pr_match = re.match(
+        r"https://(gitee\.com|gitcode\.net|gitcode\.com)/([^/]+)/([^/]+)/(pulls?|merge_requests)/(\d+)",
+        url,
+    )
     if pr_match:
         _, owner, repo, _, pr_id = pr_match.groups()
         api_url = f"{base_url}/api/v5/repos/{owner}/{repo}/pulls/{pr_id}"
