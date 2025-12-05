@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import urllib.parse
+import ssl
 from configparser import ConfigParser
 from datetime import datetime
 from pathlib import Path
@@ -17,11 +18,45 @@ from typing import Iterable, List, Optional, Dict, Any
 
 import requests
 from requests.auth import HTTPBasicAuth
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
 
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2
+class PermissiveSSLAdapter(HTTPAdapter):
+    """
+    HTTPAdapter that relaxes strict X.509 checks for older / custom CAs on OpenSSL 3.x.
+    It still validates against the provided cafile but clears VERIFY_X509_STRICT and enables
+    legacy server connect when available.
+    """
+
+    def __init__(self, cafile: str, check_hostname: bool = True, permissive_flags: bool = True, **kwargs):
+        self._cafile = cafile
+        self._check_hostname = check_hostname
+        self._permissive_flags = permissive_flags
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        ctx = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+        ctx.load_verify_locations(cafile=self._cafile)
+        if self._permissive_flags:
+            if hasattr(ssl, "VERIFY_X509_STRICT"):
+                ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+            # Fall back to default/zero flags if strict not present
+            if hasattr(ssl, "VERIFY_DEFAULT"):
+                ctx.verify_flags |= ssl.VERIFY_DEFAULT
+            else:
+                ctx.verify_flags = 0
+            if hasattr(ssl, "OP_LEGACY_SERVER_CONNECT"):
+                ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
+        ctx.check_hostname = self._check_hostname
+        pool_kwargs["ssl_context"] = ctx
+        self.poolmanager = PoolManager(
+            num_pools=connections, maxsize=maxsize, block=block, **pool_kwargs
+        )
+
 
 HEADERS = [
     "Name",
@@ -59,16 +94,26 @@ def init_session(token: Optional[str] = None, proxy_config: Optional[dict] = Non
     if token:
         session.headers["Private-Token"] = token
     
-    # Простое поведение как в старом скрипте unified_review_stat.py
-    # Используем строку 'bundle-ca' если файл существует, иначе True
+    # SSL handling: use permissive adapter with bundle-ca when present (helps with OpenSSL 3 strictness)
+    check_hostname = True
+    if ssl_config is not None:
+        check_hostname = ssl_config.get("check_hostname", True)
+
     if ssl_config and not ssl_config.get("verify", True):
         session.verify = False
         logger.warning("SSL verification is DISABLED (not recommended for production)")
     else:
-        session.verify = 'bundle-ca' if os.path.exists("bundle-ca") else True
-        if session.verify == 'bundle-ca':
-            logger.info("Using SSL certificate bundle: bundle-ca")
+        bundle_path = os.path.abspath("bundle-ca") if os.path.exists("bundle-ca") else None
+        if bundle_path and os.path.isfile(bundle_path):
+            try:
+                session.mount("https://", PermissiveSSLAdapter(bundle_path, check_hostname=check_hostname, permissive_flags=True))
+                session.verify = True  # verification done via adapter context
+                logger.info("Using permissive SSL adapter with bundle-ca: %s (check_hostname=%s)", bundle_path, check_hostname)
+            except Exception as e:
+                logger.warning("Failed to mount permissive SSL adapter, fallback to default verify: %s", e)
+                session.verify = bundle_path
         else:
+            session.verify = True
             logger.debug("Using default SSL verification (bundle-ca not found)")
     
     # Apply proxy configuration
@@ -82,7 +127,7 @@ def init_session(token: Optional[str] = None, proxy_config: Optional[dict] = Non
         
         if proxies:
             session.proxies = proxies
-            logger.info("Proxy configured: %s", {k: v if "password" not in str(v).lower() else "***" for k, v in proxies.items()})
+            logger.debug("Proxy configured: %s", {k: v if "password" not in str(v).lower() else "***" for k, v in proxies.items()})
         
         # Handle NO_PROXY
         if proxy_config.get("no_proxy"):
@@ -128,15 +173,26 @@ def init_github_session(token: str | None, proxy_config: Optional[dict] = None, 
         session.headers["Authorization"] = f"token {token}"
     session.headers["Accept"] = "application/vnd.github+json"
     
-    # Простое поведение как в старом скрипте unified_review_stat.py
+    # SSL handling: use permissive adapter with bundle-ca when present (helps with OpenSSL 3 strictness)
+    check_hostname = True
+    if ssl_config is not None:
+        check_hostname = ssl_config.get("check_hostname", True)
+
     if ssl_config and not ssl_config.get("verify", True):
         session.verify = False
         logger.warning("SSL verification is DISABLED for GitHub (not recommended)")
     else:
-        session.verify = 'bundle-ca' if os.path.exists("bundle-ca") else True
-        if session.verify == 'bundle-ca':
-            logger.info("Using SSL certificate bundle for GitHub: bundle-ca")
+        bundle_path = os.path.abspath("bundle-ca") if os.path.exists("bundle-ca") else None
+        if bundle_path and os.path.isfile(bundle_path):
+            try:
+                session.mount("https://", PermissiveSSLAdapter(bundle_path, check_hostname=check_hostname, permissive_flags=True))
+                session.verify = True
+                logger.info("Using permissive SSL adapter with bundle-ca for GitHub: %s (check_hostname=%s)", bundle_path, check_hostname)
+            except Exception as e:
+                logger.warning("Failed to mount permissive SSL adapter for GitHub, fallback to default verify: %s", e)
+                session.verify = bundle_path
         else:
+            session.verify = True
             logger.debug("Using default SSL verification for GitHub (bundle-ca not found)")
     
     # Apply proxy configuration (same as init_session)

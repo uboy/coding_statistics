@@ -72,7 +72,7 @@ class UnifiedReviewReport:
         # Log cache status
         if cache_manager.enabled:
             cache_stats = cache_manager.get_stats()
-            logger.info("Cache enabled: file=%s, existing entries: %s links, %s API responses",
+            logger.debug("Cache enabled: file=%s, existing entries: %s links, %s API responses",
                        cache_manager.cache_file,
                        cache_stats.get("link_entries", 0),
                        cache_stats.get("api_entries", 0))
@@ -81,7 +81,7 @@ class UnifiedReviewReport:
         
         # Log proxy status
         if proxy_config:
-            logger.info("Proxy configured: %s", {k: v if "password" not in str(v).lower() else "***" for k, v in proxy_config.items() if k != "no_proxy"})
+            logger.debug("Proxy configured: %s", {k: v if "password" not in str(v).lower() else "***" for k, v in proxy_config.items() if k != "no_proxy"})
         else:
             logger.debug("No proxy configuration found")
 

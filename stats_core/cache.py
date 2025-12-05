@@ -9,6 +9,9 @@ import json
 import logging
 import os
 from datetime import datetime
+import atexit
+import signal
+import sys
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -56,6 +59,9 @@ class CacheManager:
         self.ttl_days = ttl_days
         self._cache: Dict[str, Any] = {"api": {}, "links": {}}
         self._load()
+        self._hooks_registered = False
+        self._prev_handlers: Dict[int, Any] = {}
+        self._register_exit_hooks()
 
     def _load(self) -> None:
         """Load cache from file."""
@@ -93,6 +99,52 @@ class CacheManager:
             logger.info(f"Cache saved to {self.cache_file}: {link_count} links, {api_count} API responses")
         except Exception as e:
             logger.error(f"Failed to save cache to {self.cache_file}: {e}")
+
+    # ---- Lifecycle helpers ----
+    def _register_exit_hooks(self) -> None:
+        """
+        Register atexit and signal handlers to persist cache on shutdown
+        (normal exit, Ctrl+C, SIGTERM where available).
+        """
+        if self._hooks_registered:
+            return
+        self._hooks_registered = True
+
+        # atexit will run on normal interpreter exit (and on KeyboardInterrupt unless force-killed)
+        atexit.register(self.save)
+
+        def _make_handler(signum):
+            def _handler(signum_, frame):
+                logger.info("Signal %s received, saving cache before exit.", signum_)
+                try:
+                    self.save()
+                finally:
+                    prev = self._prev_handlers.get(signum_)
+                    # Call previous handler if it exists and is callable
+                    if callable(prev):
+                        prev(signum_, frame)
+                    elif prev in (signal.SIG_DFL, None):
+                        # Default handling: exit with code 1
+                        sys.exit(1)
+            return _handler
+
+        for sig in ("SIGINT", "SIGTERM"):
+            if hasattr(signal, sig):
+                signum = getattr(signal, sig)
+                try:
+                    prev = signal.getsignal(signum)
+                    self._prev_handlers[signum] = prev
+                    signal.signal(signum, _make_handler(signum))
+                except Exception as e:
+                    logger.debug("Unable to register signal handler for %s: %s", sig, e)
+
+    def __del__(self) -> None:
+        """Best-effort cache save on object cleanup."""
+        try:
+            self.save()
+        except Exception:
+            # Avoid raising in __del__
+            pass
 
     def _make_api_key(self, url: str, method: str = "GET", params: Optional[Dict] = None) -> str:
         """Generate cache key for API request."""
