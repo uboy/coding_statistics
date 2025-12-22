@@ -53,6 +53,8 @@ python stats_main.py run \
 
 The `jira_weekly` report consists of multiple views:
 
+Worklog-driven attribution: if time is logged on an issue within the selected period, it appears in the weekly report as `Task in progress` for those weeks, even if the issue is still unresolved.
+
 1. **Table View** - Tabular format with columns: Name, Week #, Date, Description, Link, Status
 2. **List View** - Tasks grouped by assignee and week, showing weekly progress
 3. **Epic Progress** - Resolved tasks grouped by epics
@@ -122,5 +124,4 @@ Outputs `dist/stats_tool` executable (PyInstaller-based) bundling Python + templ
 - Implement `BaseSource` protocol (see existing gitee/github/gitlab).
 - Register new report via `stats_core.reports.registry.register`.
 - Reuse `stats_core.export` helpers for consistent formatting.
-
 

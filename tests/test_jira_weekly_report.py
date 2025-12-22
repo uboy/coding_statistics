@@ -184,6 +184,38 @@ def test_task_stretched_multiple_weeks(mock_jira_source, sample_issues, sample_w
     assert len(in_progress) >= 2  # At least W02 and W03
 
 
+def test_unresolved_task_with_worklog_counts_as_in_progress(mock_jira_source):
+    """Test: A task without resolution but with worklog still appears as in-progress."""
+    issue = Mock()
+    issue.key = "TEST-5"
+    issue.fields.summary = "Unresolved but active"
+    issue.fields.assignee = Mock(displayName="Dev User")
+    issue.fields.resolutiondate = None
+    issue.fields.created = "2025-01-10T09:00:00.000+0000"
+    issue.fields.customfield_10000 = None
+    issue.fields.parent = None
+    issue.fields.issuetype = Mock(name="Task")
+
+    mock_jira_source.fetch_issues = Mock(return_value=[issue])
+    mock_jira_source.get_all_worklogs = Mock(return_value=[
+        {
+            "author": {"displayName": "Dev User"},
+            "started": "2025-01-15T12:00:00.000+0000",  # Week 2025-W03
+        }
+    ])
+    mock_jira_source.fetch_epic_names = Mock(return_value={})
+
+    start_date = "2025-01-13"
+    end_date = "2025-01-19"
+    data = fetch_jira_data(mock_jira_source, "TEST", start_date, end_date)
+
+    expected_week = datetime.strptime("2025-01-15", "%Y-%m-%d").strftime("%G-W%V")
+    active_rows = data[(data["Issue_key"] == "TEST-5") & (data["Status"] == "In progress")]
+    assert len(active_rows) == 1
+    assert active_rows.iloc[0]["Week"] == expected_week
+    assert active_rows.iloc[0]["Assignee"] == "Dev User"
+
+
 def test_no_tasks_no_logs(mock_jira_source, sample_issues, sample_worklogs):
     """Test: No tasks and no logs (empty data)."""
     # Mock JiraSource methods - return empty list

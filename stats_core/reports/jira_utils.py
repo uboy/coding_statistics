@@ -27,7 +27,12 @@ def fetch_jira_data(
     end_date: str,
 ) -> pd.DataFrame:
     """
-    Fetch data from JIRA and filter by date range and resolution status.
+    Build a per-week snapshot for each issue using worklogs and resolution dates.
+
+    For every worklog inside the period we emit an "In progress" row (one per author per
+    week). If the issue was resolved inside the period we also emit a "Resolved" row for
+    each worklog author in the resolution week. This makes sure tasks with logged time
+    appear in weekly reports even if they are still open.
 
     Args:
         jira_source: JiraSource instance
@@ -81,18 +86,19 @@ def fetch_jira_data(
             except Exception:
                 continue
 
+        resolution_date = resolved_date.split("T")[0] if resolved_date else ""
+        created_date_str = created_date.split("T")[0] if created_date else ""
+        issue_type = getattr(issue.fields, "issuetype", None)
+        issue_type_name = issue_type.name if issue_type else "Unknown"
+
         resolved_week = None
         if resolved_date:
-            resolution_date = resolved_date.split("T")[0]
             resolved_date_dt = datetime.strptime(resolution_date, "%Y-%m-%d")
-            issue_type = getattr(issue.fields, "issuetype", None)
-            issue_type_name = issue_type.name if issue_type else "Unknown"
             if start_dt <= resolved_date_dt <= end_dt:
                 resolved_week = resolved_date_dt.strftime("%G-W%V")
-            
-            created_date_str = created_date.split("T")[0] if created_date else ""
-            
-            for author in worklog_authors:
+
+        for author in worklog_authors:
+            if resolved_week:
                 data.append({
                     "Issue_key": key,
                     "Summary": summary,
@@ -109,25 +115,25 @@ def fetch_jira_data(
                     "Type": issue_type_name
                 })
 
-            for log_week, authors_in_week in worklog_by_week.items():
-                if log_week == resolved_week:
-                    continue
-                for author in authors_in_week:
-                    data.append({
+        for log_week, authors_in_week in worklog_by_week.items():
+            if resolved_week and log_week == resolved_week:
+                continue
+            for author in authors_in_week:
+                data.append({
                     "Issue_key": key,
                     "Summary": summary,
                     "Assignee": author,  # assignee = worklog author
                     "Final_Assignee": jira_assignee,
-                        "Status": "In progress",
-                        "Resolution_Date": "",
-                        "Created_Date": created_date_str,
-                        "Week": log_week,
-                        "Epic_Link": epic_link,
-                        "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
-                        "Parent_Key": parent_key,
-                        "Parent_Summary": parent_summary,
-                        "Type": issue_type_name
-                    })
+                    "Status": "In progress",
+                    "Resolution_Date": resolution_date if resolved_week else "",
+                    "Created_Date": created_date_str,
+                    "Week": log_week,
+                    "Epic_Link": epic_link,
+                    "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
+                    "Parent_Key": parent_key,
+                    "Parent_Summary": parent_summary,
+                    "Type": issue_type_name
+                })
 
     df = pd.DataFrame(data)
     if not df.empty:
@@ -297,4 +303,3 @@ def is_empty_task(summary: Any, status: Any) -> bool:
         (not isinstance(summary, str) or summary.strip() == "") and
         (not isinstance(status, str) or status.strip() == "")
     )
-
