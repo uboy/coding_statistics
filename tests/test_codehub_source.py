@@ -87,3 +87,45 @@ def test_codehub_source_platform_variants(monkeypatch):
     assert source.platform == "opencodehub"
     assert source.base_url == "https://open.codehub.example.com"
 
+
+def test_codehub_source_uses_mr_stats_without_changes_call(monkeypatch):
+    """If MR payload contains added_lines/removed_lines, /changes call is skipped."""
+    cfg = ConfigParser()
+    cfg.read_dict(
+        {
+            "codehub": {
+                "codehub-url": "https://codehub.example.com",
+                "project": "group/project",
+            }
+        }
+    )
+    source = CodeHubSource(requests.Session(), cfg["codehub"], "codehub")
+
+    mr_stub = {
+        "iid": 1,
+        "title": "Test MR",
+        "web_url": "https://codehub.example.com/group/project/merge_requests/1",
+        "author": {"name": "Author"},
+        "merge_request_reviewer_list": [{"name": "reviewer1"}],
+        "target_branch": "master",
+        "state": "merged",
+        "created_at": "2025-01-10T12:00:00Z",
+        "merged_at": "2025-01-11T12:00:00Z",
+        "added_lines": 12,
+        "removed_lines": 4,
+    }
+
+    monkeypatch.setattr(source, "_iter_merge_requests", lambda *args, **kwargs: iter([mr_stub]))
+
+    def fail_request(*args, **kwargs):
+        raise AssertionError("_request should not be called when MR has line stats")
+
+    monkeypatch.setattr(source, "_request", fail_request)
+
+    params = SimpleNamespace(start_dt=None, end_dt=None, extra={})
+    prs = list(source.fetch_pull_requests(params=params))
+
+    assert len(prs) == 1
+    assert prs[0].additions == 12
+    assert prs[0].deletions == 4
+

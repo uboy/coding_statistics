@@ -9,6 +9,7 @@ from typing import Iterable, Iterator, Any
 import logging
 import urllib.parse
 
+import requests
 from requests import Session
 
 from .base import BaseSource, PullRequestRecord, CommitRecord
@@ -43,9 +44,12 @@ class CodeHubSource(BaseSource):
         for project in self.projects:
             project_id = urllib.parse.quote(project, safe="")
             for mr in self._iter_merge_requests(project_id, start, end):
-                changes = self._request(f"/projects/{project_id}/isource/merge_requests/{mr['iid']}/changes")
-                additions = sum(int(change.get("added_lines", 0)) for change in changes.get("changes", []))
-                deletions = sum(int(change.get("removed_lines", 0)) for change in changes.get("changes", []))
+                additions, deletions, used_direct_stats = _extract_mr_line_stats(mr)
+                if not used_direct_stats:
+                    changes = self._fetch_mr_changes(project_id, mr["iid"])
+                    changes_list = changes.get("changes", []) if isinstance(changes, dict) else []
+                    additions = sum(_coerce_int(change.get("added_lines", 0)) for change in changes_list)
+                    deletions = sum(_coerce_int(change.get("removed_lines", 0)) for change in changes_list)
                 branch = mr.get("target_branch")
                 if self.branch and branch != self.branch:
                     continue
@@ -94,6 +98,34 @@ class CodeHubSource(BaseSource):
     @property
     def api_base(self) -> str:
         return f"{self.base_url}/api/v4"
+
+    def _mr_changes_paths(self, project_id: str, mr_iid: str | int) -> list[str]:
+        paths = [
+            f"/projects/{project_id}/isource/merge_requests/{mr_iid}/changes",
+            f"/projects/{project_id}/merge_requests/{mr_iid}/changes",
+        ]
+        return paths
+
+    def _fetch_mr_changes(self, project_id: str, mr_iid: str | int) -> Any:
+        """
+        Fetch MR changes using a platform-appropriate endpoint.
+
+        For some CodeHub variants (notably OpenCodeHub) the "changes" endpoint
+        lives under /merge_requests instead of /isource/merge_requests.
+        """
+        last_404: Exception | None = None
+        for path in self._mr_changes_paths(project_id, mr_iid):
+            try:
+                return self._request(path)
+            except requests.exceptions.HTTPError as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status in {404, 410}:
+                    last_404 = exc
+                    continue
+                raise
+        if last_404:
+            raise last_404
+        raise RuntimeError(f"Unable to fetch merge request changes for project={project_id} iid={mr_iid}")
 
     def _request(self, path: str, params: dict | None = None) -> Any:
         url = f"{self.api_base}{path}"
@@ -181,4 +213,23 @@ def _parse_iso(value: str | None) -> datetime | None:
     except ValueError:
         logger.warning("Failed to parse datetime %s", value)
         return None
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_mr_line_stats(mr: Any) -> tuple[int, int, bool]:
+    """
+    Return (additions, deletions, used_direct_stats).
+
+    Some CodeHub instances include aggregate line stats directly in the MR payload
+    as 'added_lines' and 'removed_lines', so the /changes endpoint is optional.
+    """
+    if isinstance(mr, dict) and ("added_lines" in mr or "removed_lines" in mr):
+        return _coerce_int(mr.get("added_lines", 0)), _coerce_int(mr.get("removed_lines", 0)), True
+    return 0, 0, False
 

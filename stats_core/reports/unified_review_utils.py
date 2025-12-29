@@ -472,14 +472,38 @@ def process_codehub(url: str, config: ConfigParser, platform: str) -> Optional[L
     if mr_match:
         domain, repo_path, mr_id = mr_match.groups()
         encoded_path = urllib.parse.quote(repo_path, safe="")
-        api_url = f"{base_url}/api/v4/projects/{prefix}{encoded_path}/isource/merge_requests/{mr_id}"
-        changes_url = f"{api_url}/changes"
-        pr = make_api_request(session, api_url)
+        project_api_base = f"{base_url}/api/v4/projects/{prefix}{encoded_path}"
+
+        mr_api_urls = [
+            f"{project_api_base}/isource/merge_requests/{mr_id}",
+            f"{project_api_base}/merge_requests/{mr_id}",
+        ]
+        changes_api_urls = [
+            f"{project_api_base}/isource/merge_requests/{mr_id}/changes",
+            f"{project_api_base}/merge_requests/{mr_id}/changes",
+        ]
+
+        pr = None
+        for api_url in mr_api_urls:
+            pr = make_api_request(session, api_url)
+            if pr:
+                break
         if not pr:
             return None
-        changes = make_api_request(session, changes_url) or {}
-        additions = sum(int(f.get("added_lines", 0)) for f in changes.get("changes", []))
-        deletions = sum(int(f.get("removed_lines", 0)) for f in changes.get("changes", []))
+
+        if isinstance(pr, dict) and ("added_lines" in pr or "removed_lines" in pr):
+            additions = int(pr.get("added_lines") or 0)
+            deletions = int(pr.get("removed_lines") or 0)
+        else:
+            changes = None
+            for changes_url in changes_api_urls:
+                changes = make_api_request(session, changes_url)
+                if changes:
+                    break
+            changes = changes or {}
+            changes_list = changes.get("changes", []) if isinstance(changes, dict) else []
+            additions = sum(int(f.get("added_lines", 0)) for f in changes_list)
+            deletions = sum(int(f.get("removed_lines", 0)) for f in changes_list)
         reviewers = pr.get("merge_request_reviewer_list", [])
         reviewer_names = ", ".join([r["name"] for r in reviewers]) if reviewers else ""
         return [
