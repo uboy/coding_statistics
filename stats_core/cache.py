@@ -138,14 +138,6 @@ class CacheManager:
                 except Exception as e:
                     logger.debug("Unable to register signal handler for %s: %s", sig, e)
 
-    def __del__(self) -> None:
-        """Best-effort cache save on object cleanup."""
-        try:
-            self.save()
-        except Exception:
-            # Avoid raising in __del__
-            pass
-
     def _make_api_key(self, url: str, method: str = "GET", params: Optional[Dict] = None) -> str:
         """Generate cache key for API request."""
         key_data = f"{method}:{url}"

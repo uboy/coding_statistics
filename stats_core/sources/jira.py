@@ -77,7 +77,11 @@ class JiraSource:
         all_issues = []
 
         while True:
-            jql_query = f"project = {project} AND updated >= '{start_date.strftime('%Y-%m-%d')}'"
+            jql_query = (
+                f"project = {project} "
+                f"AND updated >= '{start_date.strftime('%Y-%m-%d')}' "
+                f'AND (resolution != "Won\'t Do" OR resolution = Unresolved)'
+            )
             issues = self.jira.search_issues(
                 jql_query,
                 startAt=start_at,

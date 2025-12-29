@@ -131,8 +131,7 @@ def init_session(token: Optional[str] = None, proxy_config: Optional[dict] = Non
         
         # Handle NO_PROXY
         if proxy_config.get("no_proxy"):
-            # requests doesn't directly support NO_PROXY, but we can log it
-            logger.debug("NO_PROXY configured: %s", proxy_config["no_proxy"])
+            logger.debug("NO_PROXY configured (will bypass proxy for matching hosts): %s", proxy_config["no_proxy"])
     else:
         # Fallback to environment variables (requests automatically uses these)
         proxy_vars = {
@@ -146,11 +145,6 @@ def init_session(token: Optional[str] = None, proxy_config: Optional[dict] = Non
         active_proxies = {k: v for k, v in proxy_vars.items() if v}
         if active_proxies:
             logger.debug("Proxy from environment variables: %s", {k: v if "password" not in str(v).lower() else "***" for k, v in active_proxies.items()})
-        
-        # Explicitly disable proxy if NO_PROXY is set
-        if os.environ.get("NO_PROXY") or os.environ.get("no_proxy"):
-            logger.debug("NO_PROXY set, disabling proxies")
-            session.proxies = {"http": None, "https": None}
     
     logger.debug("Session created: verify=%s, headers=%s, proxies=%s", 
                  session.verify, 
@@ -245,7 +239,21 @@ def make_api_request(
                 log_params,
             )
             
-            resp = session.get(url, auth=auth, params=params, timeout=30)
+            proxies = None
+            no_proxy_value = None
+            if _proxy_config is not None:
+                no_proxy_value = _proxy_config.get("no_proxy")
+            if no_proxy_value:
+                try:
+                    if requests.utils.should_bypass_proxies(url, no_proxy=no_proxy_value):
+                        # Disable session proxies for this request. Requests will merge this with
+                        # session-level proxies and strip the None values.
+                        proxies = {"http": None, "https": None}
+                        logger.debug("Bypassing proxy for %s due to NO_PROXY=%s", url, no_proxy_value)
+                except Exception as exc:
+                    logger.debug("Failed to evaluate NO_PROXY for %s: %s", url, exc)
+
+            resp = session.get(url, auth=auth, params=params, timeout=30, proxies=proxies)
             logger.debug("API response: %s %s | headers: %s", resp.status_code, resp.reason, dict(resp.headers))
             
             resp.raise_for_status()

@@ -15,10 +15,14 @@ from __future__ import annotations
 
 import os
 import pathlib
+import logging
+import re
+import urllib.parse
 from configparser import ConfigParser
 from typing import Iterable, Mapping, MutableMapping, Any
 
 DEFAULT_CONFIG_FILE = pathlib.Path("config.ini")
+logger = logging.getLogger(__name__)
 TOKEN_HINTS: Mapping[str, str] = {
     "gitee": (
         "Создайте personal access token в https://gitee.com/profile/personal_access_tokens "
@@ -62,7 +66,11 @@ def load_config(path: pathlib.Path | str = DEFAULT_CONFIG_FILE) -> ConfigParser:
             f"Run `python stats_main.py setup` to generate one."
         )
 
-    config = ConfigParser()
+    config = ConfigParser(
+        strict=False,
+        interpolation=None,
+        inline_comment_prefixes=("#", ";"),
+    )
     with cfg_path.open("r", encoding="utf-8-sig") as fh:
         config.read_file(fh)
     return config
@@ -218,36 +226,112 @@ def get_proxy_config(config: ConfigParser) -> dict[str, str | None] | None:
     Returns:
         Dict with 'http', 'https', 'no_proxy' keys, or None if no proxy configured
     """
-    proxies = {}
-    
-    # Check config file first
-    if config.has_section("proxy"):
-        proxy_section = config["proxy"]
-        # Use raw=True to avoid ConfigParser interpreting % as variable substitution
-        # This allows URLs with %-encoded characters (like %40 for @)
-        http_proxy = proxy_section.get("http", raw=True) or proxy_section.get("HTTP_PROXY", raw=True)
-        https_proxy = proxy_section.get("https", raw=True) or proxy_section.get("HTTPS_PROXY", raw=True)
-        no_proxy = proxy_section.get("no_proxy", raw=True) or proxy_section.get("NO_PROXY", raw=True)
-        
-        if http_proxy:
-            proxies["http"] = http_proxy
-        if https_proxy:
-            proxies["https"] = https_proxy
-        if no_proxy:
-            proxies["no_proxy"] = no_proxy
-    
-    # Fallback to environment variables if not in config
-    if not proxies.get("http"):
-        proxies["http"] = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
-    if not proxies.get("https"):
-        proxies["https"] = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    if not proxies.get("no_proxy"):
-        proxies["no_proxy"] = os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
-    
+    proxies: dict[str, str | None] = {}
+
+    def _first(*values: str | None) -> str | None:
+        for value in values:
+            if value is None:
+                continue
+            normalized = str(value).strip()
+            if normalized:
+                return normalized
+        return None
+
+    def _section(name: str):
+        if config.has_section(name):
+            return config[name]
+        wanted = name.casefold()
+        for existing in config.sections():
+            if existing.casefold() == wanted:
+                return config[existing]
+        return None
+
+    proxy_section = _section("proxy")
+    global_section = _section("global")
+
+    cidr_v4_pattern = re.compile(r"^\\d{1,3}(?:\\.\\d{1,3}){3}/\\d{1,2}$")
+    cidr_v6_pattern = re.compile(r"^[0-9A-Fa-f:]+/\\d{1,3}$")
+
+    def _normalize_no_proxy(value: str | None) -> str | None:
+        if not value:
+            return None
+        parts: list[str] = []
+        for raw_part in str(value).split(","):
+            part = raw_part.strip()
+            if not part:
+                continue
+            if (part.startswith('"') and part.endswith('"')) or (part.startswith("'") and part.endswith("'")):
+                part = part[1:-1].strip()
+            if part.startswith("*."):
+                part = part[1:]
+            if "://" in part:
+                parsed = urllib.parse.urlparse(part)
+                if parsed.hostname:
+                    part = parsed.hostname
+                    if parsed.port:
+                        part = f"{part}:{parsed.port}"
+            elif "/" in part and not (cidr_v4_pattern.match(part) or cidr_v6_pattern.match(part)):
+                part = part.split("/", 1)[0].strip()
+            if part:
+                parts.append(part)
+        normalized = ",".join(parts)
+        return normalized or None
+
+    # 1) [proxy] section (preferred)
+    http_proxy = None
+    https_proxy = None
+    no_proxy = None
+    if proxy_section is not None:
+        http_proxy = _first(
+            proxy_section.get("http", raw=True, fallback=None),
+            proxy_section.get("http_proxy", raw=True, fallback=None),
+            proxy_section.get("HTTP_PROXY", raw=True, fallback=None),
+        )
+        https_proxy = _first(
+            proxy_section.get("https", raw=True, fallback=None),
+            proxy_section.get("https_proxy", raw=True, fallback=None),
+            proxy_section.get("HTTPS_PROXY", raw=True, fallback=None),
+        )
+        no_proxy = _first(
+            proxy_section.get("no_proxy", raw=True, fallback=None),
+            proxy_section.get("NO_PROXY", raw=True, fallback=None),
+        )
+
+    # 1.1) Backward-compatible: proxy keys in [global]
+    if global_section is not None:
+        http_proxy = http_proxy or _first(
+            global_section.get("http", raw=True, fallback=None),
+            global_section.get("http_proxy", raw=True, fallback=None),
+            global_section.get("HTTP_PROXY", raw=True, fallback=None),
+        )
+        https_proxy = https_proxy or _first(
+            global_section.get("https", raw=True, fallback=None),
+            global_section.get("https_proxy", raw=True, fallback=None),
+            global_section.get("HTTPS_PROXY", raw=True, fallback=None),
+        )
+        no_proxy = no_proxy or _first(
+            global_section.get("no_proxy", raw=True, fallback=None),
+            global_section.get("NO_PROXY", raw=True, fallback=None),
+        )
+
+    no_proxy = _normalize_no_proxy(no_proxy)
+
+    if http_proxy:
+        proxies["http"] = http_proxy
+    if https_proxy:
+        proxies["https"] = https_proxy
+    if no_proxy:
+        proxies["no_proxy"] = no_proxy
+
+    # 2) Fallback to environment variables if not in config
+    proxies["http"] = proxies.get("http") or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    proxies["https"] = proxies.get("https") or os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    proxies["no_proxy"] = proxies.get("no_proxy") or os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
+
     # Return None if no proxy configured
     if not proxies.get("http") and not proxies.get("https"):
         return None
-    
+
     # Remove None values
     return {k: v for k, v in proxies.items() if v}
 
