@@ -44,9 +44,18 @@ python stats_main.py run \
   --params project=ABC include_empty_weeks=True member_list_file=members.xlsx \
   --output-formats excel word
 
+# Comprehensive Jira report (Excel-only, migrated from legacy jira_ranking_report.py)
+python stats_main.py run \
+  --report jira_comprehensive \
+  --start 2025-02-01 \
+  --end 2025-02-28 \
+  --params project=ABC member_list_file=members.xlsx code_volume_file=code_volume.xlsx \
+  --output-formats excel
+
 - Для `unified_review` параметры `--start/--end` опциональны. Если их не задавать, будут обработаны все ссылки из `reporting.links_file` (по умолчанию `input.txt`). При указании дат в отчёт попадут только PR/коммиты, замёрженные в указанный период.
 - Источник для каждой ссылки определяется автоматически по URL, так что `--sources` задавать не обязательно.
 - Для `jira_weekly` параметр `--sources` необязателен, по умолчанию используется `jira`. Если нужны другие источники, их можно указать явно.
+- Для `jira_comprehensive` можно передать `--params jql=...` (или `version=...` / `epic=...`) вместо `project+dates`.
 ```
 
 ## Jira Weekly Report Structure
@@ -124,4 +133,3 @@ Outputs `dist/stats_tool` executable (PyInstaller-based) bundling Python + templ
 - Implement `BaseSource` protocol (see existing gitee/github/gitlab).
 - Register new report via `stats_core.reports.registry.register`.
 - Reuse `stats_core.export` helpers for consistent formatting.
-

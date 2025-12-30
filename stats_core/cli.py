@@ -105,9 +105,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     # Some reports have their own data collection flow and do not use Collector.
     # - jira_weekly: pulls Jira issues directly.
+    # - jira_comprehensive: pulls Jira issues directly (Excel-only).
     # - unified_review: работает только по списку ссылок и сам ходит в Git-сервисы.
-    if report_name in {"jira_weekly", "unified_review"}:
-        if report_name == "jira_weekly":
+    if report_name in {"jira_weekly", "jira_comprehensive", "unified_review"}:
+        if report_name in {"jira_weekly", "jira_comprehensive"}:
             missing = config_utils.ensure_tokens(config, ["jira"])
             if missing:
                 print("⚠️  Не хватает токенов для следующих сервисов:")
@@ -160,4 +161,3 @@ def main(argv: Sequence[str] | None = None) -> None:
         cmd_run(args)
     else:  # pragma: no cover - guarded by argparse
         parser.error("Unknown command")
-
