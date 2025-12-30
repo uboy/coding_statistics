@@ -12,7 +12,11 @@ from unittest.mock import Mock, patch
 import pandas as pd
 from openpyxl import load_workbook
 
-from stats_core.reports.jira_comprehensive import JiraComprehensiveReport, build_jql_query
+from stats_core.reports.jira_comprehensive import (
+    JiraComprehensiveReport,
+    build_jql_query,
+    calculate_engineer_metrics,
+)
 
 
 def test_build_jql_query_project_dates():
@@ -29,11 +33,14 @@ def _make_issue(
     summary: str,
     issue_type: str,
     status: str,
-    assignee_username: str,
-    reporter_username: str,
+    assignee_display: str,
+    assignee_username: str | None,
+    reporter_display: str,
+    reporter_username: str | None,
     description: str = "",
     comment_body: str | None = None,
     labels: list[str] | None = None,
+    resolution_name: str = "Done",
 ):
     comment = SimpleNamespace(
         comments=(
@@ -50,8 +57,8 @@ def _make_issue(
     )
     fields = SimpleNamespace(
         summary=summary,
-        assignee=SimpleNamespace(displayName=assignee_username, name=assignee_username),
-        reporter=SimpleNamespace(displayName=reporter_username, name=reporter_username),
+        assignee=SimpleNamespace(displayName=assignee_display, name=assignee_username),
+        reporter=SimpleNamespace(displayName=reporter_display, name=reporter_username),
         resolutiondate="2025-01-10T10:00:00.000+0000",
         created="2025-01-01T10:00:00.000+0000",
         updated="2025-01-11T10:00:00.000+0000",
@@ -60,7 +67,7 @@ def _make_issue(
         labels=labels or [],
         priority=SimpleNamespace(name="P1"),
         status=SimpleNamespace(name=status),
-        resolution=SimpleNamespace(name="Done"),
+        resolution=SimpleNamespace(name=resolution_name),
         issuetype=SimpleNamespace(name=issue_type),
         timeestimate=0,
         timespent=0,
@@ -77,9 +84,11 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             "ABC-1",
             summary="Bug fix",
             issue_type="Bug",
-            status="Done",
-            assignee_username="alice",
-            reporter_username="bob",
+            status="Released",
+            assignee_display="Alice",
+            assignee_username=None,
+            reporter_display="Bob",
+            reporter_username=None,
             description="See\x0b https://example.com",
             comment_body="ref\x00 http://example.org",
             labels=["documentation"],
@@ -88,16 +97,52 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             "ABC-2",
             summary="QA task",
             issue_type="Task",
-            status="Resolved",
-            assignee_username="bob",
+            status="In QA",
+            assignee_display="Bob",
+            assignee_username=None,
+            reporter_display="Carol",
             reporter_username="carol",
+            comment_body=(
+                "TT_tdev_APIs - number of developed and executed tasks = 2\n"
+                "TT_tested_APIs - number of executed tests = 3\n"
+                "TT_tested_perf - number of executed performance tests = 1\n"
+                "TT_tdev_perf - number of developed benchmark tests = 4"
+            ),
+            labels=["documentation", "arkoala_perf"],
+        ),
+        _make_issue(
+            "ABC-4",
+            summary="Excluded QA task",
+            issue_type="Task",
+            status="Done",
+            assignee_display="Bob",
+            assignee_username=None,
+            reporter_display="Bob",
+            reporter_username=None,
+            comment_body="TT_tdev_APIs: 200\nTT_tested_APIs: 300\nTT_tested_perf: 100\nTT_tdev_perf: 400",
+            labels=["documentation"],
+            resolution_name="Won't Do",
+        ),
+        _make_issue(
+            "ABC-5",
+            summary="Excluded invalid resolution",
+            issue_type="Bug",
+            status="Done",
+            assignee_display="Alice",
+            assignee_username=None,
+            reporter_display="Bob",
+            reporter_username=None,
+            labels=["documentation"],
+            resolution_name="Invalid",
         ),
         _make_issue(
             "ABC-3",
             summary="Epic",
             issue_type="Epic",
-            status="Closed",
+            status="Released",
+            assignee_display="Carol",
             assignee_username="carol",
+            reporter_display="Carol",
             reporter_username="carol",
         ),
     ]
@@ -112,9 +157,9 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     members_file = tmp_path / "members.xlsx"
     pd.DataFrame(
         [
-            {"name": "Alice", "username": "alice", "role": "Engineer"},
-            {"name": "Bob", "username": "bob", "role": "QA Engineer"},
-            {"name": "Carol", "username": "carol", "role": "Project Manager"},
+            {"name": "Alice", "username": "alice", "role": "engineer"},
+            {"name": "Bob", "username": "bob", "role": "test engineer"},
+            {"name": "Carol", "username": "carol", "role": "project manager"},
         ]
     ).to_excel(members_file, index=False)
 
@@ -169,3 +214,65 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     links_sheet = wb["Links"]
     # header + at least 2 links (description + comment)
     assert links_sheet.max_row >= 3
+
+    def _sheet_row(sheet_name: str) -> dict[str, object]:
+        sheet = wb[sheet_name]
+        headers = [cell.value for cell in sheet[1]]
+        values = [sheet.cell(row=2, column=idx + 1).value for idx in range(len(headers))]
+        return dict(zip(headers, values))
+
+    engineer_row = _sheet_row("Engineer_Performance")
+    assert engineer_row["Bugs"] == 1
+    assert engineer_row["Documentation_Tasks"] == 1
+    assert engineer_row["Total_Resolved_Issues"] == 1
+
+    qa_row = _sheet_row("QA_Performance")
+    assert qa_row["Test_Scenarios_Executed"] == 5
+    assert qa_row["Issues_Raised"] == 1
+    assert qa_row["Performance_Benchmarks"] == 5
+    assert qa_row["Documentation_Tasks"] == 1
+    assert "Outstanding_Contribution" in qa_row
+    assert qa_row["Outstanding_Contribution"] == 0
+    assert qa_row["TT_tdev_APIs"] == 2
+    assert qa_row["TT_tested_APIs"] == 3
+    assert qa_row["TT_tested_perf"] == 1
+    assert qa_row["TT_tdev_perf"] == 4
+    assert qa_row["Total_Resolved_Issues"] == 1
+
+
+def test_calculate_engineer_metrics_uses_members_jira_column():
+    issues_df = pd.DataFrame(
+        [
+            {
+                "Issue_Key": "ABC-1",
+                "Summary": "Bug fix",
+                "Type": "Bug",
+                "Status": "Released",
+                "Resolution": "Done",
+                "Assignee": "Does Not Matter",
+                "Assignee_Username": "eWX1025804",
+                "Reporter": "Someone",
+                "Reporter_Username": "someone",
+                "Created": "2025-01-01",
+                "Resolved": "2025-01-10",
+                "Labels": "",
+            }
+        ]
+    )
+    members_df = pd.DataFrame(
+        [
+            {
+                "name": "Evstigneev Roman",
+                "username": "wx1025804",
+                "Jira": "eWX1025804",
+                "role": "engineer",
+            }
+        ]
+    )
+    code_volume_df = pd.DataFrame(columns=["username", "code_volume"])
+
+    engineer_metrics = calculate_engineer_metrics(issues_df, members_df, code_volume_df)
+    assert engineer_metrics.shape[0] == 1
+    row = engineer_metrics.iloc[0].to_dict()
+    assert row["Bugs"] == 1
+    assert row["Total_Resolved_Issues"] == 1

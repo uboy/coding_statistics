@@ -28,6 +28,106 @@ from . import registry
 logger = logging.getLogger(__name__)
 
 
+_DONE_STATUSES = {"done", "resolved", "closed"}
+
+_TT_COUNTER_PATTERNS: dict[str, re.Pattern[str]] = {
+    # Accept counters written as:
+    # - "TT_tdev_APIs = 2" (any spaces around "=")
+    # - "TT_tdev_APIs: 2"
+    # - "TT_tdev_APIs - 2"
+    # - "TT_tdev_APIs - some explanation = 2"
+    "TT_tdev_APIs": re.compile(r"\bTT_tdev_APIs\b[^\n\r]*?(?:[:=]\s*|\s-\s*)(\d+)", re.IGNORECASE),
+    "TT_tested_APIs": re.compile(r"\bTT_tested_APIs\b[^\n\r]*?(?:[:=]\s*|\s-\s*)(\d+)", re.IGNORECASE),
+    "TT_tested_perf": re.compile(r"\bTT_tested_perf\b[^\n\r]*?(?:[:=]\s*|\s-\s*)(\d+)", re.IGNORECASE),
+    "TT_tdev_perf": re.compile(r"\bTT_tdev_perf\b[^\n\r]*?(?:[:=]\s*|\s-\s*)(\d+)", re.IGNORECASE),
+}
+
+_OUTSTANDING_CONTRIBUTION_PATTERN = re.compile(r"outstanding[_ -]?contribution", re.IGNORECASE)
+
+
+def _normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return " ".join(str(value).strip().split()).casefold()
+
+
+def _jira_user_identifier(user: Any | None) -> str:
+    """
+    Jira user identifiers differ between Server/DC and Cloud.
+
+    Prefer the legacy username when available, then fall back to other stable IDs.
+    """
+    if not user:
+        return ""
+    for attr in ("name", "key", "accountId"):
+        candidate = getattr(user, attr, None)
+        if candidate:
+            return str(candidate)
+    return ""
+
+
+def _resolved_mask(issues_df: pd.DataFrame) -> pd.Series:
+    resolved_value = issues_df.get("Resolved")
+    if resolved_value is None:
+        resolved_value = pd.Series([""] * len(issues_df), index=issues_df.index)
+    resolved_by_date = (
+        resolved_value.fillna("").astype(str).str.strip().ne("")
+    )
+
+    status_value = issues_df.get("Status")
+    if status_value is None:
+        status_value = pd.Series([""] * len(issues_df), index=issues_df.index)
+    status_norm = status_value.fillna("").astype(str).map(_normalize_text)
+    resolved_by_status = status_norm.isin(_DONE_STATUSES)
+
+    return resolved_by_date | resolved_by_status
+
+
+def _countable_mask(issues_df: pd.DataFrame) -> pd.Series:
+    resolution_value = issues_df.get("Resolution")
+    if resolution_value is None:
+        return pd.Series([True] * len(issues_df), index=issues_df.index)
+
+    resolution_norm = resolution_value.fillna("").astype(str).map(_normalize_text)
+    excluded = (
+        resolution_norm.str.contains(r"won['’]t do", regex=True, na=False)
+        | resolution_norm.str.contains("wont do", regex=False, na=False)
+        | resolution_norm.str.contains("invalid", regex=False, na=False)
+    )
+    return ~excluded
+
+
+def _extract_tt_counters(text: Any) -> dict[str, int]:
+    if text is None:
+        return {key: 0 for key in _TT_COUNTER_PATTERNS}
+    try:
+        if pd.isna(text):
+            return {key: 0 for key in _TT_COUNTER_PATTERNS}
+    except Exception:
+        pass
+
+    payload = str(text)
+    payload = (
+        payload.replace("\u00a0", " ")
+        .replace("\uff1a", ":")  # fullwidth colon
+        .replace("\uff1d", "=")  # fullwidth equals
+        .replace("\u2013", "-")  # en-dash
+        .replace("\u2014", "-")  # em-dash
+        .replace("\u2212", "-")  # minus sign
+    )
+    payload = re.sub(r"\s+", " ", payload)
+    counters: dict[str, int] = {}
+    for key, pattern in _TT_COUNTER_PATTERNS.items():
+        matches = pattern.findall(payload)
+        counters[key] = sum(int(match) for match in matches) if matches else 0
+    return counters
+
+
 def build_jql_query(params: dict[str, Any]) -> str:
     """Build JQL query based on provided parameters."""
     if params.get("jql"):
@@ -122,9 +222,9 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame]:
         key = issue.key
         summary = issue.fields.summary
         assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
-        assignee_name = issue.fields.assignee.name if issue.fields.assignee else ""
+        assignee_name = _jira_user_identifier(issue.fields.assignee)
         reporter = issue.fields.reporter.displayName if issue.fields.reporter else ""
-        reporter_name = issue.fields.reporter.name if issue.fields.reporter else ""
+        reporter_name = _jira_user_identifier(issue.fields.reporter)
 
         created = issue.fields.created[:10] if issue.fields.created else ""
         resolved = issue.fields.resolutiondate[:10] if issue.fields.resolutiondate else ""
@@ -218,18 +318,58 @@ def calculate_engineer_metrics(
 ) -> pd.DataFrame:
     """Calculate metrics for Engineers."""
     metrics: list[dict[str, Any]] = []
-    engineers = members_df[members_df["role"] == "Engineer"]
+    member_role_norm = members_df.get(
+        "role", pd.Series([""] * len(members_df), index=members_df.index)
+    ).map(_normalize_text)
+    engineers = members_df[member_role_norm.isin({"engineer", "huawei"})]
+
+    jira_column = next(
+        (
+            col
+            for col in members_df.columns
+            if _normalize_text(col) in {"jira", "jira username", "jira_user", "jira account"}
+        ),
+        None,
+    )
+
+    assignee_username_value = issues_df.get(
+        "Assignee_Username", pd.Series([""] * len(issues_df), index=issues_df.index)
+    )
+    assignee_username_norm = assignee_username_value.fillna("").astype(str).map(_normalize_text)
+
+    assignee_value = issues_df.get("Assignee", pd.Series([""] * len(issues_df), index=issues_df.index))
+    assignee_name_norm = assignee_value.fillna("").astype(str).map(_normalize_text)
+    status_resolved_mask = _resolved_mask(issues_df)
+    countable_mask = _countable_mask(issues_df)
+    labels_value = issues_df.get("Labels")
+    labels_norm = (
+        labels_value.fillna("").astype(str)
+        if labels_value is not None
+        else pd.Series([""] * len(issues_df), index=issues_df.index)
+    )
 
     for _, engineer in engineers.iterrows():
-        username = str(engineer["username"]).lower()
-        name = engineer["name"]
+        username = str(engineer.get("username", "")).strip()
+        username_norm = _normalize_text(username)
+        name = engineer.get("name", "")
+        name_norm = _normalize_text(name)
 
-        user_issues = issues_df[issues_df["Assignee_Username"].str.lower() == username]
-        resolved_issues = user_issues[user_issues["Status"].isin(["Done", "Resolved", "Closed"])]
+        jira_username_raw = engineer.get(jira_column, "") if jira_column else ""
+        jira_username = _first_value([jira_username_raw, username]) or ""
+        jira_username_norm = _normalize_text(jira_username)
+
+        identifier_candidates = {jira_username_norm, username_norm} - {""}
+
+        user_mask = assignee_username_norm.isin(identifier_candidates)
+        if name_norm:
+            user_mask = user_mask | (assignee_name_norm == name_norm)
+
+        user_issues = issues_df[user_mask & countable_mask]
+        resolved_issues = user_issues[status_resolved_mask.loc[user_issues.index]]
 
         code_volume = 0
         if not code_volume_df.empty and "username" in code_volume_df.columns:
-            cv_row = code_volume_df[code_volume_df["username"].str.lower() == username]
+            cv_row = code_volume_df[code_volume_df["username"].fillna("").astype(str).map(_normalize_text) == username_norm]
             if not cv_row.empty:
                 code_volume = cv_row.iloc[0].get("code_volume", 0)
 
@@ -239,9 +379,7 @@ def calculate_engineer_metrics(
         ].shape[0]
         code_quality = bugs / features if features > 0 else 0
 
-        doc_tasks = resolved_issues[
-            resolved_issues["Labels"].str.contains("documentation", case=False, na=False)
-        ].shape[0]
+        doc_tasks = labels_norm.loc[resolved_issues.index].str.contains("documentation", case=False, na=False).sum()
 
         metrics.append(
             {
@@ -264,23 +402,86 @@ def calculate_engineer_metrics(
 def calculate_qa_metrics(issues_df: pd.DataFrame, members_df: pd.DataFrame) -> pd.DataFrame:
     """Calculate metrics for QA Engineers."""
     metrics: list[dict[str, Any]] = []
-    qa_engineers = members_df[members_df["role"] == "QA Engineer"]
+    member_role_norm = members_df.get(
+        "role", pd.Series([""] * len(members_df), index=members_df.index)
+    ).map(_normalize_text)
+    qa_engineers = members_df[member_role_norm.isin({"qa engineer", "test engineer", "tester", "qa"})]
+
+    jira_column = next(
+        (
+            col
+            for col in members_df.columns
+            if _normalize_text(col) in {"jira", "jira username", "jira_user", "jira account"}
+        ),
+        None,
+    )
+
+    assignee_username_value = issues_df.get(
+        "Assignee_Username", pd.Series([""] * len(issues_df), index=issues_df.index)
+    )
+    assignee_username_norm = assignee_username_value.fillna("").astype(str).map(_normalize_text)
+
+    assignee_value = issues_df.get("Assignee", pd.Series([""] * len(issues_df), index=issues_df.index))
+    assignee_name_norm = assignee_value.fillna("").astype(str).map(_normalize_text)
+
+    reporter_username_value = issues_df.get(
+        "Reporter_Username", pd.Series([""] * len(issues_df), index=issues_df.index)
+    )
+    reporter_username_norm = reporter_username_value.fillna("").astype(str).map(_normalize_text)
+
+    reporter_value = issues_df.get("Reporter", pd.Series([""] * len(issues_df), index=issues_df.index))
+    reporter_name_norm = reporter_value.fillna("").astype(str).map(_normalize_text)
+    status_resolved_mask = _resolved_mask(issues_df)
+    countable_mask = _countable_mask(issues_df)
+    labels_value = issues_df.get("Labels")
+    labels_norm = (
+        labels_value.fillna("").astype(str)
+        if labels_value is not None
+        else pd.Series([""] * len(issues_df), index=issues_df.index)
+    )
+    summary_value = issues_df.get("Summary", pd.Series([""] * len(issues_df), index=issues_df.index))
+    summary_norm = summary_value.fillna("").astype(str)
 
     for _, qa in qa_engineers.iterrows():
-        username = str(qa["username"]).lower()
-        name = qa["name"]
+        username = str(qa.get("username", "")).strip()
+        username_norm = _normalize_text(username)
+        name = qa.get("name", "")
+        name_norm = _normalize_text(name)
 
-        user_issues = issues_df[issues_df["Assignee_Username"].str.lower() == username]
-        resolved_issues = user_issues[user_issues["Status"].isin(["Done", "Resolved", "Closed"])]
-        test_scenarios = resolved_issues[resolved_issues["Type"].isin(["Test", "Task"])].shape[0]
+        jira_username_raw = qa.get(jira_column, "") if jira_column else ""
+        jira_username = _first_value([jira_username_raw, username]) or ""
+        jira_username_norm = _normalize_text(jira_username)
+        identifier_candidates = {jira_username_norm, username_norm} - {""}
 
-        bugs_created = issues_df[
-            (issues_df["Reporter_Username"].str.lower() == username) & (issues_df["Type"] == "Bug")
-        ].shape[0]
+        user_mask = assignee_username_norm.isin(identifier_candidates)
+        if name_norm:
+            user_mask = user_mask | (assignee_name_norm == name_norm)
 
-        perf_tasks = resolved_issues[
-            resolved_issues["Labels"].str.contains("arkoala_perf", case=False, na=False)
-        ].shape[0]
+        user_issues = issues_df[user_mask & countable_mask]
+        resolved_issues = user_issues[status_resolved_mask.loc[user_issues.index]]
+        tt_totals = {key: 0 for key in _TT_COUNTER_PATTERNS}
+        for payload in resolved_issues.get("Comments", pd.Series([], dtype=object)).fillna("").astype(str):
+            counters = _extract_tt_counters(payload)
+            for key in tt_totals:
+                tt_totals[key] += counters.get(key, 0)
+
+        test_scenarios = tt_totals["TT_tdev_APIs"] + tt_totals["TT_tested_APIs"]
+        perf_tasks = tt_totals["TT_tested_perf"] + tt_totals["TT_tdev_perf"]
+
+        reporter_mask = reporter_username_norm.isin(identifier_candidates)
+        if name_norm:
+            reporter_mask = reporter_mask | (reporter_name_norm == name_norm)
+        bugs_created = issues_df[(reporter_mask & countable_mask) & (issues_df["Type"] == "Bug")].shape[0]
+
+        doc_tasks = labels_norm.loc[resolved_issues.index].str.contains("documentation", case=False, na=False).sum()
+        outstanding_tasks = (
+            labels_norm.loc[resolved_issues.index].str.contains(
+                _OUTSTANDING_CONTRIBUTION_PATTERN, regex=True, na=False
+            )
+            | summary_norm.loc[resolved_issues.index].str.contains(
+                _OUTSTANDING_CONTRIBUTION_PATTERN, regex=True, na=False
+            )
+        ).sum()
 
         metrics.append(
             {
@@ -289,6 +490,12 @@ def calculate_qa_metrics(issues_df: pd.DataFrame, members_df: pd.DataFrame) -> p
                 "Test_Scenarios_Executed": test_scenarios,
                 "Issues_Raised": bugs_created,
                 "Performance_Benchmarks": perf_tasks,
+                "Documentation_Tasks": doc_tasks,
+                "TT_tdev_APIs": tt_totals["TT_tdev_APIs"],
+                "TT_tested_APIs": tt_totals["TT_tested_APIs"],
+                "TT_tested_perf": tt_totals["TT_tested_perf"],
+                "TT_tdev_perf": tt_totals["TT_tdev_perf"],
+                "Outstanding_Contribution": int(outstanding_tasks),
                 "Total_Resolved_Issues": resolved_issues.shape[0],
             }
         )
@@ -301,20 +508,28 @@ def calculate_pm_metrics(
 ) -> pd.DataFrame:
     """Calculate metrics for Project Managers."""
     metrics: list[dict[str, Any]] = []
-    pms = members_df[members_df["role"] == "Project Manager"]
+    member_role_norm = members_df.get(
+        "role", pd.Series([""] * len(members_df), index=members_df.index)
+    ).map(_normalize_text)
+    pms = members_df[member_role_norm.isin({"project manager", "pm"})]
 
     epic_count = issues_df[issues_df["Type"] == "Epic"].shape[0]
+    resolved_issues_mask = _resolved_mask(issues_df)
+    countable_mask = _countable_mask(issues_df)
+    resolved_countable_mask = resolved_issues_mask & countable_mask
 
     for _, pm in pms.iterrows():
-        username = str(pm["username"]).lower()
         name = pm["name"]
 
-        total_closed = issues_df[issues_df["Status"].isin(["Done", "Resolved", "Closed"])].shape[0]
+        total_closed = int(resolved_countable_mask.sum())
 
-        doc_tasks = issues_df[
-            issues_df["Status"].isin(["Done", "Resolved", "Closed"])
-            & issues_df["Labels"].str.contains("documentation", case=False, na=False)
-        ].shape[0]
+        labels_value = issues_df.get("Labels")
+        labels_norm = (
+            labels_value.fillna("").astype(str)
+            if labels_value is not None
+            else pd.Series([""] * len(issues_df), index=issues_df.index)
+        )
+        doc_tasks = labels_norm[resolved_countable_mask].str.contains("documentation", case=False, na=False).sum()
 
         metrics.append(
             {
@@ -406,6 +621,11 @@ def _sanitize_excel_value(value: Any) -> Any:
 def _first_value(values: list[str | None]) -> str | None:
     for value in values:
         if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except Exception:
             continue
         normalized = str(value).strip()
         if normalized:
