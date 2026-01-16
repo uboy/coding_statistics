@@ -14,6 +14,7 @@ import pandas as pd
 from . import registry
 from .jira_utils import (
     fetch_jira_data,
+    fetch_jira_activity_data,
     mark_reassigned_tasks,
     fill_missing_weeks,
     generate_week_headers,
@@ -21,6 +22,7 @@ from .jira_utils import (
     norm_name,
 )
 from .jira_list_view import add_list_view_to_document
+from .jira_engineer_weekly import add_engineer_weekly_activity_to_document
 from .jira_table_view import add_table_view_to_document
 from .jira_epic_report import generate_epic_report, add_epic_progress_to_document, add_resolved_tasks_section
 from ..sources.jira import JiraSource
@@ -109,6 +111,7 @@ class JiraWeeklyReport:
 
         # Fetch data
         data = fetch_jira_data(jira_source, project, start_date, end_date)
+        worklogs_df, comments_df = fetch_jira_activity_data(jira_source, project, start_date, end_date)
 
         # If there is no JIRA data at all, create an empty frame with expected columns
         # so that downstream utilities (fill_missing_weeks, epic reports) work safely.
@@ -178,6 +181,18 @@ class JiraWeeklyReport:
 
             # Add List View
             add_list_view_to_document(document, data, start_date, end_date, jira_url, member_list_file)
+
+            # Add Engineer Weekly Activity
+            add_engineer_weekly_activity_to_document(
+                document,
+                worklogs_df,
+                comments_df,
+                start_date,
+                end_date,
+                jira_url,
+                member_list_file,
+                include_empty=include_empty,
+            )
 
             # Add Epic Progress
             add_epic_progress_to_document(document, epic_summary, jira_url)

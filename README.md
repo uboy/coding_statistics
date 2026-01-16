@@ -8,7 +8,7 @@ stats_core/
   cli.py         # 'setup' and 'run' commands
   sources/       # API adapters (gitee, gitcode, github, gitlab, codehub*, gerrit)
   stats/         # collector orchestrating multiple sources (dataset -> reports)
-  reports/       # report definitions (unified_review, jira_weekly)
+  reports/       # report definitions (unified_review, jira_weekly, jira_comprehensive)
   export/        # Word/Excel/CSV helpers with template support
 templates/
   word/          # docx templates
@@ -16,7 +16,7 @@ templates/
 ```
 
 - `stats_main.py` simply calls `stats_core.cli.main`.
-- Data flows: `sources` → `stats.collector` → `reports` → `export`.
+- Data flows: `sources` -> `stats.collector` -> `reports` -> `export`.
 
 # Setup
 
@@ -66,8 +66,9 @@ Worklog-driven attribution: if time is logged on an issue within the selected pe
 
 1. **Table View** - Tabular format with columns: Name, Week #, Date, Description, Link, Status
 2. **List View** - Tasks grouped by assignee and week, showing weekly progress
-3. **Epic Progress** - Resolved tasks grouped by epics
-4. **Resolved Tasks** - Chronological list of resolved tasks by week
+3. **Engineer Weekly Activity** - Per engineer weekly breakdown with time logged by that engineer and comments they added/updated in the week (including links from those comments)
+4. **Epic Progress** - Resolved tasks grouped by epics
+5. **Resolved Tasks** - Chronological list of resolved tasks by week
 
 Each view is generated as a separate section in the Word document. Excel export contains a pivot table grouped by assignee and week.
 

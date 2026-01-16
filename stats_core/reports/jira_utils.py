@@ -141,6 +141,97 @@ def fetch_jira_data(
     return df
 
 
+def fetch_jira_activity_data(
+    jira_source: JiraSource,
+    project: str,
+    start_date: str,
+    end_date: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Fetch per-week worklogs and comments for activity reporting.
+
+    Returns:
+        (worklogs_df, comments_df)
+    """
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    all_issues = jira_source.fetch_issues(project, datetime.combine(start_dt, datetime.min.time()),
+                                          datetime.combine(end_dt, datetime.min.time()))
+
+    worklog_rows: list[dict[str, Any]] = []
+    comment_rows: list[dict[str, Any]] = []
+
+    for issue in all_issues:
+        key = issue.key
+        summary = issue.fields.summary
+
+        worklogs = jira_source.get_all_worklogs(key)
+        for log in worklogs:
+            try:
+                author = log.get("author", {}).get("displayName", "")
+                log_date = datetime.strptime(log["started"].split("T")[0], "%Y-%m-%d").date()
+            except Exception:
+                continue
+
+            if start_dt <= log_date <= end_dt:
+                week = log_date.strftime("%G-W%V")
+                time_spent = log.get("timeSpentSeconds") or 0
+                worklog_rows.append({
+                    "Issue_key": key,
+                    "Summary": summary,
+                    "Assignee": author,
+                    "Assignee_norm": norm_name(author),
+                    "Week": week,
+                    "WorklogSeconds": int(time_spent),
+                })
+
+        comments = jira_source.get_all_comments(key)
+        for comment in comments:
+            author = comment.get("author", {}).get("displayName", "")
+            created = comment.get("created")
+            updated = comment.get("updated")
+            created_dt = _parse_jira_date(created)
+            updated_dt = _parse_jira_date(updated)
+
+            comment_dt = None
+            if updated_dt and start_dt <= updated_dt <= end_dt:
+                comment_dt = updated_dt
+            elif created_dt and start_dt <= created_dt <= end_dt:
+                comment_dt = created_dt
+
+            if comment_dt is None:
+                continue
+
+            week = comment_dt.strftime("%G-W%V")
+            comment_rows.append({
+                "Issue_key": key,
+                "Summary": summary,
+                "CommentId": comment.get("id", ""),
+                "CommentBody": comment.get("body", ""),
+                "CommentAuthor": author,
+                "CommentAuthor_norm": norm_name(author),
+                "CommentCreated": created.split("T")[0] if created else "",
+                "CommentUpdated": updated.split("T")[0] if updated else "",
+                "CommentDate": comment_dt,
+                "CommentDateStr": comment_dt.strftime("%Y-%m-%d"),
+                "Week": week,
+            })
+
+    worklogs_df = pd.DataFrame(worklog_rows)
+    comments_df = pd.DataFrame(comment_rows)
+    return worklogs_df, comments_df
+
+
+def _parse_jira_date(value: str | None) -> datetime.date | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value.split("T")[0], "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
 def mark_reassigned_tasks(df: pd.DataFrame) -> pd.DataFrame:
     """
     Mark tasks that were reassigned.

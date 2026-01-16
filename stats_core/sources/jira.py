@@ -60,6 +60,31 @@ class JiraSource:
             start_at += 100
         return worklogs
 
+    def get_all_comments(self, issue_key: str) -> list[dict[str, Any]]:
+        """
+        Fetch all comments for an issue using pagination.
+
+        Args:
+            issue_key: Jira issue key (e.g., "ABC-123")
+
+        Returns:
+            List of comment dictionaries
+        """
+        comments: list[dict[str, Any]] = []
+        start_at = 0
+        while True:
+            response = self.jira._session.get(
+                f"{self.jira._options['server']}/rest/api/2/issue/{issue_key}/comment",
+                params={"startAt": start_at, "maxResults": 100}
+            )
+            response.raise_for_status()
+            data = response.json()
+            comments.extend(data.get("comments", []))
+            if len(comments) >= data.get("total", 0):
+                break
+            start_at += 100
+        return comments
+
     def fetch_issues(self, project: str, start_date: datetime, end_date: datetime) -> list[Any]:
         """
         Fetch all issues updated during the specified period with pagination.
