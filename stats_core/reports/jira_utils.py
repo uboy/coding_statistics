@@ -156,15 +156,29 @@ def fetch_jira_activity_data(
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
     end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
 
-    all_issues = jira_source.fetch_issues(project, datetime.combine(start_dt, datetime.min.time()),
-                                          datetime.combine(end_dt, datetime.min.time()))
+    all_issues = jira_source.fetch_issues(
+        project,
+        datetime.combine(start_dt, datetime.min.time()),
+        datetime.combine(end_dt, datetime.min.time()),
+    )
+
+    epic_keys = list({
+        getattr(issue.fields, "customfield_10000", None)
+        for issue in all_issues
+        if getattr(issue.fields, "customfield_10000", None)
+    })
+    epic_names = jira_source.fetch_epic_names(epic_keys)
 
     worklog_rows: list[dict[str, Any]] = []
     comment_rows: list[dict[str, Any]] = []
+    worklog_comment_rows: list[dict[str, Any]] = []
 
     for issue in all_issues:
         key = issue.key
         summary = issue.fields.summary
+        epic_link = getattr(issue.fields, "customfield_10000", None)
+        status = issue.fields.status.name if issue.fields.status else ""
+        resolution = issue.fields.resolution.name if issue.fields.resolution else ""
 
         worklogs = jira_source.get_all_worklogs(key)
         for log in worklogs:
@@ -184,7 +198,31 @@ def fetch_jira_activity_data(
                     "Assignee_norm": norm_name(author),
                     "Week": week,
                     "WorklogSeconds": int(time_spent),
+                    "Status": status,
+                    "Resolution": resolution,
+                    "Epic_Link": epic_link,
+                    "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
                 })
+
+                comment_text = log.get("comment")
+                if comment_text and str(comment_text).strip():
+                    worklog_comment_rows.append({
+                        "Issue_key": key,
+                        "Summary": summary,
+                        "CommentId": "",
+                        "CommentBody": str(comment_text),
+                        "CommentAuthor": author,
+                        "CommentAuthor_norm": norm_name(author),
+                        "CommentCreated": log_date.strftime("%Y-%m-%d"),
+                        "CommentUpdated": log_date.strftime("%Y-%m-%d"),
+                        "CommentDate": log_date,
+                        "CommentDateStr": log_date.strftime("%Y-%m-%d"),
+                        "Week": week,
+                        "Status": status,
+                        "Resolution": resolution,
+                        "Epic_Link": epic_link,
+                        "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
+                    })
 
         comments = jira_source.get_all_comments(key)
         for comment in comments:
@@ -216,10 +254,14 @@ def fetch_jira_activity_data(
                 "CommentDate": comment_dt,
                 "CommentDateStr": comment_dt.strftime("%Y-%m-%d"),
                 "Week": week,
+                "Status": status,
+                "Resolution": resolution,
+                "Epic_Link": epic_link,
+                "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
             })
 
     worklogs_df = pd.DataFrame(worklog_rows)
-    comments_df = pd.DataFrame(comment_rows)
+    comments_df = pd.DataFrame(comment_rows + worklog_comment_rows)
     return worklogs_df, comments_df
 
 

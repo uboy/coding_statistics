@@ -24,7 +24,12 @@ from .jira_utils import (
 from .jira_list_view import add_list_view_to_document
 from .jira_engineer_weekly import add_engineer_weekly_activity_to_document
 from .jira_table_view import add_table_view_to_document
-from .jira_epic_report import generate_epic_report, add_epic_progress_to_document, add_resolved_tasks_section
+from .jira_epic_report import (
+    generate_epic_report,
+    generate_epic_progress_from_worklogs,
+    add_epic_progress_to_document,
+    add_resolved_tasks_section,
+)
 from ..sources.jira import JiraSource
 from ..export import excel as excel_export
 from ..utils.members import read_member_list
@@ -154,6 +159,7 @@ class JiraWeeklyReport:
 
         headers = generate_week_headers(valid_weeks, data)
         epic_summary = generate_epic_report(data)
+        epic_progress_summary = generate_epic_progress_from_worklogs(worklogs_df)
 
         # Generate file suffix
         file_suffix = generate_file_suffix()
@@ -195,7 +201,7 @@ class JiraWeeklyReport:
             )
 
             # Add Epic Progress
-            add_epic_progress_to_document(document, epic_summary, jira_url)
+            add_epic_progress_to_document(document, epic_summary, jira_url, epic_progress_summary)
 
             # Add Resolved Tasks section
             resolved_tasks = data[data["Status"] == "Resolved"] if not data.empty else pd.DataFrame()

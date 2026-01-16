@@ -292,6 +292,86 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     return pd.DataFrame(data), pd.DataFrame(all_links)
 
 
+def fetch_worklog_activity(
+    jira_source: JiraSource,
+    issues_df: pd.DataFrame,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """
+    Fetch aggregated worklog activity per issue and author.
+
+    Returns:
+        DataFrame with Issue_Key, Summary, Assignee, Worklog_Author, Total_Hours,
+        First_Log_Date, Last_Log_Date
+    """
+    if issues_df.empty:
+        return pd.DataFrame(
+            columns=["Issue_Key", "Summary", "Assignee", "Worklog_Author", "Total_Hours", "First_Log_Date", "Last_Log_Date"]
+        )
+
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
+
+    summary_map = issues_df.set_index("Issue_Key")["Summary"].to_dict()
+    assignee_map = issues_df.set_index("Issue_Key")["Assignee"].to_dict()
+
+    agg: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for issue_key in issues_df["Issue_Key"].dropna().unique():
+        worklogs = jira_source.get_all_worklogs(issue_key)
+        for log in worklogs:
+            try:
+                author = log.get("author", {}).get("displayName", "") or "Unknown"
+                log_date = datetime.strptime(log["started"].split("T")[0], "%Y-%m-%d").date()
+            except Exception:
+                continue
+
+            if start_dt and log_date < start_dt:
+                continue
+            if end_dt and log_date > end_dt:
+                continue
+
+            time_spent = int(log.get("timeSpentSeconds") or 0)
+            key = (issue_key, author)
+            entry = agg.setdefault(
+                key,
+                {
+                    "Issue_Key": issue_key,
+                    "Summary": summary_map.get(issue_key, ""),
+                    "Assignee": assignee_map.get(issue_key, ""),
+                    "Worklog_Author": author,
+                    "Total_Seconds": 0,
+                    "First_Log_Date": log_date,
+                    "Last_Log_Date": log_date,
+                },
+            )
+            entry["Total_Seconds"] += time_spent
+            if log_date < entry["First_Log_Date"]:
+                entry["First_Log_Date"] = log_date
+            if log_date > entry["Last_Log_Date"]:
+                entry["Last_Log_Date"] = log_date
+
+    rows = []
+    for entry in agg.values():
+        rows.append(
+            {
+                "Issue_Key": entry["Issue_Key"],
+                "Summary": entry["Summary"],
+                "Assignee": entry["Assignee"],
+                "Worklog_Author": entry["Worklog_Author"],
+                "Total_Hours": round(entry["Total_Seconds"] / 3600, 2),
+                "First_Log_Date": entry["First_Log_Date"].strftime("%Y-%m-%d"),
+                "Last_Log_Date": entry["Last_Log_Date"].strftime("%Y-%m-%d"),
+            }
+        )
+
+    activity_df = pd.DataFrame(rows)
+    if not activity_df.empty:
+        activity_df = activity_df.sort_values(by=["Issue_Key", "Worklog_Author"])
+    return activity_df
+
+
 def read_member_list(member_list_file: str) -> pd.DataFrame:
     """Read team member details from Excel file."""
     if not os.path.exists(member_list_file):
@@ -380,6 +460,7 @@ def calculate_engineer_metrics(
         code_quality = bugs / features if features > 0 else 0
 
         doc_tasks = labels_norm.loc[resolved_issues.index].str.contains("documentation", case=False, na=False).sum()
+        assistance_provided = labels_norm.loc[user_issues.index].str.contains("dev_assistance", case=False, na=False).sum()
 
         metrics.append(
             {
@@ -391,7 +472,7 @@ def calculate_engineer_metrics(
                 "Features": features,
                 "Documentation_Tasks": doc_tasks,
                 "Outstanding_Contribution": 0,
-                "Assistance_Provided": 0,
+                "Assistance_Provided": int(assistance_provided),
                 "Total_Resolved_Issues": resolved_issues.shape[0],
             }
         )
@@ -550,6 +631,7 @@ def export_to_excel(
     engineer_metrics: pd.DataFrame,
     qa_metrics: pd.DataFrame,
     pm_metrics: pd.DataFrame,
+    worklog_activity_df: pd.DataFrame,
     output_file: str | Path,
 ) -> None:
     """Export all data to Excel file with multiple sheets."""
@@ -558,6 +640,7 @@ def export_to_excel(
     engineer_metrics = _sanitize_dataframe_for_excel(engineer_metrics)
     qa_metrics = _sanitize_dataframe_for_excel(qa_metrics)
     pm_metrics = _sanitize_dataframe_for_excel(pm_metrics)
+    worklog_activity_df = _sanitize_dataframe_for_excel(worklog_activity_df)
 
     output_path = Path(output_file)
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
@@ -574,6 +657,9 @@ def export_to_excel(
 
         if not pm_metrics.empty:
             pm_metrics.to_excel(writer, sheet_name="PM_Performance", index=False)
+
+        if not worklog_activity_df.empty:
+            worklog_activity_df.to_excel(writer, sheet_name="Worklog_Activity", index=False)
 
         workbook = writer.book
         for sheet_name in workbook.sheetnames:
@@ -678,6 +764,13 @@ class JiraComprehensiveReport:
             logger.warning("No issues found matching the query.")
             return
 
+        worklog_activity_df = fetch_worklog_activity(
+            jira_source,
+            issues_df,
+            params.get("start_date"),
+            params.get("end_date"),
+        )
+
         members_df = read_member_list(params["member_list_file"])
         code_volume_df = read_code_volume(params["code_volume_file"])
 
@@ -709,6 +802,14 @@ class JiraComprehensiveReport:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_path = output_base / f"jira_comprehensive_report_{timestamp}.xlsx"
 
-        export_to_excel(issues_df, links_df, engineer_metrics, qa_metrics, pm_metrics, output_path)
+        export_to_excel(
+            issues_df,
+            links_df,
+            engineer_metrics,
+            qa_metrics,
+            pm_metrics,
+            worklog_activity_df,
+            output_path,
+        )
 
         logger.info("REPORT SUMMARY: issues=%s links=%s", len(issues_df), len(links_df))

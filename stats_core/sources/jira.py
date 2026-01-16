@@ -112,7 +112,7 @@ class JiraSource:
                 startAt=start_at,
                 maxResults=max_results,
                 fields=[
-                    "key", "summary", "assignee", "resolutiondate", "updated",
+                    "key", "summary", "assignee", "resolution", "resolutiondate", "status", "updated",
                     "customfield_10000", "parent", "issuetype", "created"
                 ]
             )

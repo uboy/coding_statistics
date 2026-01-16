@@ -73,9 +73,29 @@ def add_engineer_weekly_activity_to_document(
     document.add_heading("Engineer Weekly Activity", level=1)
 
     if worklogs_df is None or worklogs_df.empty:
-        worklogs_df = pd.DataFrame(columns=["Issue_key", "Summary", "Assignee", "Assignee_norm", "Week", "WorklogSeconds"])
+        worklogs_df = pd.DataFrame(columns=[
+            "Issue_key",
+            "Summary",
+            "Assignee",
+            "Assignee_norm",
+            "Week",
+            "WorklogSeconds",
+            "Status",
+            "Resolution",
+        ])
     if comments_df is None or comments_df.empty:
-        comments_df = pd.DataFrame(columns=["Issue_key", "Summary", "CommentAuthor", "CommentAuthor_norm", "Week", "CommentBody", "CommentDate", "CommentDateStr"])
+        comments_df = pd.DataFrame(columns=[
+            "Issue_key",
+            "Summary",
+            "CommentAuthor",
+            "CommentAuthor_norm",
+            "Week",
+            "CommentBody",
+            "CommentDate",
+            "CommentDateStr",
+            "Status",
+            "Resolution",
+        ])
 
     if "Assignee_norm" not in worklogs_df.columns:
         worklogs_df["Assignee_norm"] = worklogs_df.get("Assignee", "").map(norm_name)
@@ -165,6 +185,24 @@ def add_engineer_weekly_activity_to_document(
                     if summary_from_comment is not None and not summary_from_comment.empty:
                         issue_summary = str(summary_from_comment.iloc[0])
 
+                issue_status = ""
+                issue_resolution = ""
+                status_from_worklog = worklog_week[worklog_week["Issue_key"] == issue_key].get("Status")
+                if status_from_worklog is not None and not status_from_worklog.empty:
+                    issue_status = str(status_from_worklog.iloc[0])
+                else:
+                    status_from_comment = comment_week[comment_week["Issue_key"] == issue_key].get("Status")
+                    if status_from_comment is not None and not status_from_comment.empty:
+                        issue_status = str(status_from_comment.iloc[0])
+
+                resolution_from_worklog = worklog_week[worklog_week["Issue_key"] == issue_key].get("Resolution")
+                if resolution_from_worklog is not None and not resolution_from_worklog.empty:
+                    issue_resolution = str(resolution_from_worklog.iloc[0])
+                else:
+                    resolution_from_comment = comment_week[comment_week["Issue_key"] == issue_key].get("Resolution")
+                    if resolution_from_comment is not None and not resolution_from_comment.empty:
+                        issue_resolution = str(resolution_from_comment.iloc[0])
+
                 total_seconds = worklog_week[worklog_week["Issue_key"] == issue_key]["WorklogSeconds"].sum()
                 time_str = _format_duration(total_seconds)
 
@@ -179,6 +217,13 @@ def add_engineer_weekly_activity_to_document(
                     )
                 else:
                     issue_paragraph.add_run(f"{issue_key} - {issue_summary}")
+                status_parts = []
+                if issue_status:
+                    status_parts.append(f"Status: {issue_status}")
+                if issue_resolution:
+                    status_parts.append(f"Resolution: {issue_resolution}")
+                if status_parts:
+                    issue_paragraph.add_run(f" ({', '.join(status_parts)})")
                 issue_paragraph.add_run(f" (time: {time_str})")
 
                 issue_comments = comment_week[comment_week["Issue_key"] == issue_key].copy()
