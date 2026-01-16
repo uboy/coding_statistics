@@ -56,7 +56,9 @@ python stats_main.py run \
 - Источник для каждой ссылки определяется автоматически по URL, так что `--sources` задавать не обязательно.
 - Для `jira_weekly` параметр `--sources` необязателен, по умолчанию используется `jira`. Если нужны другие источники, их можно указать явно.
 - Для `jira_comprehensive` можно передать `--params jql=...` (или `version=...` / `epic=...`) вместо `project+dates`.
-- `jira_comprehensive` включает лист `Worklog_Activity` (агрегация времени по задаче и инженеру), а `Assistance_Provided` считается по метке `dev_assistance`.
+- `jira_comprehensive` включает лист `Worklog_Activity` (агрегация времени по задаче и инженеру, только задачи с несколькими авторами).
+- `jira_comprehensive` включает лист `Worklog_Entries` (все логи времени за период).
+- `Assistance_Provided` считается по метке `dev_assistance`.
 ```
 
 ## Jira Weekly Report Structure
@@ -68,7 +70,7 @@ Worklog-driven attribution: if time is logged on an issue within the selected pe
 1. **Table View** - Tabular format with columns: Name, Week #, Date, Description, Link, Status
 2. **List View** - Tasks grouped by assignee and week, showing weekly progress
 3. **Engineer Weekly Activity** - Per engineer weekly breakdown with time logged by that engineer, status/resolution, and comments (including worklog comments) added/updated in the week
-4. **Epic Progress** - Resolved tasks grouped by epics, plus Progressed Tasks (issues with worklogs but no resolution during the period)
+4. **Epic Progress** - Resolved tasks grouped by epics, plus Progressed Tasks (issues with worklogs but no resolution during the period) with parent/sub-task hierarchy
 5. **Resolved Tasks** - Chronological list of resolved tasks by week
 
 Each view is generated as a separate section in the Word document. Excel export contains a pivot table grouped by assignee and week.
@@ -135,4 +137,5 @@ Outputs `dist/stats_tool` executable (PyInstaller-based) bundling Python + templ
 - Implement `BaseSource` protocol (see existing gitee/github/gitlab).
 - Register new report via `stats_core.reports.registry.register`.
 - Reuse `stats_core.export` helpers for consistent formatting.
+
 

@@ -381,6 +381,64 @@ def fetch_worklog_activity(
     return activity_df
 
 
+def fetch_worklog_entries(
+    jira_source: JiraSource,
+    issues_df: pd.DataFrame,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """
+    Fetch raw worklog entries for the requested period.
+
+    Returns:
+        DataFrame with Issue_Key, Summary, Assignee, Worklog_Author, Date, Time_Spent_Hours, Comment
+    """
+    if issues_df.empty:
+        return pd.DataFrame(
+            columns=["Issue_Key", "Summary", "Assignee", "Worklog_Author", "Date", "Time_Spent_Hours", "Comment"]
+        )
+
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
+
+    summary_map = issues_df.set_index("Issue_Key")["Summary"].to_dict()
+    assignee_map = issues_df.set_index("Issue_Key")["Assignee"].to_dict()
+
+    rows: list[dict[str, Any]] = []
+
+    for issue_key in issues_df["Issue_Key"].dropna().unique():
+        worklogs = jira_source.get_all_worklogs(issue_key)
+        for log in worklogs:
+            try:
+                author = log.get("author", {}).get("displayName", "") or "Unknown"
+                log_date = datetime.strptime(log["started"].split("T")[0], "%Y-%m-%d").date()
+            except Exception:
+                continue
+
+            if start_dt and log_date < start_dt:
+                continue
+            if end_dt and log_date > end_dt:
+                continue
+
+            time_spent = int(log.get("timeSpentSeconds") or 0)
+            rows.append(
+                {
+                    "Issue_Key": issue_key,
+                    "Summary": summary_map.get(issue_key, ""),
+                    "Assignee": assignee_map.get(issue_key, ""),
+                    "Worklog_Author": author,
+                    "Date": log_date.strftime("%Y-%m-%d"),
+                    "Time_Spent_Hours": round(time_spent / 3600, 2),
+                    "Comment": log.get("comment", "") or "",
+                }
+            )
+
+    entries_df = pd.DataFrame(rows)
+    if not entries_df.empty:
+        entries_df = entries_df.sort_values(by=["Date", "Issue_Key"])
+    return entries_df
+
+
 def read_member_list(member_list_file: str) -> pd.DataFrame:
     """Read team member details from Excel file."""
     if not os.path.exists(member_list_file):
@@ -641,6 +699,7 @@ def export_to_excel(
     qa_metrics: pd.DataFrame,
     pm_metrics: pd.DataFrame,
     worklog_activity_df: pd.DataFrame,
+    worklog_entries_df: pd.DataFrame,
     output_file: str | Path,
 ) -> None:
     """Export all data to Excel file with multiple sheets."""
@@ -650,6 +709,7 @@ def export_to_excel(
     qa_metrics = _sanitize_dataframe_for_excel(qa_metrics)
     pm_metrics = _sanitize_dataframe_for_excel(pm_metrics)
     worklog_activity_df = _sanitize_dataframe_for_excel(worklog_activity_df)
+    worklog_entries_df = _sanitize_dataframe_for_excel(worklog_entries_df)
 
     output_path = Path(output_file)
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
@@ -669,6 +729,9 @@ def export_to_excel(
 
         if not worklog_activity_df.empty:
             worklog_activity_df.to_excel(writer, sheet_name="Worklog_Activity", index=False)
+
+        if not worklog_entries_df.empty:
+            worklog_entries_df.to_excel(writer, sheet_name="Worklog_Entries", index=False)
 
         workbook = writer.book
         for sheet_name in workbook.sheetnames:
@@ -779,6 +842,12 @@ class JiraComprehensiveReport:
             params.get("start_date"),
             params.get("end_date"),
         )
+        worklog_entries_df = fetch_worklog_entries(
+            jira_source,
+            issues_df,
+            params.get("start_date"),
+            params.get("end_date"),
+        )
 
         members_df = read_member_list(params["member_list_file"])
         code_volume_df = read_code_volume(params["code_volume_file"])
@@ -818,6 +887,7 @@ class JiraComprehensiveReport:
             qa_metrics,
             pm_metrics,
             worklog_activity_df,
+            worklog_entries_df,
             output_path,
         )
 
