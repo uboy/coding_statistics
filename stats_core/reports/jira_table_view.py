@@ -29,7 +29,7 @@ def add_table_view_to_document(
         jira_url: Base Jira URL for hyperlinks
         member_list_file: Optional path to Excel file with member list
     """
-    document.add_heading("Tabular View", level=2)
+    document.add_heading("Tabular View", level=1)
     table = document.add_table(rows=1, cols=6)
     table.style = 'Table Grid'
 

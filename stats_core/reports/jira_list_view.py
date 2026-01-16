@@ -36,7 +36,7 @@ def add_list_view_to_document(
         jira_url: Base Jira URL for hyperlinks
         member_list_file: Optional path to Excel file with member list
     """
-    document.add_heading("List View", level=2)
+    document.add_heading("List View", level=1)
 
     # Get list of all assignees
     if member_list_file:

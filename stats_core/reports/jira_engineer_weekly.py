@@ -39,6 +39,14 @@ def _extract_urls(text: str | None) -> list[str]:
     return _URL_PATTERN.findall(text)
 
 
+def _clean_comment_body(text: str | None) -> str:
+    if not text:
+        return ""
+    lines = [line.strip() for line in str(text).splitlines()]
+    lines = [line for line in lines if line]
+    return "\n".join(lines)
+
+
 def add_engineer_weekly_activity_to_document(
     document: Document,
     worklogs_df: pd.DataFrame,
@@ -62,7 +70,7 @@ def add_engineer_weekly_activity_to_document(
         member_list_file: Optional path to Excel file with member list
         include_empty: Whether to include weeks with no activity
     """
-    document.add_heading("Engineer Weekly Activity", level=2)
+    document.add_heading("Engineer Weekly Activity", level=1)
 
     if worklogs_df is None or worklogs_df.empty:
         worklogs_df = pd.DataFrame(columns=["Issue_key", "Summary", "Assignee", "Assignee_norm", "Week", "WorklogSeconds"])
@@ -145,6 +153,8 @@ def add_engineer_weekly_activity_to_document(
                 vacation_run.font.color.rgb = RGBColor(0, 0, 0)
                 continue
 
+            weekly_links: list[str] = []
+
             for issue_key in issue_keys:
                 issue_summary = ""
                 summary_from_worklog = worklog_week[worklog_week["Issue_key"] == issue_key].get("Summary")
@@ -175,19 +185,20 @@ def add_engineer_weekly_activity_to_document(
                 if not issue_comments.empty:
                     issue_comments = issue_comments.sort_values(by="CommentDate")
                     for _, comment_row in issue_comments.iterrows():
-                        comment_body = str(comment_row.get("CommentBody", "")).strip()
+                        comment_body = _clean_comment_body(comment_row.get("CommentBody", ""))
+                        if not comment_body:
+                            continue
                         comment_date = comment_row.get("CommentDateStr") or ""
                         comment_author = comment_row.get("CommentAuthor") or ""
                         comment_paragraph = document.add_paragraph(style="List Bullet 3")
-                        comment_paragraph.add_run(f"[{comment_date}] {comment_author}: {comment_body}")
+                        header_run = comment_paragraph.add_run(f"[{comment_date}] {comment_author}:")
+                        header_run.add_break()
+                        comment_paragraph.add_run(comment_body)
+                        weekly_links.extend(_extract_urls(comment_body))
 
-                    links = []
-                    for _, comment_row in issue_comments.iterrows():
-                        links.extend(_extract_urls(str(comment_row.get("CommentBody", ""))))
-
-                    if links:
-                        links_header = document.add_paragraph(style="List Bullet 3")
-                        links_header.add_run("Links:")
-                        for link in links:
-                            link_paragraph = document.add_paragraph(style="List Bullet 4")
-                            link_paragraph.add_run(link)
+            if weekly_links:
+                links_header = document.add_paragraph(style="List Bullet 2")
+                links_header.add_run("Links:")
+                for link in weekly_links:
+                    link_paragraph = document.add_paragraph(style="List Bullet 3")
+                    link_paragraph.add_run(link)
