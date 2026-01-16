@@ -367,8 +367,17 @@ def fetch_worklog_activity(
         )
 
     activity_df = pd.DataFrame(rows)
-    if not activity_df.empty:
-        activity_df = activity_df.sort_values(by=["Issue_Key", "Worklog_Author"])
+    if activity_df.empty:
+        return activity_df
+
+    multi_author_issues = (
+        activity_df.groupby("Issue_Key")["Worklog_Author"]
+        .nunique()
+        .reset_index()
+    )
+    multi_author_issues = multi_author_issues[multi_author_issues["Worklog_Author"] > 1]["Issue_Key"]
+    activity_df = activity_df[activity_df["Issue_Key"].isin(multi_author_issues)]
+    activity_df = activity_df.sort_values(by=["Issue_Key", "Worklog_Author"])
     return activity_df
 
 

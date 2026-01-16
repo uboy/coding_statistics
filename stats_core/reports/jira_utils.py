@@ -179,6 +179,11 @@ def fetch_jira_activity_data(
         epic_link = getattr(issue.fields, "customfield_10000", None)
         status = issue.fields.status.name if issue.fields.status else ""
         resolution = issue.fields.resolution.name if issue.fields.resolution else ""
+        parent = getattr(issue.fields, "parent", None)
+        parent_key = parent.key if parent else ""
+        parent_summary = parent.fields.summary if parent else ""
+        issue_type = getattr(issue.fields, "issuetype", None)
+        issue_type_name = issue_type.name if issue_type else ""
 
         worklogs = jira_source.get_all_worklogs(key)
         for log in worklogs:
@@ -202,6 +207,9 @@ def fetch_jira_activity_data(
                     "Resolution": resolution,
                     "Epic_Link": epic_link,
                     "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
+                    "Parent_Key": parent_key,
+                    "Parent_Summary": parent_summary,
+                    "Type": issue_type_name,
                 })
 
                 comment_text = log.get("comment")
@@ -222,6 +230,10 @@ def fetch_jira_activity_data(
                         "Resolution": resolution,
                         "Epic_Link": epic_link,
                         "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
+                        "Parent_Key": parent_key,
+                        "Parent_Summary": parent_summary,
+                        "Type": issue_type_name,
+                        "Is_Worklog_Comment": True,
                     })
 
         comments = jira_source.get_all_comments(key)
@@ -258,6 +270,10 @@ def fetch_jira_activity_data(
                 "Resolution": resolution,
                 "Epic_Link": epic_link,
                 "Epic_Name": epic_names.get(epic_link, "Unknown Epic"),
+                "Parent_Key": parent_key,
+                "Parent_Summary": parent_summary,
+                "Type": issue_type_name,
+                "Is_Worklog_Comment": False,
             })
 
     worklogs_df = pd.DataFrame(worklog_rows)

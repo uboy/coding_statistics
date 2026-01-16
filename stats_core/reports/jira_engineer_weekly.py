@@ -82,6 +82,11 @@ def add_engineer_weekly_activity_to_document(
             "WorklogSeconds",
             "Status",
             "Resolution",
+            "Parent_Key",
+            "Parent_Summary",
+            "Type",
+            "Epic_Link",
+            "Epic_Name",
         ])
     if comments_df is None or comments_df.empty:
         comments_df = pd.DataFrame(columns=[
@@ -95,6 +100,12 @@ def add_engineer_weekly_activity_to_document(
             "CommentDateStr",
             "Status",
             "Resolution",
+            "Is_Worklog_Comment",
+            "Parent_Key",
+            "Parent_Summary",
+            "Type",
+            "Epic_Link",
+            "Epic_Name",
         ])
 
     if "Assignee_norm" not in worklogs_df.columns:
@@ -235,8 +246,9 @@ def add_engineer_weekly_activity_to_document(
                             continue
                         comment_date = comment_row.get("CommentDateStr") or ""
                         comment_author = comment_row.get("CommentAuthor") or ""
+                        worklog_marker = " (worklog)" if comment_row.get("Is_Worklog_Comment") else ""
                         comment_paragraph = document.add_paragraph(style="List Bullet 3")
-                        header_run = comment_paragraph.add_run(f"[{comment_date}] {comment_author}:")
+                        header_run = comment_paragraph.add_run(f"[{comment_date}] {comment_author}{worklog_marker}:")
                         header_run.add_break()
                         comment_paragraph.add_run(comment_body)
                         weekly_links.extend(_extract_urls(comment_body))

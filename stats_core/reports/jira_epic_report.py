@@ -63,18 +63,76 @@ def generate_epic_progress_from_worklogs(worklogs_df: pd.DataFrame) -> list[dict
         return []
 
     unresolved = unresolved.drop_duplicates(subset=["Issue_key"])
-    grouped = unresolved.groupby("Epic_Link")
+
+    parent_summary_map = (
+        unresolved[["Issue_key", "Summary"]]
+        .dropna()
+        .set_index("Issue_key")["Summary"]
+        .to_dict()
+    )
+    epic_name_map = (
+        unresolved[["Epic_Link", "Epic_Name"]]
+        .dropna()
+        .drop_duplicates(subset=["Epic_Link"])
+        .set_index("Epic_Link")["Epic_Name"]
+        .to_dict()
+    )
+    parent_epic_map = (
+        unresolved[["Issue_key", "Epic_Link"]]
+        .dropna()
+        .set_index("Issue_key")["Epic_Link"]
+        .to_dict()
+    )
+
+    epic_groups: dict[str, dict[str, Any]] = {}
+
+    for _, row in unresolved.iterrows():
+        issue_key = row["Issue_key"]
+        summary = row.get("Summary", "")
+        parent_key = row.get("Parent_Key", "")
+        parent_summary = row.get("Parent_Summary", "")
+        issue_type = row.get("Type", "")
+
+        epic_link = row.get("Epic_Link", "")
+        if not epic_link and parent_key:
+            epic_link = parent_epic_map.get(parent_key, "")
+
+        epic_name = epic_name_map.get(epic_link, "Unknown Epic")
+        epic_bucket = epic_groups.setdefault(
+            epic_link,
+            {"Epic": epic_name, "Parents": {}}
+        )
+
+        if issue_type.lower() == "sub-task" and parent_key:
+            parent_bucket = epic_bucket["Parents"].setdefault(
+                parent_key,
+                {
+                    "Parent_Key": parent_key,
+                    "Parent_Summary": parent_summary or parent_summary_map.get(parent_key, ""),
+                    "Subtasks": [],
+                },
+            )
+            parent_bucket["Subtasks"].append(
+                {
+                    "Task_Key": issue_key,
+                    "Task_Summary": summary,
+                }
+            )
+        else:
+            parent_bucket = epic_bucket["Parents"].setdefault(
+                issue_key,
+                {
+                    "Parent_Key": issue_key,
+                    "Parent_Summary": summary,
+                    "Subtasks": [],
+                },
+            )
+            parent_bucket["Parent_Summary"] = summary or parent_bucket["Parent_Summary"]
 
     epic_summary = []
-    for epic, tasks in grouped:
-        task_details = [
-            {
-                "Task_Key": row["Issue_key"],
-                "Task_Summary": row["Summary"]
-            }
-            for _, row in tasks.iterrows()
-        ]
-        epic_summary.append({"Epic": tasks.iloc[0]["Epic_Name"], "Tasks": task_details})
+    for epic_data in epic_groups.values():
+        parents_list = list(epic_data["Parents"].values())
+        epic_summary.append({"Epic": epic_data["Epic"], "Parents": parents_list})
 
     return epic_summary
 
@@ -97,19 +155,19 @@ def add_epic_progress_to_document(
 
     document.add_heading("Resolved Tasks", level=3)
     if epic_summary:
-        _render_epic_groups(document, epic_summary, heading_level=4)
+        _render_resolved_epics(document, epic_summary, heading_level=4)
     else:
         document.add_paragraph("No resolved tasks for open epics during the specified period.")
 
     if progress_summary is not None:
         document.add_heading("Progressed Tasks", level=3)
         if progress_summary:
-            _render_epic_groups(document, progress_summary, heading_level=4)
+            _render_progressed_epics(document, progress_summary, heading_level=4)
         else:
             document.add_paragraph("No in-progress tasks with worklogs during the specified period.")
 
 
-def _render_epic_groups(
+def _render_resolved_epics(
     document: Document,
     epic_summary: list[dict[str, Any]],
     heading_level: int,
@@ -122,6 +180,28 @@ def _render_epic_groups(
                 style="List Bullet 2",
             )
             _apply_paragraph_style([paragraph], font_name="Calibri (Body)", font_size=10)
+
+
+def _render_progressed_epics(
+    document: Document,
+    epic_summary: list[dict[str, Any]],
+    heading_level: int,
+) -> None:
+    for epic in epic_summary:
+        document.add_heading(epic["Epic"], level=heading_level)
+        for parent in epic.get("Parents", []):
+            parent_paragraph = document.add_paragraph(
+                f"{parent['Parent_Key']}: {parent['Parent_Summary']}",
+                style="List Bullet 2",
+            )
+            _apply_paragraph_style([parent_paragraph], font_name="Calibri (Body)", font_size=10)
+
+            for subtask in parent.get("Subtasks", []):
+                sub_paragraph = document.add_paragraph(
+                    f"{subtask['Task_Key']}: {subtask['Task_Summary']}",
+                    style="List Bullet 3",
+                )
+                _apply_paragraph_style([sub_paragraph], font_name="Calibri (Body)", font_size=10)
 
 
 def add_resolved_tasks_section(
