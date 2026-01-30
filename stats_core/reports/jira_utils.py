@@ -141,6 +141,97 @@ def fetch_jira_data(
     return df
 
 
+def build_resolved_issues_snapshot(
+    jira_source: JiraSource,
+    project: str,
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame:
+    """
+    Build a snapshot of issues resolved within the specified period.
+
+    Args:
+        jira_source: JiraSource instance
+        project: Jira project key
+        start_date: Start date string (YYYY-MM-DD)
+        end_date: End date string (YYYY-MM-DD)
+
+    Returns:
+        DataFrame with columns: Issue_key, Summary, Resolution_Date, Resolution_Week,
+        Epic_Link, Epic_Name, Parent_Key, Parent_Summary, Type
+
+    Note:
+        Jira fetch_issues uses updated >= start_date, so resolved issues not updated in the
+        period may be missing.
+    """
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    all_issues = jira_source.fetch_issues(
+        project,
+        datetime.combine(start_dt, datetime.min.time()),
+        datetime.combine(end_dt, datetime.min.time()),
+    )
+
+    epic_keys = list({
+        getattr(issue.fields, "customfield_10000", None)
+        for issue in all_issues
+        if getattr(issue.fields, "customfield_10000", None)
+    })
+    epic_names = jira_source.fetch_epic_names(epic_keys)
+
+    issue_epic_map: dict[str, str | None] = {}
+    issue_summary_map: dict[str, str] = {}
+    for issue in all_issues:
+        issue_epic_map[issue.key] = getattr(issue.fields, "customfield_10000", None)
+        issue_summary_map[issue.key] = issue.fields.summary
+
+    rows: list[dict[str, Any]] = []
+
+    for issue in all_issues:
+        resolved_date = issue.fields.resolutiondate
+        if not resolved_date:
+            continue
+
+        resolution_date = resolved_date.split("T")[0]
+        try:
+            resolution_dt = datetime.strptime(resolution_date, "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        if not (start_dt <= resolution_dt <= end_dt):
+            continue
+
+        parent = getattr(issue.fields, "parent", None)
+        parent_key = parent.key if parent else ""
+        parent_summary = parent.fields.summary if parent else ""
+        if not parent_summary and parent_key:
+            parent_summary = issue_summary_map.get(parent_key, "")
+
+        epic_link = getattr(issue.fields, "customfield_10000", None)
+        if (not epic_link) and parent_key:
+            epic_link = issue_epic_map.get(parent_key, "")
+
+        epic_name = epic_names.get(epic_link, "Unknown Epic") if epic_link else "Unknown Epic"
+
+        issue_type = getattr(issue.fields, "issuetype", None)
+        issue_type_name = issue_type.name if issue_type else "Unknown"
+
+        rows.append({
+            "Issue_key": issue.key,
+            "Summary": issue.fields.summary,
+            "Resolution_Date": resolution_date,
+            "Resolution_Week": resolution_dt.strftime("%G-W%V"),
+            "Epic_Link": epic_link or "",
+            "Epic_Name": epic_name,
+            "Parent_Key": parent_key or "",
+            "Parent_Summary": parent_summary or "",
+            "Type": issue_type_name,
+        })
+
+    return pd.DataFrame(rows)
+
+
 def fetch_jira_activity_data(
     jira_source: JiraSource,
     project: str,

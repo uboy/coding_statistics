@@ -15,6 +15,7 @@ from . import registry
 from .jira_utils import (
     fetch_jira_data,
     fetch_jira_activity_data,
+    build_resolved_issues_snapshot,
     mark_reassigned_tasks,
     fill_missing_weeks,
     generate_week_headers,
@@ -25,7 +26,7 @@ from .jira_list_view import add_list_view_to_document
 from .jira_engineer_weekly import add_engineer_weekly_activity_to_document
 from .jira_table_view import add_table_view_to_document
 from .jira_epic_report import (
-    generate_epic_report,
+    generate_epic_resolved_hierarchy,
     generate_epic_progress_from_worklogs,
     add_epic_progress_to_document,
     add_resolved_tasks_section,
@@ -117,6 +118,7 @@ class JiraWeeklyReport:
         # Fetch data
         data = fetch_jira_data(jira_source, project, start_date, end_date)
         worklogs_df, comments_df = fetch_jira_activity_data(jira_source, project, start_date, end_date)
+        resolved_issues_df = build_resolved_issues_snapshot(jira_source, project, start_date, end_date)
 
         # If there is no JIRA data at all, create an empty frame with expected columns
         # so that downstream utilities (fill_missing_weeks, epic reports) work safely.
@@ -158,7 +160,7 @@ class JiraWeeklyReport:
             data = mark_reassigned_tasks(data)
 
         headers = generate_week_headers(valid_weeks, data)
-        epic_summary = generate_epic_report(data)
+        epic_summary = generate_epic_resolved_hierarchy(resolved_issues_df)
         epic_progress_summary = generate_epic_progress_from_worklogs(worklogs_df)
 
         # Generate file suffix
@@ -204,8 +206,7 @@ class JiraWeeklyReport:
             add_epic_progress_to_document(document, epic_summary, jira_url, epic_progress_summary)
 
             # Add Resolved Tasks section
-            resolved_tasks = data[data["Status"] == "Resolved"] if not data.empty else pd.DataFrame()
-            add_resolved_tasks_section(document, resolved_tasks)
+            add_resolved_tasks_section(document, resolved_issues_df)
 
             # Save document
             word_path = Path(f"{output_file}.docx")

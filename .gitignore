@@ -12,7 +12,7 @@ dist
 **.xlsx
 **.docx
 .idea
-venv
+.venv/
 **.exe
 
 .codegpt

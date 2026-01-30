@@ -11,7 +11,7 @@ logging==0.4.9.6
 lxml==5.4.0
 numpy==2.2.6
 oauthlib==3.2.2
-openpyxl==3.2.0b1
+openpyxl==3.1.5
 packaging==25.0
 pandas==2.2.3
 pbr==6.1.1

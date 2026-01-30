@@ -152,6 +152,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
 
     fake_source = Mock()
     fake_source.jira = fake_jira
+    fake_source.get_all_worklogs = Mock(return_value=[])
     mock_jira_source_cls.return_value = fake_source
 
     members_file = tmp_path / "members.xlsx"

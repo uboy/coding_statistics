@@ -6,15 +6,21 @@ import pytest
 from datetime import datetime, timedelta
 from unittest.mock import Mock, MagicMock, patch
 import pandas as pd
+from docx import Document
 
 from stats_core.reports.jira_utils import (
     fetch_jira_data,
+    build_resolved_issues_snapshot,
     mark_reassigned_tasks,
     fill_missing_weeks,
     norm_name,
     is_empty_task,
 )
 from stats_core.reports.jira_weekly import JiraWeeklyReport
+from stats_core.reports.jira_epic_report import (
+    generate_epic_resolved_hierarchy,
+    add_resolved_tasks_section,
+)
 from stats_core.sources.jira import JiraSource
 
 
@@ -346,3 +352,99 @@ def test_jira_weekly_report_run(mock_jira_class, tmp_path):
         output_formats=["excel", "word"],
         extra_params=extra_params,
     )
+
+
+
+def test_build_resolved_issues_snapshot_filters_and_hierarchy(mock_jira_source):
+    """Test: Resolved snapshot includes in-period issues and inherits epic from parent."""
+    parent_issue = Mock()
+    parent_issue.key = "TEST-10"
+    parent_issue.fields.summary = "Parent task"
+    parent_issue.fields.resolutiondate = "2025-01-15T10:00:00.000+0000"
+    parent_issue.fields.customfield_10000 = "EPIC-1"
+    parent_issue.fields.parent = None
+    parent_issue.fields.issuetype = Mock(name="Task")
+
+    subtask_issue = Mock()
+    subtask_issue.key = "TEST-11"
+    subtask_issue.fields.summary = "Subtask in period"
+    subtask_issue.fields.resolutiondate = "2025-01-16T10:00:00.000+0000"
+    subtask_issue.fields.customfield_10000 = None
+    subtask_issue.fields.parent = parent_issue
+    subtask_issue.fields.issuetype = Mock(name="Sub-task")
+
+    out_of_range = Mock()
+    out_of_range.key = "TEST-12"
+    out_of_range.fields.summary = "Subtask out of range"
+    out_of_range.fields.resolutiondate = "2025-01-25T10:00:00.000+0000"
+    out_of_range.fields.customfield_10000 = None
+    out_of_range.fields.parent = parent_issue
+    out_of_range.fields.issuetype = Mock(name="Sub-task")
+
+    mock_jira_source.fetch_issues = Mock(return_value=[parent_issue, subtask_issue, out_of_range])
+    mock_jira_source.fetch_epic_names = Mock(return_value={"EPIC-1": "Epic One"})
+
+    data = build_resolved_issues_snapshot(
+        mock_jira_source,
+        "TEST",
+        "2025-01-13",
+        "2025-01-19",
+    )
+
+    keys = set(data["Issue_key"].tolist())
+    assert "TEST-10" in keys
+    assert "TEST-11" in keys
+    assert "TEST-12" not in keys
+
+    subtask_row = data[data["Issue_key"] == "TEST-11"].iloc[0]
+    assert subtask_row["Epic_Link"] == "EPIC-1"
+    assert subtask_row["Epic_Name"] == "Epic One"
+    assert subtask_row["Parent_Key"] == "TEST-10"
+
+
+def test_generate_epic_resolved_hierarchy_includes_parent_for_subtask_only():
+    """Test: Resolved hierarchy renders parent bucket even if only subtask resolved."""
+    resolved_df = pd.DataFrame([
+        {
+            "Issue_key": "SUB-1",
+            "Summary": "Subtask",
+            "Resolution_Date": "2025-01-15",
+            "Resolution_Week": "2025-W03",
+            "Epic_Link": "EPIC-1",
+            "Epic_Name": "Epic One",
+            "Parent_Key": "PARENT-1",
+            "Parent_Summary": "Parent",
+            "Type": "Sub-task",
+        }
+    ])
+
+    summary = generate_epic_resolved_hierarchy(resolved_df)
+    assert len(summary) == 1
+    parents = summary[0].get("Parents", [])
+    assert len(parents) == 1
+    assert parents[0]["Parent_Key"] == "PARENT-1"
+    assert parents[0]["Subtasks"][0]["Task_Key"] == "SUB-1"
+
+
+def test_add_resolved_tasks_section_lists_subtask_under_parent():
+    """Test: Resolved Tasks section nests subtask under parent for the week."""
+    resolved_df = pd.DataFrame([
+        {
+            "Issue_key": "SUB-1",
+            "Summary": "Subtask",
+            "Resolution_Date": "2025-01-15",
+            "Resolution_Week": "2025-W03",
+            "Epic_Link": "EPIC-1",
+            "Epic_Name": "Epic One",
+            "Parent_Key": "PARENT-1",
+            "Parent_Summary": "Parent",
+            "Type": "Sub-task",
+        }
+    ])
+
+    document = Document()
+    add_resolved_tasks_section(document, resolved_df)
+
+    texts = [p.text for p in document.paragraphs]
+    assert any("PARENT-1: Parent" in text for text in texts)
+    assert any("SUB-1: Subtask" in text for text in texts)
