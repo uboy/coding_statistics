@@ -218,18 +218,18 @@ def add_epic_progress_to_document(
         epic_summary: List of epic dictionaries from generate_epic_resolved_hierarchy
         jira_url: Base Jira URL for hyperlinks
     """
-    document.add_heading("Epic Progress", level=2)
+    document.add_heading("Epic Progress", level=1)
 
-    document.add_heading("Resolved Tasks", level=3)
+    document.add_heading("Resolved Tasks", level=2)
     if epic_summary:
-        _render_resolved_epics(document, epic_summary, heading_level=4)
+        _render_resolved_epics(document, epic_summary, heading_level=3)
     else:
         document.add_paragraph("No resolved tasks for open epics during the specified period.")
 
     if progress_summary is not None:
-        document.add_heading("Progressed Tasks", level=3)
+        document.add_heading("Progressed Tasks", level=2)
         if progress_summary:
-            _render_progressed_epics(document, progress_summary, heading_level=4)
+            _render_progressed_epics(document, progress_summary, heading_level=3)
         else:
             document.add_paragraph("No in-progress tasks with worklogs during the specified period.")
 
@@ -289,7 +289,7 @@ def add_resolved_tasks_section(
         document: Word document to add section to
         resolved_tasks: DataFrame with Resolution_Date, Resolution_Week, Parent_Key, Type columns
     """
-    document.add_heading("Resolved Tasks", level=2)
+    document.add_heading("Resolved Tasks", level=1)
     if resolved_tasks.empty:
         document.add_paragraph("No resolved tasks during the specified period.")
         return
