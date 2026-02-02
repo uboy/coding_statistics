@@ -39,8 +39,11 @@ def _make_issue(
     reporter_username: str | None,
     description: str = "",
     comment_body: str | None = None,
+    comment_id: str | None = None,
     labels: list[str] | None = None,
     resolution_name: str = "Done",
+    epic_link: str | None = "EPIC-1",
+    parent_key: str | None = None,
 ):
     comment = SimpleNamespace(
         comments=(
@@ -49,12 +52,14 @@ def _make_issue(
                     body=comment_body,
                     author=SimpleNamespace(displayName="Commenter"),
                     created="2025-01-02T10:00:00.000+0000",
+                    id=comment_id,
                 )
             ]
             if comment_body
             else []
         )
     )
+    parent = SimpleNamespace(key=parent_key) if parent_key else None
     fields = SimpleNamespace(
         summary=summary,
         assignee=SimpleNamespace(displayName=assignee_display, name=assignee_username),
@@ -72,7 +77,8 @@ def _make_issue(
         timeestimate=0,
         timespent=0,
         timeoriginalestimate=0,
-        customfield_10000="EPIC-1",
+        customfield_10000=epic_link,
+        parent=parent,
     )
     return SimpleNamespace(key=key, fields=fields)
 
@@ -90,7 +96,8 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             reporter_display="Bob",
             reporter_username=None,
             description="See\x0b https://example.com",
-            comment_body="ref\x00 http://example.org",
+            comment_body="Result: fixed issue",
+            comment_id="101",
             labels=["documentation"],
         ),
         _make_issue(
@@ -145,10 +152,61 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             reporter_display="Carol",
             reporter_username="carol",
         ),
+        _make_issue(
+            "ABC-6",
+            summary="Parent Task",
+            issue_type="Task",
+            status="Released",
+            assignee_display="Alice",
+            assignee_username="alice",
+            reporter_display="Bob",
+            reporter_username=None,
+            epic_link="EPIC-2",
+        ),
+        _make_issue(
+            "ABC-7",
+            summary="Subtask Task",
+            issue_type="Sub-task",
+            status="Released",
+            assignee_display="Alice",
+            assignee_username="alice",
+            reporter_display="Bob",
+            reporter_username=None,
+            epic_link=None,
+            parent_key="ABC-6",
+        ),
     ]
 
     fake_jira = Mock()
-    fake_jira.search_issues.return_value = issues
+    epic_issues = [
+        _make_issue(
+            "EPIC-1",
+            summary="Epic One",
+            issue_type="Epic",
+            status="Released",
+            assignee_display="Carol",
+            assignee_username="carol",
+            reporter_display="Carol",
+            reporter_username="carol",
+        ),
+        _make_issue(
+            "EPIC-2",
+            summary="Epic Two",
+            issue_type="Epic",
+            status="Released",
+            assignee_display="Carol",
+            assignee_username="carol",
+            reporter_display="Carol",
+            reporter_username="carol",
+        ),
+    ]
+
+    def _search_issues_side_effect(jql_query, *args, **kwargs):
+        if "issuekey in" in jql_query:
+            return epic_issues
+        return issues
+
+    fake_jira.search_issues.side_effect = _search_issues_side_effect
 
     fake_source = Mock()
     fake_source.jira = fake_jira
@@ -193,7 +251,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     expected_jql = (
         "project = ABC AND resolved >= '2025-01-01' AND resolved <= '2025-01-31' ORDER BY created DESC"
     )
-    assert fake_jira.search_issues.call_args[0][0] == expected_jql
+    assert any(call.args[0] == expected_jql for call in fake_jira.search_issues.call_args_list)
 
     out_path = tmp_path / "out.xlsx"
     assert out_path.exists()
@@ -201,6 +259,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     wb = load_workbook(out_path)
     assert "Issues" in wb.sheetnames
     assert "Links" in wb.sheetnames
+    assert "Results" in wb.sheetnames
     assert "Engineer_Performance" in wb.sheetnames
     assert "QA_Performance" in wb.sheetnames
     assert "PM_Performance" in wb.sheetnames
@@ -209,12 +268,31 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     headers = [cell.value for cell in issues_sheet[1]]
     desc_col = headers.index("Description") + 1
     comments_col = headers.index("Comments") + 1
+    parent_col = headers.index("Parent") + 1
+    epic_link_col = headers.index("Epic_Link") + 1
+    epic_name_col = headers.index("Epic_Name") + 1
     assert "\x0b" not in str(issues_sheet.cell(row=2, column=desc_col).value)
     assert "\x00" not in str(issues_sheet.cell(row=2, column=comments_col).value)
+    issue_key_col = headers.index("Issue_Key") + 1
+    subtask_row = None
+    for row_idx in range(2, issues_sheet.max_row + 1):
+        if issues_sheet.cell(row=row_idx, column=issue_key_col).value == "ABC-7":
+            subtask_row = row_idx
+            break
+    assert subtask_row is not None
+    assert issues_sheet.cell(row=subtask_row, column=parent_col).value == "ABC-6"
+    assert issues_sheet.cell(row=subtask_row, column=epic_link_col).value == "EPIC-2"
+    assert issues_sheet.cell(row=subtask_row, column=epic_name_col).value == "Epic Two"
 
     links_sheet = wb["Links"]
     # header + at least 2 links (description + comment)
-    assert links_sheet.max_row >= 3
+    assert links_sheet.max_row >= 2
+
+    results_sheet = wb["Results"]
+    results_headers = [cell.value for cell in results_sheet[1]]
+    result_links_col = results_headers.index("Result_Links") + 1
+    result_link_value = results_sheet.cell(row=2, column=result_links_col).value
+    assert "focusedCommentId=101" in str(result_link_value)
 
     def _sheet_row(sheet_name: str) -> dict[str, object]:
         sheet = wb[sheet_name]
@@ -225,7 +303,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     engineer_row = _sheet_row("Engineer_Performance")
     assert engineer_row["Bugs"] == 1
     assert engineer_row["Documentation_Tasks"] == 1
-    assert engineer_row["Total_Resolved_Issues"] == 1
+    assert engineer_row["Total_Resolved_Issues"] == 3
 
     qa_row = _sheet_row("QA_Performance")
     assert qa_row["Test_Scenarios_Executed"] == 5

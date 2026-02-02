@@ -166,12 +166,38 @@ def extract_urls_from_text(text: str | None) -> list[str]:
     return re.findall(url_pattern, text)
 
 
-def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _fetch_epic_names(jira, epic_keys: list[str]) -> dict[str, str]:
+    if not epic_keys:
+        return {}
+    epic_keys = [key for key in epic_keys if key]
+    if not epic_keys:
+        return {}
+
+    epic_names: dict[str, str] = {}
+    chunk_size = 50
+    for i in range(0, len(epic_keys), chunk_size):
+        chunk = epic_keys[i:i + chunk_size]
+        epics = jira.search_issues(
+            f"issuekey in ({', '.join(chunk)})",
+            maxResults=1000,
+            fields=["key", "summary"],
+        )
+        epic_names.update({epic.key: epic.fields.summary for epic in epics})
+    return epic_names
+
+
+def _build_comment_link(jira_url: str, issue_key: str, comment_id: str | None) -> str:
+    if not comment_id:
+        return f"{jira_url}/browse/{issue_key}"
+    return f"{jira_url}/browse/{issue_key}?focusedCommentId={comment_id}#comment-{comment_id}"
+
+
+def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Fetch Jira issues with all details including comments.
 
     Returns:
-        (issues_df, links_df)
+        (issues_df, links_df, results_df)
     """
     start_at = 0
     max_results = 100
@@ -203,6 +229,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame]:
                 "timespent",
                 "timeoriginalestimate",
                 "customfield_10000",  # Epic Link
+                "parent",
             ],
             expand="changelog",
         )
@@ -217,6 +244,14 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     data: list[dict[str, Any]] = []
     all_links: list[dict[str, str]] = []
+    all_comments: list[dict[str, Any]] = []
+
+    issue_epic_map: dict[str, str] = {}
+    for issue in all_issues:
+        issue_epic_map[issue.key] = getattr(issue.fields, "customfield_10000", "") or ""
+
+    epic_name_map = _fetch_epic_names(jira, list({value for value in issue_epic_map.values() if value}))
+    jira_url = jira._options.get("server", "")
 
     for issue in all_issues:
         key = issue.key
@@ -244,6 +279,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame]:
                 comment_text = comment.body
                 comment_author = comment.author.displayName if comment.author else "Unknown"
                 comment_created = comment.created[:10] if comment.created else ""
+                comment_id = getattr(comment, "id", "") or ""
                 comments.append(f"[{comment_created}] {comment_author}: {comment_text}")
 
                 for link in extract_urls_from_text(comment_text):
@@ -254,8 +290,18 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame]:
                             "URL": link,
                         }
                     )
+                all_comments.append(
+                    {
+                        "Issue_Key": key,
+                        "Summary": summary,
+                        "Assignee": assignee,
+                        "Comment_Id": str(comment_id) if comment_id is not None else "",
+                        "Comment_Body": comment_text,
+                        "Comment_Link": _build_comment_link(jira_url, key, str(comment_id) if comment_id else None),
+                    }
+                )
 
-        all_comments = "\n---\n".join(comments)
+        all_comments_text = "\n---\n".join(comments)
 
         labels = ", ".join(issue.fields.labels) if issue.fields.labels else ""
 
@@ -263,7 +309,12 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame]:
         status = issue.fields.status.name if issue.fields.status else ""
         resolution = issue.fields.resolution.name if issue.fields.resolution else ""
         issue_type = issue.fields.issuetype.name if issue.fields.issuetype else ""
-        epic_link = getattr(issue.fields, "customfield_10000", "")
+        epic_link = getattr(issue.fields, "customfield_10000", "") or ""
+        parent = getattr(issue.fields, "parent", None)
+        parent_key = parent.key if parent else ""
+        if not epic_link and parent_key:
+            epic_link = issue_epic_map.get(parent_key, "")
+        epic_name = epic_name_map.get(epic_link, "Unknown Epic") if epic_link else "Unknown Epic"
 
         data.append(
             {
@@ -283,13 +334,51 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame]:
                 "Time_Spent_Hours": time_spent,
                 "Remaining_Hours": remaining,
                 "Description": description,
-                "Comments": all_comments,
+                "Comments": all_comments_text,
                 "Labels": labels,
                 "Epic_Link": epic_link,
+                "Epic_Name": epic_name,
+                "Parent": parent_key,
             }
         )
 
-    return pd.DataFrame(data), pd.DataFrame(all_links)
+    issues_df = pd.DataFrame(data)
+    links_df = pd.DataFrame(all_links)
+    results_df = pd.DataFrame(columns=["Issue_Key", "Summary", "Assignee", "Result", "Result_Links"])
+
+    if not issues_df.empty and all_comments:
+        resolved_mask = _resolved_mask(issues_df)
+        resolved_keys = set(issues_df.loc[resolved_mask, "Issue_Key"].dropna().astype(str))
+
+        result_rows: list[dict[str, Any]] = []
+        for entry in all_comments:
+            issue_key = str(entry.get("Issue_Key", "") or "")
+            if issue_key not in resolved_keys:
+                continue
+            comment_body = entry.get("Comment_Body") or ""
+            if not str(comment_body).startswith("Result:"):
+                continue
+
+            links = extract_urls_from_text(comment_body)
+            if links:
+                result_links = "\n".join(links)
+            else:
+                result_links = entry.get("Comment_Link") or ""
+
+            result_rows.append(
+                {
+                    "Issue_Key": issue_key,
+                    "Summary": entry.get("Summary", ""),
+                    "Assignee": entry.get("Assignee", ""),
+                    "Result": comment_body,
+                    "Result_Links": result_links,
+                }
+            )
+
+        if result_rows:
+            results_df = pd.DataFrame(result_rows)
+
+    return issues_df, links_df, results_df
 
 
 def fetch_worklog_activity(
@@ -695,6 +784,7 @@ def calculate_pm_metrics(
 def export_to_excel(
     issues_df: pd.DataFrame,
     links_df: pd.DataFrame,
+    results_df: pd.DataFrame,
     engineer_metrics: pd.DataFrame,
     qa_metrics: pd.DataFrame,
     pm_metrics: pd.DataFrame,
@@ -705,6 +795,7 @@ def export_to_excel(
     """Export all data to Excel file with multiple sheets."""
     issues_df = _sanitize_dataframe_for_excel(issues_df)
     links_df = _sanitize_dataframe_for_excel(links_df)
+    results_df = _sanitize_dataframe_for_excel(results_df)
     engineer_metrics = _sanitize_dataframe_for_excel(engineer_metrics)
     qa_metrics = _sanitize_dataframe_for_excel(qa_metrics)
     pm_metrics = _sanitize_dataframe_for_excel(pm_metrics)
@@ -717,6 +808,9 @@ def export_to_excel(
 
         if not links_df.empty:
             links_df.to_excel(writer, sheet_name="Links", index=False)
+
+        if not results_df.empty:
+            results_df.to_excel(writer, sheet_name="Results", index=False)
 
         if not engineer_metrics.empty:
             engineer_metrics.to_excel(writer, sheet_name="Engineer_Performance", index=False)
@@ -831,7 +925,7 @@ class JiraComprehensiveReport:
         jira_source = JiraSource(config["jira"])
         jira = jira_source.jira
 
-        issues_df, links_df = fetch_jira_data(jira, jql_query)
+        issues_df, links_df, results_df = fetch_jira_data(jira, jql_query)
         if issues_df.empty:
             logger.warning("No issues found matching the query.")
             return
@@ -883,6 +977,7 @@ class JiraComprehensiveReport:
         export_to_excel(
             issues_df,
             links_df,
+            results_df,
             engineer_metrics,
             qa_metrics,
             pm_metrics,
@@ -891,4 +986,9 @@ class JiraComprehensiveReport:
             output_path,
         )
 
-        logger.info("REPORT SUMMARY: issues=%s links=%s", len(issues_df), len(links_df))
+        logger.info(
+            "REPORT SUMMARY: issues=%s links=%s results=%s",
+            len(issues_df),
+            len(links_df),
+            len(results_df),
+        )
