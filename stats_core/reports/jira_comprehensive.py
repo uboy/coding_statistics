@@ -166,6 +166,31 @@ def extract_urls_from_text(text: str | None) -> list[str]:
     return re.findall(url_pattern, text)
 
 
+def _comment_body_to_text(body: Any) -> str:
+    if body is None:
+        return ""
+    if isinstance(body, str):
+        return body
+    if isinstance(body, list):
+        return " ".join(_comment_body_to_text(item) for item in body).strip()
+    if isinstance(body, dict):
+        parts: list[str] = []
+        stack = [body]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                text_value = node.get("text")
+                if isinstance(text_value, str) and text_value:
+                    parts.append(text_value)
+                content = node.get("content")
+                if isinstance(content, list):
+                    stack.extend(reversed(content))
+            elif isinstance(node, list):
+                stack.extend(reversed(node))
+        return " ".join(parts).strip()
+    return str(body)
+
+
 def _fetch_epic_names(jira, epic_keys: list[str]) -> dict[str, str]:
     if not epic_keys:
         return {}
@@ -247,8 +272,31 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
     all_comments: list[dict[str, Any]] = []
 
     issue_epic_map: dict[str, str] = {}
+    parent_keys_needed: set[str] = set()
     for issue in all_issues:
-        issue_epic_map[issue.key] = getattr(issue.fields, "customfield_10000", "") or ""
+        epic_link = getattr(issue.fields, "customfield_10000", "") or ""
+        parent = getattr(issue.fields, "parent", None)
+        parent_key = parent.key if parent else ""
+        if not epic_link and parent_key:
+            parent_keys_needed.add(parent_key)
+        issue_epic_map[issue.key] = epic_link or ""
+
+    if parent_keys_needed:
+        missing_parent_keys = [
+            key for key in parent_keys_needed if not issue_epic_map.get(key)
+        ]
+        if missing_parent_keys:
+            chunk_size = 50
+            for i in range(0, len(missing_parent_keys), chunk_size):
+                chunk = missing_parent_keys[i:i + chunk_size]
+                parent_issues = jira.search_issues(
+                    f"issuekey in ({', '.join(chunk)})",
+                    maxResults=1000,
+                    fields=["key", "customfield_10000"],
+                )
+                for parent_issue in parent_issues:
+                    parent_epic = getattr(parent_issue.fields, "customfield_10000", "") or ""
+                    issue_epic_map[parent_issue.key] = parent_epic
 
     epic_name_map = _fetch_epic_names(jira, list({value for value in issue_epic_map.values() if value}))
     jira_url = jira._options.get("server", "")
@@ -276,7 +324,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
         comments: list[str] = []
         if hasattr(issue.fields, "comment") and issue.fields.comment.comments:
             for comment in issue.fields.comment.comments:
-                comment_text = comment.body
+                comment_text = _comment_body_to_text(comment.body)
                 comment_author = comment.author.displayName if comment.author else "Unknown"
                 comment_created = comment.created[:10] if comment.created else ""
                 comment_id = getattr(comment, "id", "") or ""
@@ -309,7 +357,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
         status = issue.fields.status.name if issue.fields.status else ""
         resolution = issue.fields.resolution.name if issue.fields.resolution else ""
         issue_type = issue.fields.issuetype.name if issue.fields.issuetype else ""
-        epic_link = getattr(issue.fields, "customfield_10000", "") or ""
+        epic_link = issue_epic_map.get(issue.key, "")
         parent = getattr(issue.fields, "parent", None)
         parent_key = parent.key if parent else ""
         if not epic_link and parent_key:
@@ -356,7 +404,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
             if issue_key not in resolved_keys:
                 continue
             comment_body = entry.get("Comment_Body") or ""
-            if not str(comment_body).startswith("Result:"):
+            if not str(comment_body).lstrip().startswith("Result:"):
                 continue
 
             links = extract_urls_from_text(comment_body)

@@ -96,7 +96,15 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             reporter_display="Bob",
             reporter_username=None,
             description="See\x0b https://example.com",
-            comment_body="Result: fixed issue",
+            comment_body={
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": " Result: fixed issue"}],
+                    }
+                ],
+            },
             comment_id="101",
             labels=["documentation"],
         ),
