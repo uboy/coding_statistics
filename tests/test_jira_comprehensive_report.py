@@ -301,6 +301,9 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     result_links_col = results_headers.index("Result_Links") + 1
     result_link_value = results_sheet.cell(row=2, column=result_links_col).value
     assert "focusedCommentId=101" in str(result_link_value)
+    results_texts = [results_sheet.cell(row=row, column=results_headers.index("Result") + 1).value
+                     for row in range(2, results_sheet.max_row + 1)]
+    assert "no results" in [str(value).casefold() for value in results_texts]
 
     def _sheet_row(sheet_name: str) -> dict[str, object]:
         sheet = wb[sheet_name]

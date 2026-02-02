@@ -394,34 +394,61 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
     links_df = pd.DataFrame(all_links)
     results_df = pd.DataFrame(columns=["Issue_Key", "Summary", "Assignee", "Result", "Result_Links"])
 
-    if not issues_df.empty and all_comments:
-        resolved_mask = _resolved_mask(issues_df)
-        resolved_keys = set(issues_df.loc[resolved_mask, "Issue_Key"].dropna().astype(str))
+    if not issues_df.empty:
+        resolution_value = issues_df.get("Resolution")
+        if resolution_value is not None:
+            resolution_norm = resolution_value.fillna("").astype(str).str.strip().str.casefold()
+            resolved_keys = set(
+                issues_df.loc[resolution_norm.isin({"done", "resolved"}), "Issue_Key"]
+                .dropna()
+                .astype(str)
+            )
+        else:
+            resolved_keys = set()
 
         result_rows: list[dict[str, Any]] = []
-        for entry in all_comments:
-            issue_key = str(entry.get("Issue_Key", "") or "")
-            if issue_key not in resolved_keys:
-                continue
-            comment_body = entry.get("Comment_Body") or ""
-            if not str(comment_body).lstrip().startswith("Result:"):
-                continue
+        results_by_issue: set[str] = set()
+        if resolved_keys and all_comments:
+            for entry in all_comments:
+                issue_key = str(entry.get("Issue_Key", "") or "")
+                if issue_key not in resolved_keys:
+                    continue
+                comment_body = entry.get("Comment_Body") or ""
+                if not str(comment_body).lstrip().startswith("Results:"):
+                    continue
 
-            links = extract_urls_from_text(comment_body)
-            if links:
-                result_links = "\n".join(links)
-            else:
-                result_links = entry.get("Comment_Link") or ""
+                links = extract_urls_from_text(comment_body)
+                if links:
+                    result_links = "\n".join(links)
+                else:
+                    result_links = entry.get("Comment_Link") or ""
 
-            result_rows.append(
-                {
-                    "Issue_Key": issue_key,
-                    "Summary": entry.get("Summary", ""),
-                    "Assignee": entry.get("Assignee", ""),
-                    "Result": comment_body,
-                    "Result_Links": result_links,
-                }
-            )
+                result_rows.append(
+                    {
+                        "Issue_Key": issue_key,
+                        "Summary": entry.get("Summary", ""),
+                        "Assignee": entry.get("Assignee", "") or "Unassigned",
+                        "Result": comment_body,
+                        "Result_Links": result_links,
+                    }
+                )
+                results_by_issue.add(issue_key)
+
+        if resolved_keys:
+            summary_map = issues_df.set_index("Issue_Key")["Summary"].to_dict()
+            assignee_map = issues_df.set_index("Issue_Key")["Assignee"].to_dict()
+            for issue_key in sorted(resolved_keys):
+                if issue_key in results_by_issue:
+                    continue
+                result_rows.append(
+                    {
+                        "Issue_Key": issue_key,
+                        "Summary": summary_map.get(issue_key, ""),
+                        "Assignee": assignee_map.get(issue_key, "") or "Unassigned",
+                        "Result": "no results",
+                        "Result_Links": f"{jira_url}/browse/{issue_key}" if jira_url else "",
+                    }
+                )
 
         if result_rows:
             results_df = pd.DataFrame(result_rows)
@@ -1034,9 +1061,17 @@ class JiraComprehensiveReport:
             output_path,
         )
 
+        resolution_value = issues_df.get("Resolution")
+        if resolution_value is not None:
+            resolution_norm = resolution_value.fillna("").astype(str).str.strip().str.casefold()
+            resolved_count = int(resolution_norm.isin({"done", "resolved"}).sum())
+        else:
+            resolved_count = 0
+
         logger.info(
-            "REPORT SUMMARY: issues=%s links=%s results=%s",
+            "REPORT SUMMARY: issues=%s links=%s results=%s resolved=%s",
             len(issues_df),
             len(links_df),
             len(results_df),
+            resolved_count,
         )
