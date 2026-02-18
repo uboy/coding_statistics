@@ -75,3 +75,39 @@ branch = master
 # 3. Set check_hostname = false (less secure, but may help with some certificates)
 # 4. Set verify = false (NOT RECOMMENDED, completely disables SSL verification)
 # 5. Leave unset to use default system certificates (if bundle-ca not found)
+
+[ollama]
+# Local Ollama endpoint
+url = http://localhost:11434
+# Optional API key for proxy/gateway deployments
+api_key =
+# Example model: qwen2.5:14b
+model =
+timeout_seconds = 60
+temperature = 0.2
+enabled = true
+
+[jira_weekly_email]
+# Optional default project, can be overridden with --params project=ABC
+project =
+output_dir = reports
+snapshot_dir = reports/snapshots/jira_weekly_email
+vacation_file =
+vacation_sheet = Vacations2026
+vacation_marker_values = p,P
+vacation_horizon_days = 60
+priority_high_values = High,Highest
+labels_highlights = highlights
+# Epic inclusion filter labels for weekly email report.
+# Default: report
+# Special value: @all -> include issues with any labels (disables label filtering).
+labels_report = report
+title_main = TelmaST Weekly Report
+chapter_highlights_title = Highlights
+chapter_results_title = Key Results and Achievements
+chapter_next_week_title = Next Week Plans
+chapter_vacations_title = Vacations (next 60 days)
+chapter_results_high_priority_subtitle = High priority items
+chapter_results_bugs_subtitle = Bugs summary
+console_diff_title = Changes vs Previous Week
+bugs_summary_template_closed_in_progress = {closed} trouble reports/issues are analyzed and closed, {in_progress} currently in progress.

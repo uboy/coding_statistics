@@ -32,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd = sub.add_parser("run", help="Execute a report.")
     run_cmd.add_argument("--config", default=str(config_utils.DEFAULT_CONFIG_FILE), help="Path to config.ini.")
     run_cmd.add_argument("--report", required=True, choices=report_registry.available_reports())
-    run_cmd.add_argument("--sources", nargs="+", help="Optional list of sources to pull from. Defaults to 'jira' for jira_weekly report.")
+    run_cmd.add_argument("--sources", nargs="+", help="Optional list of sources to pull from. Defaults to jira for Jira reports with custom flow.")
     run_cmd.add_argument("--start", help="Start date (YYYY-MM-DD)")
     run_cmd.add_argument("--end", help="End date (YYYY-MM-DD)")
     run_cmd.add_argument("--members", help="Path to member list (if applicable).")
@@ -106,9 +106,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     # Some reports have their own data collection flow and do not use Collector.
     # - jira_weekly: pulls Jira issues directly.
     # - jira_comprehensive: pulls Jira issues directly (Excel-only).
+    # - jira_weekly_email: pulls Jira issues/comments directly (HTML-only).
     # - unified_review: работает только по списку ссылок и сам ходит в Git-сервисы.
-    if report_name in {"jira_weekly", "jira_comprehensive", "unified_review"}:
-        if report_name in {"jira_weekly", "jira_comprehensive"}:
+    if report_name in {"jira_weekly", "jira_comprehensive", "jira_weekly_email", "unified_review"}:
+        if report_name in {"jira_weekly", "jira_comprehensive", "jira_weekly_email"}:
             missing = config_utils.ensure_tokens(config, ["jira"])
             if missing:
                 print("⚠️  Не хватает токенов для следующих сервисов:")

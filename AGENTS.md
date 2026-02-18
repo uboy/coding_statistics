@@ -7,10 +7,16 @@
 
 ## Repo Map (top dirs)
 - stats_core/ — core CLI, sources, reports, export, cache
-- reports/ — generated report outputs (docx/xlsx)
+- reports/ — generated report outputs (docx/xlsx/html + snapshots)
 - templates/ — Word/Excel templates
 - tests/ — pytest suite
 - .vscode/ — editor settings
+
+## Built-in Reports
+- jira_weekly
+- jira_comprehensive
+- jira_weekly_email
+- unified_review
 
 ## Commands
 - Install: `pip install -r requirements.txt`
@@ -25,6 +31,7 @@
 - No secrets/tokens/credentials in repo or logs
 - No drive-by refactors unrelated to the task
 - Follow the 3-role workflow: Architect -> Approved spec -> Developer -> Reviewer
+- Keep `README.md`, `SPEC.md`, and relevant design docs in sync when adding/changing report capabilities
 
 ## Definition of Done
 - Requirements implemented exactly as approved spec

@@ -8,7 +8,7 @@ stats_core/
   cli.py         # 'setup' and 'run' commands
   sources/       # API adapters (gitee, gitcode, github, gitlab, codehub*, gerrit)
   stats/         # collector orchestrating multiple sources (dataset -> reports)
-  reports/       # report definitions (unified_review, jira_weekly, jira_comprehensive)
+  reports/       # report definitions (unified_review, jira_weekly, jira_comprehensive, jira_weekly_email)
   export/        # Word/Excel/CSV helpers with template support
 templates/
   word/          # docx templates
@@ -25,6 +25,7 @@ templates/
    - Copies `config.ini_template` if needed.
    - Prompts for tokens if they are missing (GitHub, Gitee, etc.).
 3. Fill in relevant sections `[gitee]`, `[gitcode]`, `[github]`, `[gitlab]`, `[codehub]`, `[gerrit]`, `[jira]`, `[reporting]`.
+   - For AI weekly email report also configure `[ollama]` and optional defaults in `[jira_weekly_email]`.
    - `repository`/`project` accepts comma-separated list.
    - Branch filter is optional; absence implies “all branches”.
 
@@ -52,14 +53,41 @@ python stats_main.py run \
   --params project=ABC member_list_file=members.xlsx code_volume_file=code_volume.xlsx \
   --output-formats excel
 
+# Weekly Jira email report (HTML-only, with optional Ollama text polishing)
+python stats_main.py run \
+  --report jira_weekly_email \
+  --params project=ABC week_date=2026-02-18 labels_highlights=highlights labels_report=report ollama_enabled=true vacation_file=TelmaST_Team_Vacation.xlsx vacation_sheet=Vacations2026
+
 - Для `unified_review` параметры `--start/--end` опциональны. Если их не задавать, будут обработаны все ссылки из `reporting.links_file` (по умолчанию `input.txt`). При указании дат в отчёт попадут только PR/коммиты, замёрженные в указанный период.
 - Источник для каждой ссылки определяется автоматически по URL, так что `--sources` задавать не обязательно.
 - Для `jira_weekly` параметр `--sources` необязателен, по умолчанию используется `jira`. Если нужны другие источники, их можно указать явно.
 - Для `jira_comprehensive` можно передать `--params jql=...` (или `version=...` / `epic=...`) вместо `project+dates`.
+- Для `jira_weekly_email` формат `--output-formats` можно не указывать: отчёт всегда генерируется в HTML.
+- Для `jira_weekly_email` неделю можно задать через `week_date=YYYY-MM-DD` или `week=WWwYY` / `week=WWwYYYY` / `week=WW`.
+- `jira_weekly_email` строит HTML для Outlook, хранит weekly snapshot в `reports/snapshots/jira_weekly_email/...` и выводит diff только в консоль.
+- Labels для глав настраиваются через `labels_highlights` и `labels_report`.
+- Для `labels_report` можно указать `@all`, чтобы отключить label-фильтр и включать эпики/задачи с любыми метками.
+- Для Ollama можно задать `ollama_api_key` (CLI param) или `[ollama].api_key` в конфиге.
+- Для `vacation_file`: абсолютный путь используется как есть, относительный резолвится от parent-каталога проекта.
 - `jira_comprehensive` включает лист `Worklog_Activity` (агрегация времени по задаче и инженеру, только задачи с несколькими авторами).
 - `jira_comprehensive` включает лист `Worklog_Entries` (все логи времени за период).
 - `Assistance_Provided` считается по метке `dev_assistance`.
 ```
+
+## Jira Weekly Email Report Structure
+
+The `jira_weekly_email` report produces an Outlook-friendly HTML email with fixed chapter order:
+
+1. **Highlights** — one-line headline per highlighted issue with Jira key in parentheses
+2. **Key Results and Achievements** — grouped by Epic, including:
+   - report-labeled completed items first
+   - other completed task/feature/improvement items
+   - high-priority paragraph inside each epic
+   - bugs summary paragraph inside each epic
+3. **Next Week Plans** — in-progress items grouped by Epic
+4. **Vacations (next 60 days)** — parsed from configured Excel sheet
+
+Report ordering is stabilized using previous snapshots; differences vs previous report are printed to console with colored diff formatting.
 
 ## Jira Weekly Report Structure
 
@@ -114,6 +142,7 @@ pytest tests
   - CLI utilities
   - Source adapters (Gitee, GitCode, GitHub, GitLab, CodeHub, Gerrit)
   - Jira weekly report (all test cases: same week closure, multi-week tasks, no tasks, reassigned)
+  - Jira weekly email report (week resolver, vacations parser, html/snapshot/diff flow)
   - Unified review report
 - Add fixtures under `tests/fixtures/` when extending functionality.
 
