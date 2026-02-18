@@ -43,6 +43,10 @@ _TT_COUNTER_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 _OUTSTANDING_CONTRIBUTION_PATTERN = re.compile(r"outstanding[_ -]?contribution", re.IGNORECASE)
+_RESULT_PREFIX_PATTERN = re.compile(
+    r"^\s*(?:\*+\s*)?(results?)\s*(?:\*+)?\s*:\s*(?:\*+\s*)?(.*)\Z",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _normalize_text(value: Any) -> str:
@@ -189,6 +193,15 @@ def _comment_body_to_text(body: Any) -> str:
                 stack.extend(reversed(node))
         return " ".join(parts).strip()
     return str(body)
+
+
+def _extract_result_text(comment_body: Any) -> str | None:
+    text = "" if comment_body is None else str(comment_body)
+    match = _RESULT_PREFIX_PATTERN.match(text)
+    if not match:
+        return None
+    # Strip only the leading result tag prefix; keep the remaining content unchanged.
+    return match.group(2).lstrip()
 
 
 def _fetch_epic_names(jira, epic_keys: list[str]) -> dict[str, str]:
@@ -343,6 +356,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                         "Issue_Key": key,
                         "Summary": summary,
                         "Assignee": assignee,
+                        "Comment_Created": comment.created or "",
                         "Comment_Id": str(comment_id) if comment_id is not None else "",
                         "Comment_Body": comment_text,
                         "Comment_Link": _build_comment_link(jira_url, key, str(comment_id) if comment_id else None),
@@ -408,13 +422,27 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
 
         result_rows: list[dict[str, Any]] = []
         results_by_issue: set[str] = set()
+        latest_comment_links: dict[str, str] = {}
+        if all_comments:
+            latest_comment_meta: dict[str, tuple[str, int]] = {}
+            for idx, entry in enumerate(all_comments):
+                issue_key = str(entry.get("Issue_Key", "") or "")
+                if not issue_key:
+                    continue
+                created = str(entry.get("Comment_Created", "") or "")
+                prev_meta = latest_comment_meta.get(issue_key)
+                if prev_meta is None or (created, idx) >= prev_meta:
+                    latest_comment_meta[issue_key] = (created, idx)
+                    latest_comment_links[issue_key] = str(entry.get("Comment_Link", "") or "")
+
         if resolved_keys and all_comments:
             for entry in all_comments:
                 issue_key = str(entry.get("Issue_Key", "") or "")
                 if issue_key not in resolved_keys:
                     continue
                 comment_body = entry.get("Comment_Body") or ""
-                if not str(comment_body).lstrip().startswith("Results:"):
+                parsed_result = _extract_result_text(comment_body)
+                if parsed_result is None:
                     continue
 
                 links = extract_urls_from_text(comment_body)
@@ -428,7 +456,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                         "Issue_Key": issue_key,
                         "Summary": entry.get("Summary", ""),
                         "Assignee": entry.get("Assignee", "") or "Unassigned",
-                        "Result": comment_body,
+                        "Result": parsed_result,
                         "Result_Links": result_links,
                     }
                 )
@@ -446,7 +474,8 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                         "Summary": summary_map.get(issue_key, ""),
                         "Assignee": assignee_map.get(issue_key, "") or "Unassigned",
                         "Result": "no results",
-                        "Result_Links": f"{jira_url}/browse/{issue_key}" if jira_url else "",
+                        "Result_Links": latest_comment_links.get(issue_key)
+                        or (f"{jira_url}/browse/{issue_key}" if jira_url else ""),
                     }
                 )
 

@@ -101,7 +101,12 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
                 "content": [
                     {
                         "type": "paragraph",
-                        "content": [{"type": "text", "text": " Result: fixed issue"}],
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": " *Results:* fixed issue https://result.example/one and https://result.example/two",
+                            }
+                        ],
                     }
                 ],
             },
@@ -123,6 +128,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
                 "TT_tested_perf - number of executed performance tests = 1\n"
                 "TT_tdev_perf - number of developed benchmark tests = 4"
             ),
+            comment_id="201",
             labels=["documentation", "arkoala_perf"],
         ),
         _make_issue(
@@ -159,6 +165,8 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             assignee_username="carol",
             reporter_display="Carol",
             reporter_username="carol",
+            comment_body="*result:* epic shipped",
+            comment_id="301",
         ),
         _make_issue(
             "ABC-6",
@@ -184,6 +192,14 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             parent_key="ABC-6",
         ),
     ]
+    issues[1].fields.comment.comments.append(
+        SimpleNamespace(
+            body="Follow-up QA note",
+            author=SimpleNamespace(displayName="Commenter"),
+            created="2025-01-03T10:00:00.000+0000",
+            id="202",
+        )
+    )
 
     fake_jira = Mock()
     epic_issues = [
@@ -298,12 +314,33 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
 
     results_sheet = wb["Results"]
     results_headers = [cell.value for cell in results_sheet[1]]
+    issue_key_col = results_headers.index("Issue_Key") + 1
+    result_col = results_headers.index("Result") + 1
     result_links_col = results_headers.index("Result_Links") + 1
-    result_link_value = results_sheet.cell(row=2, column=result_links_col).value
-    assert "focusedCommentId=101" in str(result_link_value)
-    results_texts = [results_sheet.cell(row=row, column=results_headers.index("Result") + 1).value
-                     for row in range(2, results_sheet.max_row + 1)]
-    assert "no results" in [str(value).casefold() for value in results_texts]
+    rows = []
+    for row_idx in range(2, results_sheet.max_row + 1):
+        rows.append(
+            {
+                "Issue_Key": results_sheet.cell(row=row_idx, column=issue_key_col).value,
+                "Result": results_sheet.cell(row=row_idx, column=result_col).value,
+                "Result_Links": results_sheet.cell(row=row_idx, column=result_links_col).value,
+            }
+        )
+
+    abc1_rows = [row for row in rows if row["Issue_Key"] == "ABC-1"]
+    assert abc1_rows
+    assert abc1_rows[0]["Result"] == "fixed issue https://result.example/one and https://result.example/two"
+    assert "https://result.example/one" in str(abc1_rows[0]["Result_Links"])
+    assert "https://result.example/two" in str(abc1_rows[0]["Result_Links"])
+
+    abc3_rows = [row for row in rows if row["Issue_Key"] == "ABC-3"]
+    assert abc3_rows
+    assert abc3_rows[0]["Result"] == "epic shipped"
+
+    abc2_rows = [row for row in rows if row["Issue_Key"] == "ABC-2"]
+    assert abc2_rows
+    assert str(abc2_rows[0]["Result"]).casefold() == "no results"
+    assert "focusedCommentId=202" in str(abc2_rows[0]["Result_Links"])
 
     def _sheet_row(sheet_name: str) -> dict[str, object]:
         sheet = wb[sheet_name]
