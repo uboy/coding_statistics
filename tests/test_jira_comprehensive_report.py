@@ -23,7 +23,7 @@ def test_build_jql_query_project_dates():
     params = {"project": "ABC", "start_date": "2025-01-01", "end_date": "2025-01-31"}
     assert (
         build_jql_query(params)
-        == "project = ABC AND resolved >= '2025-01-01' AND resolved <= '2025-01-31' ORDER BY created DESC"
+        == "project = ABC AND resolved >= '2025-01-01' AND resolved < '2025-02-01' ORDER BY created DESC"
     )
 
 
@@ -42,6 +42,7 @@ def _make_issue(
     comment_id: str | None = None,
     labels: list[str] | None = None,
     resolution_name: str = "Done",
+    resolved_at: str = "2025-01-10T10:00:00.000+0000",
     epic_link: str | None = "EPIC-1",
     parent_key: str | None = None,
 ):
@@ -64,7 +65,7 @@ def _make_issue(
         summary=summary,
         assignee=SimpleNamespace(displayName=assignee_display, name=assignee_username),
         reporter=SimpleNamespace(displayName=reporter_display, name=reporter_username),
-        resolutiondate="2025-01-10T10:00:00.000+0000",
+        resolutiondate=resolved_at,
         created="2025-01-01T10:00:00.000+0000",
         updated="2025-01-11T10:00:00.000+0000",
         description=description,
@@ -112,6 +113,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             },
             comment_id="101",
             labels=["documentation"],
+            resolved_at="2025-01-09T10:00:00.000+0000",
         ),
         _make_issue(
             "ABC-2",
@@ -130,6 +132,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             ),
             comment_id="201",
             labels=["documentation", "arkoala_perf"],
+            resolved_at="2025-01-11T10:00:00.000+0000",
         ),
         _make_issue(
             "ABC-4",
@@ -143,6 +146,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             comment_body="TT_tdev_APIs: 200\nTT_tested_APIs: 300\nTT_tested_perf: 100\nTT_tdev_perf: 400",
             labels=["documentation"],
             resolution_name="Won't Do",
+            resolved_at="2025-01-12T10:00:00.000+0000",
         ),
         _make_issue(
             "ABC-5",
@@ -155,6 +159,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             reporter_username=None,
             labels=["documentation"],
             resolution_name="Invalid",
+            resolved_at="2025-01-13T10:00:00.000+0000",
         ),
         _make_issue(
             "ABC-3",
@@ -167,6 +172,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             reporter_username="carol",
             comment_body="*result:* epic shipped",
             comment_id="301",
+            resolved_at="2025-01-08T10:00:00.000+0000",
         ),
         _make_issue(
             "ABC-6",
@@ -178,6 +184,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             reporter_display="Bob",
             reporter_username=None,
             epic_link="EPIC-2",
+            resolved_at="2025-01-07T10:00:00.000+0000",
         ),
         _make_issue(
             "ABC-7",
@@ -190,6 +197,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             reporter_username=None,
             epic_link=None,
             parent_key="ABC-6",
+            resolved_at="2025-01-06T10:00:00.000+0000",
         ),
     ]
     issues[1].fields.comment.comments.append(
@@ -273,7 +281,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     )
 
     expected_jql = (
-        "project = ABC AND resolved >= '2025-01-01' AND resolved <= '2025-01-31' ORDER BY created DESC"
+        "project = ABC AND resolved >= '2025-01-01' AND resolved < '2025-02-01' ORDER BY created DESC"
     )
     assert any(call.args[0] == expected_jql for call in fake_jira.search_issues.call_args_list)
 
@@ -307,6 +315,15 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     assert issues_sheet.cell(row=subtask_row, column=parent_col).value == "ABC-6"
     assert issues_sheet.cell(row=subtask_row, column=epic_link_col).value == "EPIC-2"
     assert issues_sheet.cell(row=subtask_row, column=epic_name_col).value == "Epic Two"
+    resolved_col = headers.index("Resolved") + 1
+    issues_sort_pairs = [
+        (
+            str(issues_sheet.cell(row=row_idx, column=epic_name_col).value or ""),
+            str(issues_sheet.cell(row=row_idx, column=resolved_col).value or ""),
+        )
+        for row_idx in range(2, issues_sheet.max_row + 1)
+    ]
+    assert issues_sort_pairs == sorted(issues_sort_pairs, key=lambda item: (item[0], item[1]))
 
     links_sheet = wb["Links"]
     # header + at least 2 links (description + comment)
@@ -314,7 +331,11 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
 
     results_sheet = wb["Results"]
     results_headers = [cell.value for cell in results_sheet[1]]
+    assert "Epic_Name" in results_headers
+    assert "Resolved" in results_headers
     issue_key_col = results_headers.index("Issue_Key") + 1
+    epic_col = results_headers.index("Epic_Name") + 1
+    resolved_col = results_headers.index("Resolved") + 1
     result_col = results_headers.index("Result") + 1
     result_links_col = results_headers.index("Result_Links") + 1
     rows = []
@@ -322,10 +343,18 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
         rows.append(
             {
                 "Issue_Key": results_sheet.cell(row=row_idx, column=issue_key_col).value,
+                "Epic_Name": results_sheet.cell(row=row_idx, column=epic_col).value,
+                "Resolved": results_sheet.cell(row=row_idx, column=resolved_col).value,
                 "Result": results_sheet.cell(row=row_idx, column=result_col).value,
                 "Result_Links": results_sheet.cell(row=row_idx, column=result_links_col).value,
             }
         )
+
+    result_sort_pairs = [
+        (str(row["Epic_Name"] or ""), str(row["Resolved"] or ""))
+        for row in rows
+    ]
+    assert result_sort_pairs == sorted(result_sort_pairs, key=lambda item: (item[0], item[1]))
 
     abc1_rows = [row for row in rows if row["Issue_Key"] == "ABC-1"]
     assert abc1_rows

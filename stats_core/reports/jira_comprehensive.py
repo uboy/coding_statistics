@@ -13,7 +13,7 @@ import logging
 import os
 import re
 from configparser import ConfigParser
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -146,7 +146,13 @@ def build_jql_query(params: dict[str, Any]) -> str:
     start_date = params.get("start_date")
     end_date = params.get("end_date")
     if start_date and end_date:
-        conditions.append(f"resolved >= '{start_date}' AND resolved <= '{end_date}'")
+        try:
+            end_exclusive = (
+                datetime.strptime(str(end_date), "%Y-%m-%d").date() + timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+            conditions.append(f"resolved >= '{start_date}' AND resolved < '{end_exclusive}'")
+        except ValueError:
+            conditions.append(f"resolved >= '{start_date}' AND resolved <= '{end_date}'")
 
     version = params.get("version")
     if version:
@@ -202,6 +208,24 @@ def _extract_result_text(comment_body: Any) -> str | None:
         return None
     # Strip only the leading result tag prefix; keep the remaining content unchanged.
     return match.group(2).lstrip()
+
+
+def _sort_by_epic_and_resolved(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if "Epic_Name" not in df.columns or "Resolved" not in df.columns:
+        return df
+
+    sorted_df = df.copy()
+    sorted_df["_sort_epic_name"] = sorted_df["Epic_Name"].fillna("").astype(str).str.casefold()
+    sorted_df["_sort_resolved"] = pd.to_datetime(sorted_df["Resolved"], errors="coerce")
+    sorted_df = sorted_df.sort_values(
+        by=["_sort_epic_name", "_sort_resolved"],
+        ascending=[True, True],
+        na_position="last",
+        kind="mergesort",
+    )
+    return sorted_df.drop(columns=["_sort_epic_name", "_sort_resolved"])
 
 
 def _fetch_epic_names(jira, epic_keys: list[str]) -> dict[str, str]:
@@ -406,9 +430,13 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
 
     issues_df = pd.DataFrame(data)
     links_df = pd.DataFrame(all_links)
-    results_df = pd.DataFrame(columns=["Issue_Key", "Summary", "Assignee", "Result", "Result_Links"])
+    results_df = pd.DataFrame(
+        columns=["Issue_Key", "Summary", "Epic_Name", "Resolved", "Assignee", "Result", "Result_Links"]
+    )
 
     if not issues_df.empty:
+        issues_df = _sort_by_epic_and_resolved(issues_df)
+
         resolution_value = issues_df.get("Resolution")
         if resolution_value is not None:
             resolution_norm = resolution_value.fillna("").astype(str).str.strip().str.casefold()
@@ -436,6 +464,8 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                     latest_comment_links[issue_key] = str(entry.get("Comment_Link", "") or "")
 
         if resolved_keys and all_comments:
+            epic_name_map = issues_df.set_index("Issue_Key")["Epic_Name"].to_dict()
+            resolved_date_map = issues_df.set_index("Issue_Key")["Resolved"].to_dict()
             for entry in all_comments:
                 issue_key = str(entry.get("Issue_Key", "") or "")
                 if issue_key not in resolved_keys:
@@ -455,6 +485,8 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                     {
                         "Issue_Key": issue_key,
                         "Summary": entry.get("Summary", ""),
+                        "Epic_Name": epic_name_map.get(issue_key, "Unknown Epic"),
+                        "Resolved": resolved_date_map.get(issue_key, ""),
                         "Assignee": entry.get("Assignee", "") or "Unassigned",
                         "Result": parsed_result,
                         "Result_Links": result_links,
@@ -465,6 +497,8 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
         if resolved_keys:
             summary_map = issues_df.set_index("Issue_Key")["Summary"].to_dict()
             assignee_map = issues_df.set_index("Issue_Key")["Assignee"].to_dict()
+            epic_name_map = issues_df.set_index("Issue_Key")["Epic_Name"].to_dict()
+            resolved_date_map = issues_df.set_index("Issue_Key")["Resolved"].to_dict()
             for issue_key in sorted(resolved_keys):
                 if issue_key in results_by_issue:
                     continue
@@ -472,6 +506,8 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                     {
                         "Issue_Key": issue_key,
                         "Summary": summary_map.get(issue_key, ""),
+                        "Epic_Name": epic_name_map.get(issue_key, "Unknown Epic"),
+                        "Resolved": resolved_date_map.get(issue_key, ""),
                         "Assignee": assignee_map.get(issue_key, "") or "Unassigned",
                         "Result": "no results",
                         "Result_Links": latest_comment_links.get(issue_key)
@@ -481,6 +517,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
 
         if result_rows:
             results_df = pd.DataFrame(result_rows)
+            results_df = _sort_by_epic_and_resolved(results_df)
 
     return issues_df, links_df, results_df
 
