@@ -16,6 +16,7 @@ from stats_core.reports.jira_comprehensive import (
     JiraComprehensiveReport,
     build_jql_query,
     calculate_engineer_metrics,
+    fetch_jira_data,
 )
 
 
@@ -45,6 +46,7 @@ def _make_issue(
     resolved_at: str = "2025-01-10T10:00:00.000+0000",
     epic_link: str | None = "EPIC-1",
     parent_key: str | None = None,
+    attachments: list[SimpleNamespace] | None = None,
 ):
     comment = SimpleNamespace(
         comments=(
@@ -80,6 +82,7 @@ def _make_issue(
         timeoriginalestimate=0,
         customfield_10000=epic_link,
         parent=parent,
+        attachment=attachments or [],
     )
     return SimpleNamespace(key=key, fields=fields)
 
@@ -394,6 +397,54 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     assert qa_row["TT_tested_perf"] == 1
     assert qa_row["TT_tdev_perf"] == 4
     assert qa_row["Total_Resolved_Issues"] == 1
+
+
+def test_fetch_jira_data_results_convert_attachment_markers_to_links():
+    attachment_url = "https://jira.example.com/secure/attachment/123/demo.pptx"
+    issues = [
+        _make_issue(
+            "ABC-99",
+            summary="Attachment result",
+            issue_type="Task",
+            status="Released",
+            assignee_display="Alice",
+            assignee_username="alice",
+            reporter_display="Bob",
+            reporter_username="bob",
+            comment_body="Results: [^demo.pptx]",
+            comment_id="991",
+            resolved_at="2025-01-15T10:00:00.000+0000",
+            attachments=[SimpleNamespace(filename="demo.pptx", content=attachment_url)],
+        )
+    ]
+    epic_issues = [
+        _make_issue(
+            "EPIC-1",
+            summary="Epic One",
+            issue_type="Epic",
+            status="Released",
+            assignee_display="Carol",
+            assignee_username="carol",
+            reporter_display="Carol",
+            reporter_username="carol",
+        )
+    ]
+
+    fake_jira = Mock()
+    fake_jira._options = {"server": "https://jira.example.com"}
+
+    def _search_issues_side_effect(jql_query, *args, **kwargs):
+        if "issuekey in" in jql_query:
+            return epic_issues
+        return issues
+
+    fake_jira.search_issues.side_effect = _search_issues_side_effect
+
+    _, _, results_df = fetch_jira_data(fake_jira, "project = ABC ORDER BY created DESC")
+
+    row = results_df[results_df["Issue_Key"] == "ABC-99"].iloc[0]
+    assert row["Result"] == attachment_url
+    assert attachment_url in str(row["Result_Links"])
 
 
 def test_calculate_engineer_metrics_uses_members_jira_column():

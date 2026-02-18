@@ -56,7 +56,7 @@ python stats_main.py run \
 # Weekly Jira email report (HTML-only, with optional Ollama text polishing)
 python stats_main.py run \
   --report jira_weekly_email \
-  --params project=ABC week_date=2026-02-18 labels_highlights=highlights labels_report=report ollama_enabled=true vacation_file=TelmaST_Team_Vacation.xlsx vacation_sheet=Vacations2026
+  --params project=ABC week_date=2026-02-18 labels_highlights=highlights labels_report=report ai_provider=ollama ollama_enabled=true vacation_file=TelmaST_Team_Vacation.xlsx vacation_sheet=Vacations2026
 
 - Для `unified_review` параметры `--start/--end` опциональны. Если их не задавать, будут обработаны все ссылки из `reporting.links_file` (по умолчанию `input.txt`). При указании дат в отчёт попадут только PR/коммиты, замёрженные в указанный период.
 - Источник для каждой ссылки определяется автоматически по URL, так что `--sources` задавать не обязательно.
@@ -64,11 +64,15 @@ python stats_main.py run \
 - Для `jira_comprehensive` можно передать `--params jql=...` (или `version=...` / `epic=...`) вместо `project+dates`.
 - Для `jira_weekly_email` формат `--output-formats` можно не указывать: отчёт всегда генерируется в HTML.
 - Для `jira_weekly_email` неделю можно задать через `week_date=YYYY-MM-DD` или `week=WWwYY` / `week=WWwYYYY` / `week=WW`.
-- `jira_weekly_email` строит HTML для Outlook, хранит weekly snapshot в `reports/snapshots/jira_weekly_email/...` и выводит diff только в консоль.
+- `jira_weekly_email` строит HTML для Outlook, хранит weekly snapshot в том же каталоге, что и HTML (по умолчанию `reports`) с именем `jira_weekly_email_<PROJECT>_<WEEK>.json`, и выводит diff только в консоль.
 - Labels для глав настраиваются через `labels_highlights` и `labels_report`.
 - Для `labels_report` можно указать `@all`, чтобы отключить label-фильтр и включать эпики/задачи с любыми метками.
 - Для Ollama можно задать `ollama_api_key` (CLI param) или `[ollama].api_key` в конфиге.
+- Для WebUI можно выбрать `ai_provider=webui` и задать `webui_url`, `webui_endpoint`, `webui_model`, `webui_api_key` (или секцию `[webui]`).
 - Для `vacation_file`: абсолютный путь используется как есть, относительный резолвится от parent-каталога проекта.
+- Для `vacation_horizon_anchor`: `today` (по умолчанию) или `week_start`.
+- Заголовки/поля шапки конфигурируются в `[jira_weekly_email]`: `header_project_info_title`, `header_banner_bg_color`, `meta_active_iteration_*`, `meta_report_period_label`, `meta_report_owner_*`, `meta_team_member_*`.
+- Дополнительная HTML-строка в конце отчёта задаётся через `footer_html` (вставляется как raw HTML).
 - `jira_comprehensive` включает лист `Worklog_Activity` (агрегация времени по задаче и инженеру, только задачи с несколькими авторами).
 - `jira_comprehensive` включает лист `Worklog_Entries` (все логи времени за период).
 - `Assistance_Provided` считается по метке `dev_assistance`.

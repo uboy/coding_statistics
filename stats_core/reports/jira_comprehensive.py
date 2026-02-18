@@ -16,6 +16,7 @@ from configparser import ConfigParser
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pandas as pd
 from pandas.api.types import is_object_dtype, is_string_dtype
@@ -48,6 +49,7 @@ _RESULT_TAG_LINE_PATTERN = re.compile(
     r"^\s*(?:[*_+]+\s*)?(results?)(?:\s*[*_+]+)?(?:\s*[:\-–—]\s*(?:[*_+]+\s*)?(.*))?\s*$",
     re.IGNORECASE,
 )
+_ATTACHMENT_MARKER_PATTERN = re.compile(r"\[\^([^\]\r\n]+)\]")
 
 
 def _normalize_text(value: Any) -> str:
@@ -226,6 +228,49 @@ def _extract_result_text(comment_body: Any) -> str | None:
     return "\n".join(remaining_lines).lstrip()
 
 
+def _issue_attachment_links(issue: Any, jira_url: str) -> dict[str, str]:
+    attachments = getattr(getattr(issue, "fields", None), "attachment", None) or []
+    result: dict[str, str] = {}
+    for attachment in attachments:
+        filename = str(getattr(attachment, "filename", "") or "").strip()
+        if not filename:
+            continue
+        url = str(getattr(attachment, "content", "") or "").strip()
+        if not url:
+            attachment_id = str(getattr(attachment, "id", "") or "").strip()
+            if attachment_id and jira_url:
+                url = f"{jira_url}/secure/attachment/{attachment_id}/{quote(filename)}"
+        if not url:
+            continue
+        result[filename.casefold()] = url
+    return result
+
+
+def _extract_attachment_links(text: str, attachment_links: dict[str, str]) -> list[str]:
+    links: list[str] = []
+    for match in _ATTACHMENT_MARKER_PATTERN.finditer(text or ""):
+        filename = match.group(1).strip().casefold()
+        if not filename:
+            continue
+        url = attachment_links.get(filename)
+        if url and url not in links:
+            links.append(url)
+    return links
+
+
+def _replace_attachment_markers_with_links(text: str, attachment_links: dict[str, str]) -> str:
+    if not text:
+        return text
+
+    def _replace(match: re.Match[str]) -> str:
+        filename = match.group(1).strip().casefold()
+        if not filename:
+            return match.group(0)
+        return attachment_links.get(filename) or match.group(0)
+
+    return _ATTACHMENT_MARKER_PATTERN.sub(_replace, text)
+
+
 def _sort_by_epic_and_resolved(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -308,6 +353,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                 "timeoriginalestimate",
                 "customfield_10000",  # Epic Link
                 "parent",
+                "attachment",
             ],
             expand="changelog",
         )
@@ -370,6 +416,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
         remaining = issue.fields.timeestimate / 3600 if issue.fields.timeestimate else 0
 
         description = issue.fields.description or ""
+        attachment_links = _issue_attachment_links(issue, jira_url)
 
         for link in extract_urls_from_text(description):
             all_links.append({"Issue_Key": key, "Source": "Description", "URL": link})
@@ -391,6 +438,14 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                             "URL": link,
                         }
                     )
+                for attachment_link in _extract_attachment_links(comment_text, attachment_links):
+                    all_links.append(
+                        {
+                            "Issue_Key": key,
+                            "Source": f"Comment by {comment_author}",
+                            "URL": attachment_link,
+                        }
+                    )
                 all_comments.append(
                     {
                         "Issue_Key": key,
@@ -400,6 +455,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                         "Comment_Id": str(comment_id) if comment_id is not None else "",
                         "Comment_Body": comment_text,
                         "Comment_Link": _build_comment_link(jira_url, key, str(comment_id) if comment_id else None),
+                        "Attachment_Links": attachment_links,
                     }
                 )
 
@@ -491,7 +547,19 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                 if parsed_result is None:
                     continue
 
-                links = extract_urls_from_text(comment_body)
+                attachment_links = entry.get("Attachment_Links")
+                if not isinstance(attachment_links, dict):
+                    attachment_links = {}
+                parsed_result = _replace_attachment_markers_with_links(parsed_result, attachment_links)
+
+                links: list[str] = []
+                for link in extract_urls_from_text(comment_body):
+                    if link not in links:
+                        links.append(link)
+                for link in _extract_attachment_links(comment_body, attachment_links):
+                    if link not in links:
+                        links.append(link)
+
                 if links:
                     result_links = "\n".join(links)
                 else:

@@ -87,14 +87,29 @@ timeout_seconds = 60
 temperature = 0.2
 enabled = true
 
+[webui]
+# Open WebUI (OpenAI-compatible) endpoint
+url = http://localhost:3000
+endpoint = /api/chat/completions
+api_key =
+# Example model: qwen2.5:14b
+model =
+timeout_seconds = 60
+temperature = 0.2
+enabled = false
+
 [jira_weekly_email]
 # Optional default project, can be overridden with --params project=ABC
 project =
 output_dir = reports
-snapshot_dir = reports/snapshots/jira_weekly_email
+# Optional snapshot directory for previous-week ordering and diff.
+# Default behavior: same directory as output_dir.
+snapshot_dir = reports
 vacation_file =
 vacation_sheet = Vacations2026
 vacation_marker_values = p,P
+# Anchor for vacations horizon: today | week_start
+vacation_horizon_anchor = today
 vacation_horizon_days = 60
 priority_high_values = High,Highest
 labels_highlights = highlights
@@ -110,4 +125,18 @@ chapter_vacations_title = Vacations (next 60 days)
 chapter_results_high_priority_subtitle = High priority items
 chapter_results_bugs_subtitle = Bugs summary
 console_diff_title = Changes vs Previous Week
+# Table header labels and values
+header_project_info_title = Weekly execution summary
+header_banner_bg_color = rgb(63,78,0)
+meta_active_iteration_label = Active iteration
+meta_active_iteration_value =
+meta_report_period_label = Report Period
+meta_report_owner_label = Report Owner
+meta_report_owner_value =
+meta_team_member_label = Team Member
+meta_team_member_value =
+# Optional raw HTML block appended after report sections.
+footer_html =
+# AI backend for text rewrite: ollama | webui
+ai_provider = ollama
 bugs_summary_template_closed_in_progress = {closed} trouble reports/issues are analyzed and closed, {in_progress} currently in progress.

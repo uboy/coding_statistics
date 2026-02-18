@@ -14,9 +14,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from openpyxl import load_workbook
+from openpyxl.utils.datetime import from_excel
 
 from ..sources.jira import JiraSource
 from . import registry
@@ -48,7 +50,18 @@ def _bool_value(value: Any, default: bool) -> bool:
 def _split_csv(value: str | None, default: list[str]) -> list[str]:
     if not value:
         return default
-    items = [item.strip() for item in str(value).split(",")]
+    raw = str(value).strip()
+    if len(raw) >= 2 and ((raw[0] == '"' and raw[-1] == '"') or (raw[0] == "'" and raw[-1] == "'")):
+        raw = raw[1:-1].strip()
+    items: list[str] = []
+    for token in raw.split(","):
+        cleaned = token.strip()
+        if len(cleaned) >= 2 and (
+            (cleaned[0] == '"' and cleaned[-1] == '"') or (cleaned[0] == "'" and cleaned[-1] == "'")
+        ):
+            cleaned = cleaned[1:-1].strip()
+        if cleaned:
+            items.append(cleaned)
     return [item for item in items if item]
 
 
@@ -56,6 +69,12 @@ def _normalize_text(value: Any) -> str:
     if value is None:
         return ""
     return " ".join(str(value).strip().split())
+
+
+def _normalize_html_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def _normalize_key(value: Any) -> str:
@@ -213,6 +232,7 @@ def _fetch_epic_names(
             "summary": _normalize_text(getattr(issue.fields, "summary", "")),
             "status": _normalize_text(getattr(getattr(issue.fields, "status", None), "name", "")),
             "resolution": _normalize_text(getattr(getattr(issue.fields, "resolution", None), "name", "")),
+            "labels": [str(label) for label in (getattr(issue.fields, "labels", []) or [])],
         }
 
     missing_parent_keys = [key for key in parent_keys_needed if not issue_epic_map.get(key)]
@@ -223,7 +243,7 @@ def _fetch_epic_names(
             parent_issues = jira.search_issues(
                 f"issuekey in ({', '.join(chunk)})",
                 maxResults=1000,
-                fields=["key", "customfield_10000", "summary", "status", "resolution"],
+                fields=["key", "customfield_10000", "summary", "status", "resolution", "labels"],
             )
             for parent_issue in parent_issues:
                 parent_epic = getattr(parent_issue.fields, "customfield_10000", "") or ""
@@ -232,6 +252,7 @@ def _fetch_epic_names(
                     "summary": _normalize_text(getattr(parent_issue.fields, "summary", "")),
                     "status": _normalize_text(getattr(getattr(parent_issue.fields, "status", None), "name", "")),
                     "resolution": _normalize_text(getattr(getattr(parent_issue.fields, "resolution", None), "name", "")),
+                    "labels": [str(label) for label in (getattr(parent_issue.fields, "labels", []) or [])],
                 }
 
     epic_keys = list({epic for epic in issue_epic_map.values() if epic})
@@ -330,6 +351,10 @@ def collect_weekly_comment_evidence(
         key: _normalize_text((details or {}).get("resolution", ""))
         for key, details in issue_details.items()
     }
+    labels_map: dict[str, list[str]] = {
+        key: [str(label) for label in ((details or {}).get("labels") or [])]
+        for key, details in issue_details.items()
+    }
 
     evidence: list[dict[str, Any]] = []
     total_comments_in_week = 0
@@ -358,8 +383,6 @@ def collect_weekly_comment_evidence(
             if body_text:
                 comments_in_week.append(body_text)
 
-        if not comments_in_week:
-            continue
         total_comments_in_week += len(comments_in_week)
 
         parent_finished = False
@@ -387,6 +410,8 @@ def collect_weekly_comment_evidence(
                 "Parent_Finished": parent_finished,
                 "Parent_Summary": summary_map.get(parent_key, ""),
                 "Parent_Status": status_map.get(parent_key, ""),
+                "Parent_Resolution": resolution_map.get(parent_key, ""),
+                "Parent_Labels": labels_map.get(parent_key, []),
             }
         )
 
@@ -417,11 +442,16 @@ def _first_sentence(text: str) -> str:
 
 def _build_item_text(entry: dict[str, Any], *, mode: str) -> str:
     summary = _normalize_text(entry.get("Summary"))
+    issue_key = _normalize_text(entry.get("Issue_Key"))
     comment_hint = _first_sentence((entry.get("Comments") or [""])[0])
 
     if mode == "highlight":
-        headline = summary or comment_hint or "Progress updated"
-        return headline
+        headline = summary or issue_key or "Task"
+        if entry.get("Finished"):
+            return f"{headline} - Finished this week."
+        if comment_hint:
+            return f"{headline} - Progress: {comment_hint}"
+        return f"{headline} - No progress this week."
 
     if mode == "completed":
         headline = summary or comment_hint or "Task"
@@ -463,7 +493,8 @@ def build_report_payload(
 ) -> dict[str, Any]:
     highlights: list[dict[str, str]] = []
     epics: dict[str, dict[str, Any]] = {}
-    plans: dict[str, list[dict[str, str]]] = {}
+    plans: dict[str, list[dict[str, Any]]] = {}
+    plan_index: dict[tuple[str, str], dict[str, Any]] = {}
     report_epic_ids: set[str] = set()
     report_all_labels = "@all" in labels_report
 
@@ -475,10 +506,11 @@ def build_report_payload(
         epic_name = _normalize_text(entry.get("Epic_Name")) or "Unknown Epic"
         epic_key = _normalize_text(entry.get("Epic_Key"))
         epic_identifier = _epic_id(entry)
+        issue_report_scope = report_all_labels or bool(labels_norm & labels_report)
         issue_in_report_scope = report_all_labels or bool(epic_labels_norm & labels_report)
         if not issue_in_report_scope and epic_key and not epic_labels_known:
             issue_in_report_scope = bool(labels_norm & labels_report)
-        if issue_in_report_scope:
+        if issue_in_report_scope or issue_report_scope:
             report_epic_ids.add(epic_identifier)
 
         epic_bucket = epics.setdefault(
@@ -546,17 +578,58 @@ def build_report_payload(
                     epic_bucket["completed_items"].append(completed_item)
         elif (
             not entry.get("Finished")
-            and not entry.get("Subtask")
             and _normalize_key(entry.get("Type")) in _TASK_VALUES
         ):
-            plan_headline = _normalize_text(entry.get("Summary")) or _normalize_text(entry.get("Issue_Key"))
-            plans.setdefault(epic_identifier, []).append(
-                {
-                    "issue_key": issue_key,
-                    "text": plan_headline,
-                    "comment": _build_item_text(entry, mode="plan"),
-                }
-            )
+            if entry.get("Subtask"):
+                parent_key = _normalize_text(entry.get("Parent_Key"))
+                parent_labels_norm = {_normalize_key(label) for label in (entry.get("Parent_Labels") or [])}
+                parent_report_scope = report_all_labels or bool(parent_labels_norm & labels_report)
+                parent_is_finished = _is_finished(
+                    _normalize_text(entry.get("Parent_Status")),
+                    _normalize_text(entry.get("Parent_Resolution")),
+                )
+                if parent_key and parent_report_scope and not parent_is_finished:
+                    report_epic_ids.add(epic_identifier)
+                    parent_text = _normalize_text(entry.get("Parent_Summary")) or parent_key
+                    parent_item = plan_index.get((epic_identifier, parent_key))
+                    if not parent_item:
+                        parent_item = {
+                            "issue_key": parent_key,
+                            "text": parent_text,
+                            "comment": "",
+                            "subtasks": [],
+                        }
+                        plans.setdefault(epic_identifier, []).append(parent_item)
+                        plan_index[(epic_identifier, parent_key)] = parent_item
+                    subtask_comment = _first_sentence((entry.get("Comments") or [""])[0])
+                    summary_key = _normalize_key(_normalize_text(entry.get("Summary")).rstrip(".!?"))
+                    comment_key = _normalize_key(subtask_comment.rstrip(".!?"))
+                    if summary_key and summary_key == comment_key:
+                        subtask_comment = ""
+                    parent_item["subtasks"].append(
+                        {
+                            "issue_key": issue_key,
+                            "text": _normalize_text(entry.get("Summary")) or issue_key,
+                            "status": _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution")),
+                            "comment": subtask_comment,
+                        }
+                    )
+            elif issue_report_scope:
+                plan_headline = _normalize_text(entry.get("Summary")) or issue_key
+                plan_comment = _build_item_text(entry, mode="plan")
+                existing_item = plan_index.get((epic_identifier, issue_key))
+                if existing_item:
+                    existing_item["text"] = plan_headline
+                    existing_item["comment"] = plan_comment
+                else:
+                    parent_plan_item = {
+                        "issue_key": issue_key,
+                        "text": plan_headline,
+                        "comment": plan_comment,
+                        "subtasks": [],
+                    }
+                    plans.setdefault(epic_identifier, []).append(parent_plan_item)
+                    plan_index[(epic_identifier, issue_key)] = parent_plan_item
 
         if _normalize_key(entry.get("Priority")) in {"high", "highest"}:
             epic_bucket["high_priority_items"].append(
@@ -581,6 +654,9 @@ def build_report_payload(
         epic["parent_subtasks"] = parent_groups
         epic_entries.append(epic)
 
+    if not report_all_labels:
+        epic_entries = [epic for epic in epic_entries if _normalize_text(epic.get("epic_key"))]
+
     epic_entries = sorted(epic_entries, key=lambda item: (_normalize_key(item["epic_name"]), _normalize_key(item["epic_key"])))
     next_week_plans: list[dict[str, Any]] = []
     for epic in epic_entries:
@@ -588,6 +664,13 @@ def build_report_payload(
         plan_items = plans.get(epic_identifier, [])
         if not plan_items:
             continue
+        for plan_item in plan_items:
+            subtasks = list(plan_item.get("subtasks") or [])
+            if subtasks:
+                plan_item["subtasks"] = sorted(
+                    subtasks,
+                    key=lambda item: _normalize_key(item.get("issue_key")),
+                )
         next_week_plans.append(
             {
                 "epic_key": epic["epic_key"],
@@ -638,6 +721,40 @@ def build_report_payload(
             ),
             "bugs_subtitle": config.get(
                 "jira_weekly_email", "chapter_results_bugs_subtitle", fallback="Bugs summary"
+            ),
+            "header_project_info": config.get(
+                "jira_weekly_email", "header_project_info_title", fallback="Weekly execution summary"
+            ),
+            "header_banner_bg_color": config.get(
+                "jira_weekly_email", "header_banner_bg_color", fallback="rgb(63,78,0)"
+            ),
+            "meta_report_period": config.get(
+                "jira_weekly_email", "meta_report_period_label", fallback="Report Period"
+            ),
+            "meta_active_iteration": config.get(
+                "jira_weekly_email", "meta_active_iteration_label", fallback="Active iteration"
+            ),
+            "meta_active_iteration_value": config.get(
+                "jira_weekly_email", "meta_active_iteration_value", fallback=""
+            ),
+            "meta_report_owner": config.get(
+                "jira_weekly_email",
+                "meta_report_owner_label",
+                fallback=config.get("jira_weekly_email", "meta_project_label", fallback="Report Owner"),
+            ),
+            "meta_report_owner_value": config.get(
+                "jira_weekly_email", "meta_report_owner_value", fallback=project
+            ),
+            "meta_team_member": config.get(
+                "jira_weekly_email",
+                "meta_team_member_label",
+                fallback=config.get("jira_weekly_email", "meta_generated_label", fallback="Team Member"),
+            ),
+            "meta_team_member_value": config.get(
+                "jira_weekly_email", "meta_team_member_value", fallback=""
+            ),
+            "footer_html": config.get(
+                "jira_weekly_email", "footer_html", fallback=""
             ),
         },
     }
@@ -741,6 +858,19 @@ def _collect_text_targets(payload: dict[str, Any]) -> list[tuple[str, str]]:
         for item_idx, item in enumerate(plan_epic.get("items") or []):
             targets.append((f"plans.{epic_idx}.items.{item_idx}.text", _normalize_text(item.get("text"))))
             targets.append((f"plans.{epic_idx}.items.{item_idx}.comment", _normalize_text(item.get("comment"))))
+            for subtask_idx, subtask in enumerate(item.get("subtasks") or []):
+                targets.append(
+                    (
+                        f"plans.{epic_idx}.items.{item_idx}.subtasks.{subtask_idx}.text",
+                        _normalize_text(subtask.get("text")),
+                    )
+                )
+                targets.append(
+                    (
+                        f"plans.{epic_idx}.items.{item_idx}.subtasks.{subtask_idx}.comment",
+                        _normalize_text(subtask.get("comment")),
+                    )
+                )
     return targets
 
 
@@ -783,23 +913,9 @@ def _log_ollama_check_commands(ollama_url: str, model: str, has_api_key: bool) -
         )
 
 
-def rewrite_payload_with_ollama(payload: dict[str, Any], config: ConfigParser, extra_params: dict[str, Any]) -> dict[str, Any]:
-    ollama_enabled = _bool_value(
-        extra_params.get("ollama_enabled", config.get("ollama", "enabled", fallback="true")),
-        True,
-    )
-    if not ollama_enabled:
-        return payload
-
-    model = _normalize_text(extra_params.get("ollama_model") or config.get("ollama", "model", fallback=""))
-    if not model:
-        logger.warning("Ollama model is not configured; using deterministic text.")
-        return payload
-
-    targets = _collect_text_targets(payload)
+def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) -> tuple[dict[str, str], str]:
     if not targets:
-        return payload
-
+        return {}, ""
     prompt_lines = [
         "Rewrite each value to concise business style with at most 1-2 sentences.",
         "Preserve meaning and keep references intact.",
@@ -807,68 +923,15 @@ def rewrite_payload_with_ollama(payload: dict[str, Any], config: ConfigParser, e
         "IDs:",
     ]
     target_map: dict[str, str] = {}
-    for idx, (path, text_value) in enumerate(targets, start=1):
+    for idx, (path, text_value) in enumerate(targets, start=start_index):
         target_id = f"t{idx}"
         target_map[target_id] = path
         prompt_lines.append(f"{target_id}: {text_value}")
-    prompt = "\n".join(prompt_lines)
+    return target_map, "\n".join(prompt_lines)
 
-    ollama_url = _normalize_text(extra_params.get("ollama_url") or config.get("ollama", "url", fallback="http://localhost:11434"))
-    ollama_api_key = _strip_wrapping_quotes(
-        _normalize_text(extra_params.get("ollama_api_key") or config.get("ollama", "api_key", fallback=""))
-    )
-    timeout_seconds = int(
-        _normalize_text(extra_params.get("ollama_timeout_seconds") or config.get("ollama", "timeout_seconds", fallback="60"))
-        or "60"
-    )
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if ollama_api_key:
-        headers["Authorization"] = f"Bearer {ollama_api_key}"
 
-    try:
-        response = requests.post(
-            f"{ollama_url.rstrip('/')}/api/generate",
-            headers=headers,
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": float(
-                        _normalize_text(
-                            extra_params.get("ollama_temperature") or config.get("ollama", "temperature", fallback="0.2")
-                        )
-                        or "0.2"
-                    )
-                },
-            },
-            timeout=timeout_seconds,
-        )
-        response.raise_for_status()
-        response_json = response.json()
-    except requests.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else "n/a"
-        response_text = _normalize_text(exc.response.text if exc.response is not None else "")
-        if len(response_text) > 500:
-            response_text = response_text[:500] + "..."
-        logger.error("Ollama HTTP error: status=%s body=%s", status, response_text or "<empty>")
-        _log_ollama_check_commands(ollama_url, model, bool(ollama_api_key))
-        logger.warning("Ollama call failed; using deterministic text.")
-        return payload
-    except Exception as exc:
-        logger.error("Ollama call failed: %s", exc)
-        _log_ollama_check_commands(ollama_url, model, bool(ollama_api_key))
-        logger.warning("Ollama call failed; using deterministic text.")
-        return payload
-
-    response_text = _normalize_text(response_json.get("response", ""))
-    rewrite_map = _extract_json_object(response_text)
-    if not rewrite_map:
-        logger.warning("Ollama response is not valid JSON map; using deterministic text.")
-        return payload
-
+def _apply_rewrite_map(payload: dict[str, Any], target_map: dict[str, str], rewrite_map: dict[str, Any]) -> dict[str, Any]:
     updated = json.loads(json.dumps(payload))
-
     for target_id, target_path in target_map.items():
         rewritten = _normalize_text(rewrite_map.get(target_id))
         if not rewritten:
@@ -888,8 +951,302 @@ def rewrite_payload_with_ollama(payload: dict[str, Any], config: ConfigParser, e
                 cursor[leaf] = rewritten
         except Exception:
             continue
-
     return updated
+
+
+def _log_webui_check_commands(api_url: str, model: str, has_api_key: bool, prompt: str = "ping") -> None:
+    logger.error("WebUI API health checks (run in console):")
+    # Use a truncated prompt to show it's not just 'ping', but avoid massive logs
+    display_prompt = prompt if len(prompt) < 200 else (prompt[:200] + "... (truncated)")
+    
+    json_body = json.dumps({
+        "model": model or "<MODEL>",
+        "messages": [{"role": "user", "content": display_prompt}],
+        "stream": False
+    })
+    # Escape for shell (simple approach)
+    json_body_sh = json_body.replace("'", "'\\''")
+    json_body_ps = json_body.replace('"', '\\"')
+
+    if has_api_key:
+        logger.error(
+            f"curl -i -X POST '{api_url}' -H 'Content-Type: application/json' -H 'Authorization: Bearer <WEBUI_API_KEY>' -d '{json_body_sh}'"
+        )
+        logger.error(
+            f'PowerShell: curl.exe -sS -i -X POST "{api_url}" -H "Content-Type: application/json" -H "Authorization: Bearer <WEBUI_API_KEY>" --data-raw "{json_body_ps}"'
+        )
+    else:
+        logger.error(
+            f"curl -i -X POST '{api_url}' -H 'Content-Type: application/json' -d '{json_body_sh}'"
+        )
+        logger.error(
+            f'PowerShell: curl.exe -sS -i -X POST "{api_url}" -H "Content-Type: application/json" --data-raw "{json_body_ps}"'
+        )
+
+
+def _build_webui_api_url(base_url: str, endpoint: str) -> str:
+    base = _normalize_text(base_url).rstrip("/")
+    ep = _normalize_text(endpoint)
+    if not ep:
+        return base
+    if ep.startswith("http://") or ep.startswith("https://"):
+        return ep.rstrip("/")
+
+    ep_path = "/" + ep.lstrip("/")
+    if base.endswith(ep_path):
+        return base
+
+    parts = urlsplit(base)
+    if not parts.scheme or not parts.netloc:
+        if not base:
+            return ep_path
+        return f"{base}/{ep.lstrip('/')}"
+
+    base_path = parts.path.rstrip("/")
+    if base_path and ep_path.startswith(base_path + "/"):
+        merged_path = ep_path
+    elif base_path:
+        merged_path = f"{base_path}{ep_path}"
+    else:
+        merged_path = ep_path
+    return urlunsplit((parts.scheme, parts.netloc, merged_path, "", ""))
+
+
+def rewrite_payload_with_ollama(payload: dict[str, Any], config: ConfigParser, extra_params: dict[str, Any]) -> dict[str, Any]:
+    ollama_enabled = _bool_value(
+        extra_params.get("ollama_enabled", config.get("ollama", "enabled", fallback="true")),
+        True,
+    )
+    if not ollama_enabled:
+        return payload
+
+    model = _normalize_text(extra_params.get("ollama_model") or config.get("ollama", "model", fallback=""))
+    if not model:
+        logger.warning("Ollama model is not configured; using deterministic text.")
+        return payload
+
+    all_targets = _collect_text_targets(payload)
+    if not all_targets:
+        return payload
+
+    ollama_url = _normalize_text(extra_params.get("ollama_url") or config.get("ollama", "url", fallback="http://localhost:11434"))
+    ollama_api_key = _strip_wrapping_quotes(
+        _normalize_text(extra_params.get("ollama_api_key") or config.get("ollama", "api_key", fallback=""))
+    )
+    timeout_seconds = int(
+        _normalize_text(extra_params.get("ollama_timeout_seconds") or config.get("ollama", "timeout_seconds", fallback="60"))
+        or "60"
+    )
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if ollama_api_key:
+        headers["Authorization"] = f"Bearer {ollama_api_key}"
+
+    full_rewrite_map: dict[str, Any] = {}
+    full_target_map: dict[str, str] = {}
+    batch_size = 5
+
+    for i in range(0, len(all_targets), batch_size):
+        batch = all_targets[i : i + batch_size]
+        target_map, prompt = _build_rewrite_prompt(batch, start_index=i + 1)
+
+        try:
+            response = requests.post(
+                f"{ollama_url.rstrip('/')}/api/generate",
+                headers=headers,
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": float(
+                            _normalize_text(
+                                extra_params.get("ollama_temperature") or config.get("ollama", "temperature", fallback="0.2")
+                            )
+                            or "0.2"
+                        )
+                    },
+                },
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            response_json = response.json()
+            response_text = _normalize_text(response_json.get("response", ""))
+            rewrite_map = _extract_json_object(response_text)
+            if rewrite_map:
+                full_rewrite_map.update(rewrite_map)
+                full_target_map.update(target_map)
+            else:
+                logger.warning("Ollama response is not valid JSON map for batch %s; skipping.", i)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "n/a"
+            response_text = _normalize_text(exc.response.text if exc.response is not None else "")
+            if len(response_text) > 500:
+                response_text = response_text[:500] + "..."
+            logger.error("Ollama HTTP error: status=%s body=%s", status, response_text or "<empty>")
+            _log_ollama_check_commands(ollama_url, model, bool(ollama_api_key))
+        except Exception as exc:
+            logger.error("Ollama call failed: %s", exc)
+            _log_ollama_check_commands(ollama_url, model, bool(ollama_api_key))
+
+    return _apply_rewrite_map(payload, full_target_map, full_rewrite_map)
+
+
+def rewrite_payload_with_webui(payload: dict[str, Any], config: ConfigParser, extra_params: dict[str, Any]) -> dict[str, Any]:
+    webui_section = config["webui"] if config.has_section("webui") else {}
+    webui_enabled = _bool_value(
+        extra_params.get("webui_enabled")
+        or webui_section.get("enabled")
+        or config.get("webui", "enabled", fallback="true"),
+        True,
+    )
+    if not webui_enabled:
+        return payload
+
+    model = _normalize_text(
+        extra_params.get("webui_model")
+        or webui_section.get("model")
+        or config.get("webui", "model", fallback="")
+    )
+    if not model:
+        logger.warning("WebUI model is not configured; using deterministic text.")
+        return payload
+
+    all_targets = _collect_text_targets(payload)
+    if not all_targets:
+        return payload
+
+    base_url = _normalize_text(
+        extra_params.get("webui_url")
+        or webui_section.get("url")
+        or config.get("webui", "url", fallback="http://localhost:3000")
+    )
+    endpoint = _normalize_text(
+        extra_params.get("webui_endpoint")
+        or webui_section.get("endpoint")
+        or config.get("webui", "endpoint", fallback="/api/chat/completions")
+    )
+    api_url = _build_webui_api_url(base_url, endpoint)
+    configured_webui_api_key = (
+        webui_section.get("api_key")
+        if webui_section
+        else config.get("webui", "api_key", fallback="")
+    )
+    webui_api_key = _strip_wrapping_quotes(
+        _normalize_text(extra_params.get("webui_api_key") or configured_webui_api_key)
+    )
+    timeout_seconds = int(
+        _normalize_text(
+            extra_params.get("webui_timeout_seconds")
+            or webui_section.get("timeout_seconds")
+            or config.get("webui", "timeout_seconds", fallback="120")
+        )
+        or "120"
+    )
+    connect_timeout_seconds = int(
+        _normalize_text(
+            extra_params.get("webui_connect_timeout_seconds")
+            or webui_section.get("connect_timeout_seconds")
+            or config.get("webui", "connect_timeout_seconds", fallback="10")
+        )
+        or "10"
+    )
+    temperature = float(
+        _normalize_text(
+            extra_params.get("webui_temperature")
+            or webui_section.get("temperature")
+            or config.get("webui", "temperature", fallback="0.2")
+        )
+        or "0.2"
+    )
+    logger.info(
+        "WEBUI CONFIG: enabled=%s url=%s endpoint=%s api_url=%s model=%s api_key_set=%s timeout(connect/read)=%s/%s",
+        webui_enabled,
+        base_url,
+        endpoint,
+        api_url,
+        model,
+        bool(webui_api_key),
+        connect_timeout_seconds,
+        timeout_seconds,
+    )
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if webui_api_key:
+        headers["Authorization"] = f"Bearer {webui_api_key}"
+
+    full_rewrite_map: dict[str, Any] = {}
+    full_target_map: dict[str, str] = {}
+    batch_size = 5
+
+    logger.info("WEBUI REQUEST: api_url=%s total_targets=%s batch_size=%s", api_url, len(all_targets), batch_size)
+
+    for i in range(0, len(all_targets), batch_size):
+        batch = all_targets[i : i + batch_size]
+        target_map, prompt = _build_rewrite_prompt(batch, start_index=i + 1)
+
+        try:
+            response = requests.post(
+                api_url,
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": "You rewrite report snippets and return strict JSON only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                    "temperature": temperature,
+                },
+                timeout=(connect_timeout_seconds, timeout_seconds),
+            )
+            response.raise_for_status()
+            response_json = response.json()
+            
+            response_text = ""
+            choices = response_json.get("choices")
+            if isinstance(choices, list) and choices:
+                first_choice = choices[0] or {}
+                message = first_choice.get("message") or {}
+                response_text = _normalize_text(message.get("content"))
+            if not response_text:
+                response_text = _normalize_text(response_json.get("response", ""))
+
+            rewrite_map = _extract_json_object(response_text)
+            if rewrite_map:
+                full_rewrite_map.update(rewrite_map)
+                full_target_map.update(target_map)
+            else:
+                logger.warning("WebUI response is not valid JSON map for batch %s; skipping.", i)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "n/a"
+            response_text = _normalize_text(exc.response.text if exc.response is not None else "")
+            if len(response_text) > 500:
+                response_text = response_text[:500] + "..."
+            logger.error("WebUI HTTP error: status=%s body=%s", status, response_text or "<empty>")
+            _log_webui_check_commands(api_url, model, bool(webui_api_key), prompt)
+        except Exception as exc:
+            logger.error("WebUI call failed: %s", exc)
+            _log_webui_check_commands(api_url, model, bool(webui_api_key), prompt)
+
+    return _apply_rewrite_map(payload, full_target_map, full_rewrite_map)
+
+
+def rewrite_payload_with_ai(payload: dict[str, Any], config: ConfigParser, extra_params: dict[str, Any]) -> dict[str, Any]:
+    section = config["jira_weekly_email"] if config.has_section("jira_weekly_email") else {}
+    provider_raw = _normalize_text(extra_params.get("ai_provider") or section.get("ai_provider"))
+    if provider_raw:
+        provider = _normalize_key(provider_raw)
+    else:
+        webui_enabled = _bool_value(
+            extra_params.get("webui_enabled", config.get("webui", "enabled", fallback="false")),
+            False,
+        )
+        provider = "webui" if webui_enabled else "ollama"
+    if provider == "webui":
+        return rewrite_payload_with_webui(payload, config, extra_params)
+    if provider not in {"", "ollama"}:
+        logger.warning("Unknown ai_provider=%s, falling back to ollama.", provider)
+    return rewrite_payload_with_ollama(payload, config, extra_params)
 
 
 def _snapshot_week_tuple(snapshot: dict[str, Any]) -> tuple[int, int] | None:
@@ -897,9 +1254,18 @@ def _snapshot_week_tuple(snapshot: dict[str, Any]) -> tuple[int, int] | None:
     try:
         year = int(meta.get("year"))
         week = int(meta.get("week"))
+        return year, week
     except Exception:
+        pass
+
+    week_key = _normalize_text(meta.get("week_key"))
+    match = re.fullmatch(r"(\d{2,4})'?w(\d{1,2})", week_key, flags=re.IGNORECASE)
+    if not match:
         return None
-    return year, week
+    year_val = int(match.group(1))
+    if year_val < 100:
+        year_val += 2000
+    return year_val, int(match.group(2))
 
 
 def _previous_week_window(current_week: WeekWindow) -> WeekWindow:
@@ -916,23 +1282,93 @@ def _previous_week_window(current_week: WeekWindow) -> WeekWindow:
     )
 
 
-def load_previous_snapshot(snapshot_dir: Path, project: str, current_week: WeekWindow) -> dict[str, Any] | None:
-    project_dir = snapshot_dir / project
-    if not project_dir.exists():
-        return None
+def _read_snapshot_json(path: Path) -> dict[str, Any] | None:
+    for encoding in ("utf-8", "utf-8-sig"):
+        try:
+            value = json.loads(path.read_text(encoding=encoding))
+        except Exception:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
 
+
+def load_previous_snapshot(snapshot_dir: Path, project: str, current_week: WeekWindow) -> dict[str, Any] | None:
     previous_week = _previous_week_window(current_week)
-    previous_path = project_dir / f"{previous_week.key}.json"
-    if not previous_path.exists():
-        return None
-    try:
-        payload = json.loads(previous_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    week_tuple = _snapshot_week_tuple(payload)
-    if week_tuple != (previous_week.year, previous_week.week):
-        return None
-    return payload
+    previous_week_compact = previous_week.key.replace("'", "")
+    legacy_base = snapshot_dir / "snapshots" / "jira_weekly_email"
+    search_dirs = [
+        snapshot_dir,
+        snapshot_dir / project,
+        legacy_base,
+        legacy_base / project,
+    ]
+    previous_candidates = [
+        f"jira_weekly_email_{project}_{previous_week.key}.json",
+        f"jira_weekly_email_{project}_{previous_week_compact}.json",
+        f"{previous_week.key}.json",
+        f"{previous_week_compact}.json",
+    ]
+    previous_candidates_folded = {name.casefold() for name in previous_candidates}
+    logger.info(
+        "SNAPSHOT SEARCH: previous_week=%s project=%s candidates=%s dirs=%s abs_dirs=%s",
+        previous_week.key,
+        project,
+        ",".join(previous_candidates),
+        ",".join(str(path) for path in search_dirs),
+        ",".join(str(path.resolve()) for path in search_dirs),
+    )
+
+    for directory in search_dirs:
+        if not directory.exists():
+            continue
+        for previous_path in directory.glob("*.json"):
+            if previous_path.name.casefold() not in previous_candidates_folded:
+                continue
+            logger.info("Checking candidate file: %s", previous_path)
+            payload = _read_snapshot_json(previous_path)
+            if payload is None:
+                logger.warning("Failed to read JSON from %s", previous_path)
+                continue
+            week_tuple = _snapshot_week_tuple(payload)
+            target_tuple = (previous_week.year, previous_week.week)
+            if week_tuple == target_tuple or week_tuple is None:
+                logger.info("Snapshot accepted: %s", previous_path)
+                return payload
+            logger.warning("Snapshot rejected: %s (week=%s, expected=%s)", previous_path.name, week_tuple, target_tuple)
+
+    if snapshot_dir.exists():
+        expected_names = {
+            f"jira_weekly_email_{project}_{previous_week.key}.json".casefold(),
+            f"jira_weekly_email_{project}_{previous_week_compact}.json".casefold(),
+        }
+        for candidate_path in snapshot_dir.rglob("*.json"):
+            if candidate_path.name.casefold() not in expected_names:
+                continue
+            payload = _read_snapshot_json(candidate_path)
+            if payload is None:
+                continue
+            week_tuple = _snapshot_week_tuple(payload)
+            if week_tuple == (previous_week.year, previous_week.week) or week_tuple is None:
+                return payload
+
+    latest_candidate: tuple[tuple[int, int], dict[str, Any]] | None = None
+    current_tuple = (current_week.year, current_week.week)
+    for directory in search_dirs:
+        if not directory.exists():
+            continue
+        for candidate_path in directory.glob("*.json"):
+            payload = _read_snapshot_json(candidate_path)
+            if payload is None:
+                continue
+            week_tuple = _snapshot_week_tuple(payload)
+            if not week_tuple or week_tuple >= current_tuple:
+                continue
+            if latest_candidate is None or week_tuple > latest_candidate[0]:
+                latest_candidate = (week_tuple, payload)
+    if latest_candidate:
+        return latest_candidate[1]
+    return None
 
 
 def _extract_order(payload: dict[str, Any]) -> dict[str, Any]:
@@ -988,6 +1424,12 @@ def _payload_to_lines(payload: dict[str, Any]) -> list[str]:
             lines.append(f"plan:{item.get('issue_key')} {item.get('text')}")
             if _normalize_text(item.get("comment")):
                 lines.append(f"plan_comment:{item.get('issue_key')} {item.get('comment')}")
+            for subtask in item.get("subtasks") or []:
+                lines.append(
+                    f"plan_subtask:{subtask.get('issue_key')} {subtask.get('text')} status={subtask.get('status')}"
+                )
+                if _normalize_text(subtask.get("comment")):
+                    lines.append(f"plan_subtask_comment:{subtask.get('issue_key')} {subtask.get('comment')}")
 
     for vacation in payload.get("vacations") or []:
         lines.append(f"VACATION {vacation}")
@@ -1090,15 +1532,42 @@ def parse_vacations_excel(
         horizon_end.strftime("%Y-%m-%d"),
     )
 
+    def _coerce_excel_day(raw: Any) -> date | None:
+        if isinstance(raw, datetime):
+            return raw.date()
+        if isinstance(raw, date):
+            return raw
+        if isinstance(raw, (int, float)):
+            try:
+                converted = from_excel(raw)
+            except Exception:
+                return None
+            if isinstance(converted, datetime):
+                return converted.date()
+            if isinstance(converted, date):
+                return converted
+            return None
+        if isinstance(raw, str):
+            text = _normalize_text(raw)
+            if not text:
+                return None
+            for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%m/%d/%Y"):
+                try:
+                    return datetime.strptime(text, fmt).date()
+                except ValueError:
+                    continue
+        return None
+
     date_by_col: dict[int, date] = {}
     for col in range(6, max_col + 1):
         raw_date = ws.cell(row=3, column=col).value
-        if isinstance(raw_date, datetime):
-            date_by_col[col] = raw_date.date()
-        elif isinstance(raw_date, date):
-            date_by_col[col] = raw_date
+        parsed_day = _coerce_excel_day(raw_date)
+        if parsed_day:
+            date_by_col[col] = parsed_day
 
     vacation_lines: list[str] = []
+    marker_hits_total = 0
+    marker_hits_in_horizon = 0
     for row in range(5, max_row + 1):
         name = _normalize_text(ws.cell(row=row, column=2).value)
         if not name:
@@ -1107,14 +1576,21 @@ def parse_vacations_excel(
         selected_dates: list[date] = []
         for col in range(6, max_col + 1):
             marker_raw = ws.cell(row=row, column=col).value
-            marker = _normalize_key(marker_raw)
-            if not marker or marker not in marker_set:
+            marker_text = _normalize_key(marker_raw)
+            if not marker_text:
                 continue
+            marker_tokens = [token for token in re.split(r"[,;/\s]+", marker_text) if token]
+            if not marker_tokens:
+                continue
+            if not any(token in marker_set for token in marker_tokens):
+                continue
+            marker_hits_total += 1
             day = date_by_col.get(col)
             if not day:
                 continue
             if horizon_start <= day <= horizon_end:
                 selected_dates.append(day)
+                marker_hits_in_horizon += 1
 
         if not selected_dates:
             continue
@@ -1135,6 +1611,12 @@ def parse_vacations_excel(
             f"{name} vacation {range_start.strftime('%d.%m.%Y')} - {range_end.strftime('%d.%m.%Y')}"
         )
 
+    logger.info(
+        "VACATION PARSE RESULT: marker_hits=%s marker_hits_in_horizon=%s entries=%s",
+        marker_hits_total,
+        marker_hits_in_horizon,
+        len(vacation_lines),
+    )
     return vacation_lines
 
 def render_outlook_html(payload: dict[str, Any]) -> str:
@@ -1142,121 +1624,217 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     titles = payload.get("titles") or {}
     project = html.escape(_normalize_text(meta.get("project")))
     week_key = html.escape(_normalize_text(meta.get("week_key")))
-    week_start = html.escape(_normalize_text(meta.get("week_start")))
-    week_end = html.escape(_normalize_text(meta.get("week_end")))
+
+    def _cfg_html(key: str, fallback: str) -> str:
+        value = _normalize_html_text(titles.get(key, fallback))
+        return value if value else fallback
+
+    report_title = _cfg_html("main", "Weekly Report")
+    highlights_title = _cfg_html("highlights", "Highlights")
+    results_title = _cfg_html("results", "Key Results and Achievements")
+    plans_title = _cfg_html("plans", "Next Week Plans")
+    vacations_title = _cfg_html("vacations", "Vacations (next 60 days)")
+    high_priority_title = _cfg_html("high_priority_subtitle", "High priority items")
+    bugs_title = _cfg_html("bugs_subtitle", "Bugs summary")
+    header_project_info = _cfg_html("header_project_info", "Weekly execution summary")
+    header_banner_bg_color = html.escape(_normalize_text(titles.get("header_banner_bg_color", "rgb(63,78,0)")))
+    meta_report_period = _cfg_html("meta_report_period", "Report Period")
+    meta_active_iteration = _cfg_html("meta_active_iteration", "Active iteration")
+    meta_active_iteration_value = _cfg_html("meta_active_iteration_value", "")
+    meta_report_owner = _cfg_html("meta_report_owner", "Report Owner")
+    meta_report_owner_value = _cfg_html(
+        "meta_report_owner_value",
+        html.escape(_normalize_text(meta.get("project"))),
+    )
+    meta_team_member = _cfg_html("meta_team_member", "Team Member")
+    meta_team_member_value = _cfg_html("meta_team_member_value", "")
+    footer_html = str(titles.get("footer_html") or "")
+
+    def _header_date(value: Any) -> str:
+        text = _normalize_text(value)
+        if not text:
+            return ""
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                return parsed.strftime("%Y/%m/%d")
+            except ValueError:
+                continue
+        return text.replace("-", "/")
+
+    period_value = html.escape(f"{_header_date(meta.get('week_start'))} - {_header_date(meta.get('week_end'))}")
 
     rows: list[str] = []
-    rows.append("<html>")
-    rows.append('<body style="font-family: Calibri, Arial, sans-serif; font-size:14px; color:#1f2937;">')
-    rows.append(f"<h2>{html.escape(_normalize_text(titles.get('main', 'Weekly Report')))} - {project} - {week_key}</h2>")
-    rows.append(f"<p>Period: {week_start} to {week_end}</p>")
+    rows.append("<!doctype html>")
+    rows.append("<html lang='en'>")
+    rows.append("<head>")
+    rows.append("<meta charset='utf-8' />")
+    rows.append("<meta name='viewport' content='width=device-width, initial-scale=1' />")
+    rows.append(f"<title>{report_title}</title>")
+    rows.append("<style>")
+    rows.append("html, body { height:100%; }")
+    rows.append("body{margin:0;padding:24px;background:#0b0b0b;font-family:Calibri,'Segoe UI',Arial,sans-serif;color:#ffffff;}")
+    rows.append(".sheet,.sheet *{color:#ffffff;}")
+    rows.append(".sheet{width:1040px;max-width:100%;margin:0 auto;border:2px solid #ffffff;background:#141414;box-shadow:0 14px 40px rgba(0,0,0,.45);}")
+    rows.append(".title{text-align:center;font-weight:700;font-size:20px;letter-spacing:.2px;padding:12px 14px;background:#141414;background-image:linear-gradient(#1f1f1f,#141414);border-bottom:2px solid #ffffff;}")
+    rows.append("table{border-collapse:collapse;width:100%;}td{vertical-align:top;}")
+    rows.append(".subhead td{border-bottom:1px solid #ffffff;font-size:13px;font-weight:700;padding:8px 10px;text-align:center;}")
+    rows.append(".meta td{border-bottom:1px solid #ffffff;border-right:1px solid #ffffff;padding:8px 10px;font-size:13px;line-height:1.2;}")
+    rows.append(".meta tr td:last-child{border-right:none;}.meta{border-bottom:2px solid #ffffff;}")
+    rows.append(".label{background:rgb(63,78,0);background-image:linear-gradient(rgb(76,92,10),rgb(63,78,0));font-weight:700;width:190px;white-space:nowrap;}")
+    rows.append(".value{background:#202020;background-image:linear-gradient(#2a2a2a,#202020);}.label.small{width:140px;}")
+    rows.append(".blue-panel{padding:14px 14px 18px;background-color:rgb(23,88,98);background-image:radial-gradient(circle at 38% 20%,rgba(255,255,255,.18) 0%,rgba(255,255,255,0) 35%),linear-gradient(135deg,rgb(32,110,123) 0%,rgb(23,88,98) 48%,rgb(18,70,78) 100%);}")
+    rows.append(".content td{padding:8px 12px;font-size:12.6px;line-height:1.25;}")
+    rows.append(".content .sec-label{width:190px;font-weight:700;font-size:14pt;padding:8px 10px;background:rgba(0,0,0,.2);}")
+    rows.append(".divider{height:1px;background:rgba(255,255,255,.35);margin:10px 0;}")
+    rows.append(".muted{color:rgba(255,255,255,.78);}")
+    rows.append("ul{margin:6px 0;padding:0;}")
+    rows.append(".lvl1 li,.lvl2 li,.lvl3 li,.lvl4 li{list-style:none;margin:3px 0;position:relative;padding-left:18px;}")
+    rows.append(".lvl1 li:before{content:'\\25A0';position:absolute;left:0;top:0;font-size:10px;line-height:1.2;color:#ffffff;}")
+    rows.append(".lvl2{margin-left:18px;}.lvl2 li:before{content:'\\25C6';position:absolute;left:0;top:0;font-size:10px;line-height:1.2;color:#ffffff;}")
+    rows.append(".lvl3{margin-left:36px;}.lvl3 li:before{content:'\\2022';position:absolute;left:0;top:0;font-size:12px;line-height:1.15;color:#ffffff;}")
+    rows.append(".lvl4{margin-left:54px;}.lvl4 li:before{content:'\\25E6';position:absolute;left:0;top:0;font-size:11px;line-height:1.2;color:#ffffff;}")
+    rows.append("@media print{body{background:#ffffff;padding:0;}.sheet{width:100%;box-shadow:none;}}")
+    rows.append("</style>")
+    rows.append("</head>")
+    rows.append("<body>")
+    rows.append("<div class='sheet'>")
+    rows.append(f"<div class='title'>{report_title} - {project} - {week_key}</div>")
+    rows.append(
+        f"<table class='subhead' cellspacing='0' cellpadding='0'><tr><td class='sub-banner' style='background:{header_banner_bg_color};'>{header_project_info}</td></tr></table>"
+    )
+    rows.append("<table class='meta' cellspacing='0' cellpadding='0'>")
+    rows.append(
+        "<tr>"
+        f"<td class='label'>{meta_active_iteration}</td>"
+        f"<td class='value'>{meta_active_iteration_value}</td>"
+        f"<td class='label small'>{meta_report_owner}</td>"
+        f"<td class='value' style='border-right:none;'>{meta_report_owner_value}</td>"
+        "</tr>"
+    )
+    rows.append(
+        "<tr>"
+        f"<td class='label'>{meta_report_period}</td>"
+        f"<td class='value'>{period_value}</td>"
+        f"<td class='label small'>{meta_team_member}</td>"
+        f"<td class='value' style='border-right:none;'>{meta_team_member_value}</td>"
+        "</tr>"
+    )
+    rows.append("</table>")
+    rows.append("<div class='blue-panel'>")
+    rows.append("<table class='content' cellspacing='0' cellpadding='0'>")
 
-    rows.append(f"<h3>1. {html.escape(_normalize_text(titles.get('highlights', 'Highlights')))}</h3>")
-    rows.append("<ul>")
+    rows.append("<tr>")
+    rows.append(f"<td class='sec-label'>{highlights_title}</td><td class='sec-body'><ul class='lvl1'>")
     for item in payload.get("highlights") or []:
         headline = html.escape(_normalize_text(item.get("headline")))
         issue_key = html.escape(_normalize_text(item.get("issue_key")))
-        rows.append(f"<li>{headline} ({issue_key})</li>")
+        rows.append(f"<li>{headline}{f' ({issue_key})' if issue_key else ''}</li>")
     if not (payload.get("highlights") or []):
         rows.append("<li>No highlight updates in this week.</li>")
-    rows.append("</ul>")
+    rows.append("</ul></td></tr>")
 
-    rows.append(f"<h3>2. {html.escape(_normalize_text(titles.get('results', 'Key Results and Achievements')))}</h3>")
-    high_priority_title = html.escape(_normalize_text(titles.get("high_priority_subtitle", "High priority items")))
-    bugs_title = html.escape(_normalize_text(titles.get("bugs_subtitle", "Bugs summary")))
-    rows.append("<ul style='margin:0 0 0 16px; padding-left:16px;'>")
-    for epic in payload.get("epics") or []:
+    rows.append("<tr>")
+    rows.append(f"<td class='sec-label'>{results_title}</td><td class='sec-body'>")
+    for epic_idx, epic in enumerate(payload.get("epics") or []):
         epic_name = html.escape(_normalize_text(epic.get("epic_name")))
         epic_key = html.escape(_normalize_text(epic.get("epic_key")))
-        rows.append(f"<li><b>Epic: {epic_name} ({epic_key})</b>")
-        rows.append("<ul style='margin:6px 0 10px 16px; padding-left:16px;'>")
-        if epic.get("report_items"):
-            for item in epic.get("report_items") or []:
-                text = html.escape(_normalize_text(item.get("text")))
-                issue_key = html.escape(_normalize_text(item.get("issue_key")))
-                rows.append(f"<li>({issue_key}) {text}</li>")
-        if epic.get("completed_items"):
-            for item in epic.get("completed_items") or []:
-                text = html.escape(_normalize_text(item.get("text")))
-                issue_key = html.escape(_normalize_text(item.get("issue_key")))
-                rows.append(f"<li>({issue_key}) {text}</li>")
-        if epic.get("parent_subtasks"):
-            for group in epic.get("parent_subtasks") or []:
-                parent_issue_key = html.escape(_normalize_text(group.get("parent_issue_key")))
-                parent_text = html.escape(_normalize_text(group.get("parent_text")))
-                rows.append(f"<li>({parent_issue_key}) {parent_text}:")
-                rows.append("<ul style='margin:6px 0 6px 16px; padding-left:16px;'>")
-                for subtask in group.get("subtasks") or []:
-                    subtask_key = html.escape(_normalize_text(subtask.get("issue_key")))
-                    subtask_text = html.escape(_normalize_text(subtask.get("text")))
-                    subtask_status = html.escape(_normalize_text(subtask.get("status")))
-                    subtask_comment = html.escape(_normalize_text(subtask.get("comment")))
-                    if subtask_status:
-                        rows.append(f"<li>({subtask_key}) {subtask_text} - {subtask_status}")
-                    else:
-                        rows.append(f"<li>({subtask_key}) {subtask_text}")
-                    if subtask_comment:
-                        rows.append("<ul style='margin:4px 0 4px 16px; padding-left:16px;'>")
-                        rows.append(f"<li>Comment: {subtask_comment}</li>")
-                        rows.append("</ul>")
-                    rows.append("</li>")
-                rows.append("</ul>")
-                rows.append("</li>")
+        rows.append("<ul class='lvl1'>")
+        rows.append(f"<li><b>{epic_name} ({epic_key})</b></li>")
+        rows.append("</ul>")
+        rows.append("<ul class='lvl2'>")
+        for item in (epic.get("report_items") or []) + (epic.get("completed_items") or []):
+            text = html.escape(_normalize_text(item.get("text")))
+            issue_key = html.escape(_normalize_text(item.get("issue_key")))
+            rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
+        for group in epic.get("parent_subtasks") or []:
+            parent_issue_key = html.escape(_normalize_text(group.get("parent_issue_key")))
+            parent_text = html.escape(_normalize_text(group.get("parent_text")))
+            rows.append(f"<li>{parent_text}{f' ({parent_issue_key})' if parent_issue_key else ''}:</li>")
+            rows.append("</ul><ul class='lvl3'>")
+            for subtask in group.get("subtasks") or []:
+                subtask_key = html.escape(_normalize_text(subtask.get("issue_key")))
+                subtask_text = html.escape(_normalize_text(subtask.get("text")))
+                subtask_status = html.escape(_normalize_text(subtask.get("status")))
+                subtask_comment = html.escape(_normalize_text(subtask.get("comment")))
+                suffix = f" - {subtask_status}" if subtask_status else ""
+                rows.append(f"<li>{subtask_text}{suffix}{f' ({subtask_key})' if subtask_key else ''}</li>")
+                if subtask_comment:
+                    rows.append("<ul class='lvl4'>")
+                    rows.append(f"<li>{subtask_comment}</li>")
+                    rows.append("</ul>")
+            rows.append("</ul><ul class='lvl2'>")
         if epic.get("high_priority_items"):
-            rows.append(f"<li><b>{high_priority_title}</b>")
-            rows.append("<ul style='margin:6px 0 6px 16px; padding-left:16px;'>")
+            rows.append(f"<li><b>{high_priority_title}</b></li>")
+            rows.append("</ul><ul class='lvl3'>")
             for item in epic.get("high_priority_items") or []:
                 text = html.escape(_normalize_text(item.get("text")))
                 issue_key = html.escape(_normalize_text(item.get("issue_key")))
-                rows.append(f"<li>({issue_key}) {text}</li>")
-            rows.append("</ul>")
-            rows.append("</li>")
+                rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
+            rows.append("</ul><ul class='lvl2'>")
         bugs = epic.get("bugs") or {}
         closed_bugs = int(bugs.get("closed", 0))
         in_progress_bugs = int(bugs.get("in_progress", 0))
         if closed_bugs or in_progress_bugs:
             rows.append(
-                "<li><b>"
-                f"{bugs_title}"
-                "</b>: "
-                f"{closed_bugs} trouble reports/issues are analyzed and closed, "
-                f"{in_progress_bugs} currently in progress."
-                "</li>"
+                f"<li><b>{bugs_title}</b>: {closed_bugs} trouble reports/issues are analyzed and closed, "
+                f"{in_progress_bugs} currently in progress.</li>"
             )
         rows.append("</ul>")
-        rows.append("</li>")
-    rows.append("</ul>")
+        if epic_idx < len(payload.get("epics") or []) - 1:
+            rows.append("<div class='divider'></div>")
+    if not (payload.get("epics") or []):
+        rows.append("<p class='muted'>No completed items for selected scope.</p>")
+    rows.append("</td></tr>")
 
-    rows.append(f"<h3>3. {html.escape(_normalize_text(titles.get('plans', 'Next Week Plans')))}</h3>")
+    rows.append("<tr>")
+    rows.append(f"<td class='sec-label'>{plans_title}</td><td class='sec-body'>")
     for epic in payload.get("next_week_plans") or []:
         epic_name = html.escape(_normalize_text(epic.get("epic_name")))
         epic_key = html.escape(_normalize_text(epic.get("epic_key")))
-        rows.append(f"<h4>Epic: {epic_name} ({epic_key})</h4>")
-        rows.append("<ul>")
+        rows.append("<ul class='lvl1'>")
+        rows.append(f"<li><b>{epic_name} ({epic_key})</b></li>")
+        rows.append("</ul>")
+        rows.append("<ul class='lvl2'>")
         for item in epic.get("items") or []:
             text = html.escape(_normalize_text(item.get("text")))
             comment = html.escape(_normalize_text(item.get("comment")))
             issue_key = html.escape(_normalize_text(item.get("issue_key")))
-            rows.append(f"<li>({issue_key}) {text}")
+            rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
             if comment:
-                rows.append("<ul style='margin:4px 0 4px 16px; padding-left:16px;'>")
+                rows.append("</ul><ul class='lvl3'>")
                 rows.append(f"<li>{comment}</li>")
-                rows.append("</ul>")
-            rows.append("</li>")
+                rows.append("</ul><ul class='lvl2'>")
+            for subtask in item.get("subtasks") or []:
+                subtask_key = html.escape(_normalize_text(subtask.get("issue_key")))
+                subtask_text = html.escape(_normalize_text(subtask.get("text")))
+                subtask_status = html.escape(_normalize_text(subtask.get("status")))
+                subtask_comment = html.escape(_normalize_text(subtask.get("comment")))
+                suffix = f" - {subtask_status}" if subtask_status else ""
+                rows.append("</ul><ul class='lvl3'>")
+                rows.append(f"<li>{subtask_text}{suffix}{f' ({subtask_key})' if subtask_key else ''}</li>")
+                if subtask_comment:
+                    rows.append("<ul class='lvl4'>")
+                    rows.append(f"<li>{subtask_comment}</li>")
+                    rows.append("</ul>")
+                rows.append("</ul><ul class='lvl2'>")
         rows.append("</ul>")
     if not (payload.get("next_week_plans") or []):
-        rows.append("<p>No in-progress plans collected for next week.</p>")
+        rows.append("<p class='muted'>No in-progress plans collected for next week.</p>")
+    rows.append("</td></tr>")
 
-    rows.append(f"<h3>4. {html.escape(_normalize_text(titles.get('vacations', 'Vacations (next 60 days)')))}</h3>")
-    rows.append("<ul>")
+    rows.append("<tr>")
+    rows.append(f"<td class='sec-label'>{vacations_title}</td><td class='sec-body'><ul class='lvl1'>")
     for item in payload.get("vacations") or []:
         rows.append(f"<li>{html.escape(_normalize_text(item))}</li>")
     if not (payload.get("vacations") or []):
         rows.append("<li>No vacations found for the configured horizon.</li>")
-    rows.append("</ul>")
+    rows.append("</ul></td></tr>")
 
-    rows.append("</body>")
-    rows.append("</html>")
+    rows.append("</table>")
+    if footer_html.strip():
+        rows.append(f"<div class='footer-html'>{footer_html}</div>")
+    rows.append("</div></div></body></html>")
     return "\n".join(rows)
 
 
@@ -1347,6 +1925,14 @@ class JiraWeeklyEmailReport:
                 _normalize_text(extra_params.get("vacation_horizon_days") or section.get("vacation_horizon_days")) or "60"
             )
             vacation_horizon_days = int(vacation_days_value)
+            vacation_horizon_anchor = _normalize_key(
+                extra_params.get("vacation_horizon_anchor") or section.get("vacation_horizon_anchor") or "today"
+            )
+            if vacation_horizon_anchor in {"week", "week_start", "report_week_start"}:
+                vacation_horizon_start = week.start
+            else:
+                vacation_horizon_start = date.today()
+            alternate_horizon_start = week.start if vacation_horizon_start != week.start else date.today()
             vacation_path = Path(vacation_file)
             if not vacation_path.is_absolute():
                 parent_candidate = (Path.cwd().parent / vacation_path).resolve()
@@ -1357,10 +1943,32 @@ class JiraWeeklyEmailReport:
                     vacation_path,
                     sheet=vacation_sheet,
                     markers=vacation_markers,
-                    horizon_start=week.start,
+                    horizon_start=vacation_horizon_start,
                     horizon_days=vacation_horizon_days,
                 )
-                logger.info("VACATION RESULT: entries=%s file=%s", len(payload.get("vacations") or []), vacation_path)
+                if not payload.get("vacations"):
+                    alternate_vacations = parse_vacations_excel(
+                        vacation_path,
+                        sheet=vacation_sheet,
+                        markers=vacation_markers,
+                        horizon_start=alternate_horizon_start,
+                        horizon_days=vacation_horizon_days,
+                    )
+                    if alternate_vacations:
+                        payload["vacations"] = alternate_vacations
+                        logger.info(
+                            "VACATION FALLBACK APPLIED: original_start=%s alternate_start=%s entries=%s",
+                            vacation_horizon_start.strftime("%Y-%m-%d"),
+                            alternate_horizon_start.strftime("%Y-%m-%d"),
+                            len(payload.get("vacations") or []),
+                        )
+                logger.info(
+                    "VACATION RESULT: entries=%s file=%s anchor=%s horizon_start=%s",
+                    len(payload.get("vacations") or []),
+                    vacation_path,
+                    vacation_horizon_anchor,
+                    vacation_horizon_start.strftime("%Y-%m-%d"),
+                )
             except Exception as exc:
                 payload["vacations"] = []
                 logger.error("Vacation data read failed: file=%s error=%s", vacation_path, exc)
@@ -1370,10 +1978,8 @@ class JiraWeeklyEmailReport:
         output_dir = _normalize_text(extra_params.get("output_dir") or section.get("output_dir") or config.get("reporting", "output_dir", fallback="reports"))
         output_base = Path(output_dir)
         output_base.mkdir(parents=True, exist_ok=True)
-        snapshot_dir = _normalize_text(extra_params.get("snapshot_dir") or section.get("snapshot_dir")) or str(
-            output_base / "snapshots" / "jira_weekly_email"
-        )
-        snapshot_base = Path(snapshot_dir)
+        snapshot_dir = _normalize_text(extra_params.get("snapshot_dir") or section.get("snapshot_dir")) or str(output_base)
+        snapshot_base = Path(snapshot_dir).resolve()
         previous_week = _previous_week_window(week)
         logger.info(
             "SNAPSHOT INPUT: dir=%s project=%s current_week=%s previous_week=%s",
@@ -1385,12 +1991,13 @@ class JiraWeeklyEmailReport:
 
         previous_snapshot = load_previous_snapshot(snapshot_base, project, week)
         previous_payload = previous_snapshot.get("payload") if previous_snapshot else None
+        previous_week_key = _normalize_text((previous_snapshot.get("meta") or {}).get("week_key")) if previous_snapshot else ""
         if previous_snapshot:
-            logger.info("SNAPSHOT FOUND: previous_week=%s", previous_week.key)
+            logger.info("SNAPSHOT FOUND: previous_week=%s", previous_week_key or previous_week.key)
         else:
             logger.info("SNAPSHOT NOT FOUND: expected_previous_week=%s", previous_week.key)
         payload = apply_previous_order(payload, previous_snapshot)
-        payload = rewrite_payload_with_ollama(payload, config, extra_params)
+        payload = rewrite_payload_with_ai(payload, config, extra_params)
         payload = apply_previous_order(payload, previous_snapshot)
 
         html_text = render_outlook_html(payload)
@@ -1405,12 +2012,11 @@ class JiraWeeklyEmailReport:
             output_path = output_base / f"jira_weekly_email_{project}_{week.key}.html"
         output_path.write_text(html_text, encoding="utf-8")
 
-        snapshot_path = snapshot_base / project / f"{week.key}.json"
+        snapshot_path = snapshot_base / f"jira_weekly_email_{project}_{week.key}.json"
         save_snapshot(snapshot_path, payload, week)
 
         diff_lines = compute_payload_diff(previous_payload, payload)
         diff_stats = _diff_stats(diff_lines)
-        previous_week_key = previous_week.key if previous_snapshot else ""
         logger.info(
             "DIFF SUMMARY: previous_week=%s added=%s removed=%s unchanged=%s",
             previous_week_key or "none",
