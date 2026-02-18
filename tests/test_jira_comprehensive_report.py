@@ -170,7 +170,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             assignee_username="carol",
             reporter_display="Carol",
             reporter_username="carol",
-            comment_body="*result:* epic shipped",
+            comment_body="h1. +Result+\n_epic shipped_",
             comment_id="301",
             resolved_at="2025-01-08T10:00:00.000+0000",
         ),
@@ -364,7 +364,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
 
     abc3_rows = [row for row in rows if row["Issue_Key"] == "ABC-3"]
     assert abc3_rows
-    assert abc3_rows[0]["Result"] == "epic shipped"
+    assert abc3_rows[0]["Result"] == "_epic shipped_"
 
     abc2_rows = [row for row in rows if row["Issue_Key"] == "ABC-2"]
     assert abc2_rows

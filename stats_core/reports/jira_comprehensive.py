@@ -43,9 +43,10 @@ _TT_COUNTER_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 _OUTSTANDING_CONTRIBUTION_PATTERN = re.compile(r"outstanding[_ -]?contribution", re.IGNORECASE)
-_RESULT_PREFIX_PATTERN = re.compile(
-    r"^\s*(?:\*+\s*)?(results?)\s*(?:\*+)?\s*:\s*(?:\*+\s*)?(.*)\Z",
-    re.IGNORECASE | re.DOTALL,
+_RESULT_HEADING_PREFIX_PATTERN = re.compile(r"^\s*(?:h[1-6]\.\s+|#{1,6}\s+)", re.IGNORECASE)
+_RESULT_TAG_LINE_PATTERN = re.compile(
+    r"^\s*(?:[*_+]+\s*)?(results?)(?:\s*[*_+]+)?(?:\s*[:\-–—]\s*(?:[*_+]+\s*)?(.*))?\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -203,11 +204,26 @@ def _comment_body_to_text(body: Any) -> str:
 
 def _extract_result_text(comment_body: Any) -> str | None:
     text = "" if comment_body is None else str(comment_body)
-    match = _RESULT_PREFIX_PATTERN.match(text)
+    stripped = text.lstrip()
+    if not stripped:
+        return None
+
+    lines = stripped.splitlines()
+    first_line = lines[0] if lines else ""
+    remaining_lines = lines[1:] if len(lines) > 1 else []
+
+    first_line_no_heading = _RESULT_HEADING_PREFIX_PATTERN.sub("", first_line, count=1)
+    match = _RESULT_TAG_LINE_PATTERN.match(first_line_no_heading)
     if not match:
         return None
-    # Strip only the leading result tag prefix; keep the remaining content unchanged.
-    return match.group(2).lstrip()
+
+    # Strip only the leading result tag/heading; keep remaining content intact.
+    same_line_tail = match.group(2) or ""
+    if same_line_tail:
+        if remaining_lines:
+            return (same_line_tail + "\n" + "\n".join(remaining_lines)).lstrip()
+        return same_line_tail.lstrip()
+    return "\n".join(remaining_lines).lstrip()
 
 
 def _sort_by_epic_and_resolved(df: pd.DataFrame) -> pd.DataFrame:
