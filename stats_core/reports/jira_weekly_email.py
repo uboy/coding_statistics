@@ -373,15 +373,18 @@ def collect_weekly_comment_evidence(
             epic_link = issue_epic_map.get(parent_key, "")
         epic_name = epic_names.get(epic_link, "Unknown Epic") if epic_link else "Unknown Epic"
 
-        comments_in_week: list[str] = []
+        comments_in_week_rows: list[tuple[date, int, str]] = []
         comment_block = getattr(getattr(issue.fields, "comment", None), "comments", []) or []
-        for comment in comment_block:
+        for comment_idx, comment in enumerate(comment_block):
             created_dt = _parse_jira_date(getattr(comment, "created", ""))
             if not created_dt or not (week.start <= created_dt <= week.end):
                 continue
             body_text = _normalize_text(_comment_body_to_text(getattr(comment, "body", "")))
             if body_text:
-                comments_in_week.append(body_text)
+                comments_in_week_rows.append((created_dt, comment_idx, body_text))
+
+        comments_in_week_rows.sort(key=lambda item: (item[0], item[1]))
+        comments_in_week = [item[2] for item in comments_in_week_rows]
 
         total_comments_in_week += len(comments_in_week)
 
@@ -440,10 +443,21 @@ def _first_sentence(text: str) -> str:
     return sentence
 
 
+def _comment_hints_joined(comments: Any) -> str:
+    values = comments if isinstance(comments, list) else [comments]
+    latest_hint = ""
+    for value in values:
+        hint = _normalize_text(value)
+        if not hint:
+            continue
+        latest_hint = hint
+    return latest_hint
+
+
 def _build_item_text(entry: dict[str, Any], *, mode: str) -> str:
     summary = _normalize_text(entry.get("Summary"))
     issue_key = _normalize_text(entry.get("Issue_Key"))
-    comment_hint = _first_sentence((entry.get("Comments") or [""])[0])
+    comment_hint = _comment_hints_joined(entry.get("Comments") or [])
 
     if mode == "highlight":
         headline = summary or issue_key or "Task"
@@ -490,6 +504,7 @@ def build_report_payload(
     *,
     labels_highlights: set[str],
     labels_report: set[str],
+    priority_high_values: set[str],
 ) -> dict[str, Any]:
     highlights: list[dict[str, str]] = []
     epics: dict[str, dict[str, Any]] = {}
@@ -543,7 +558,7 @@ def build_report_payload(
         elif entry.get("Finished") and _normalize_key(entry.get("Type")) in _TASK_VALUES:
             if entry.get("Subtask") and _normalize_text(entry.get("Parent_Key")):
                 parent_issue_key = _normalize_text(entry.get("Parent_Key"))
-                subtask_comment = _first_sentence((entry.get("Comments") or [""])[0])
+                subtask_comment = _comment_hints_joined(entry.get("Comments") or [])
                 summary_key = _normalize_key(_normalize_text(entry.get("Summary")).rstrip(".!?"))
                 comment_key = _normalize_key(subtask_comment.rstrip(".!?"))
                 if summary_key and summary_key == comment_key:
@@ -588,7 +603,7 @@ def build_report_payload(
                     _normalize_text(entry.get("Parent_Status")),
                     _normalize_text(entry.get("Parent_Resolution")),
                 )
-                if parent_key and parent_report_scope and not parent_is_finished:
+                if parent_key and (parent_report_scope or issue_in_report_scope) and not parent_is_finished:
                     report_epic_ids.add(epic_identifier)
                     parent_text = _normalize_text(entry.get("Parent_Summary")) or parent_key
                     parent_item = plan_index.get((epic_identifier, parent_key))
@@ -601,7 +616,7 @@ def build_report_payload(
                         }
                         plans.setdefault(epic_identifier, []).append(parent_item)
                         plan_index[(epic_identifier, parent_key)] = parent_item
-                    subtask_comment = _first_sentence((entry.get("Comments") or [""])[0])
+                    subtask_comment = _comment_hints_joined(entry.get("Comments") or [])
                     summary_key = _normalize_key(_normalize_text(entry.get("Summary")).rstrip(".!?"))
                     comment_key = _normalize_key(subtask_comment.rstrip(".!?"))
                     if summary_key and summary_key == comment_key:
@@ -614,7 +629,7 @@ def build_report_payload(
                             "comment": subtask_comment,
                         }
                     )
-            elif issue_report_scope:
+            elif issue_report_scope or issue_in_report_scope:
                 plan_headline = _normalize_text(entry.get("Summary")) or issue_key
                 plan_comment = _build_item_text(entry, mode="plan")
                 existing_item = plan_index.get((epic_identifier, issue_key))
@@ -631,7 +646,7 @@ def build_report_payload(
                     plans.setdefault(epic_identifier, []).append(parent_plan_item)
                     plan_index[(epic_identifier, issue_key)] = parent_plan_item
 
-        if _normalize_key(entry.get("Priority")) in {"high", "highest"}:
+        if _normalize_key(entry.get("Priority")) in priority_high_values:
             epic_bucket["high_priority_items"].append(
                 {
                     "issue_key": issue_key,
@@ -1888,14 +1903,19 @@ class JiraWeeklyEmailReport:
             extra_params.get("labels_report") or section.get("labels_report"),
             ["report"],
         )
+        priority_high_values = _parse_label_set(
+            extra_params.get("priority_high_values") or section.get("priority_high_values"),
+            ["High", "Highest"],
+        )
         logger.info(
-            "REPORT PARAMS: project=%s week=%s range=[%s..%s] labels_highlights=%s labels_report=%s",
+            "REPORT PARAMS: project=%s week=%s range=[%s..%s] labels_highlights=%s labels_report=%s priority_high_values=%s",
             project,
             week.key,
             week.start.strftime("%Y-%m-%d"),
             week.end.strftime("%Y-%m-%d"),
             ",".join(sorted(labels_highlights)),
             ",".join(sorted(labels_report)),
+            ",".join(sorted(priority_high_values)),
         )
 
         jira_source = JiraSource(config["jira"])
@@ -1907,6 +1927,7 @@ class JiraWeeklyEmailReport:
             project,
             labels_highlights=labels_highlights,
             labels_report=labels_report,
+            priority_high_values=priority_high_values,
         )
 
         vacation_file = _strip_wrapping_quotes(
