@@ -32,6 +32,7 @@ def _make_issue(
     parent_key: str | None = None,
     comment_created: str = "2026-03-03T10:00:00.000+0000",
     comment_body: str = "Weekly update",
+    issue_is_subtask: bool = False,
 ):
     parent = SimpleNamespace(key=parent_key) if parent_key else None
     comment = SimpleNamespace(
@@ -47,7 +48,7 @@ def _make_issue(
         summary=summary,
         status=SimpleNamespace(name=status),
         resolution=SimpleNamespace(name=resolution) if resolution else None,
-        issuetype=SimpleNamespace(name=issue_type),
+        issuetype=SimpleNamespace(name=issue_type, subtask=issue_is_subtask),
         labels=labels,
         priority=SimpleNamespace(name=priority) if priority else None,
         customfield_10000=epic_link,
@@ -58,7 +59,13 @@ def _make_issue(
 
 
 def _make_epic_issue(key: str, summary: str, labels: list[str]):
-    fields = SimpleNamespace(summary=summary, labels=labels)
+    fields = SimpleNamespace(
+        summary=summary,
+        labels=labels,
+        issuetype=SimpleNamespace(name="Epic"),
+        customfield_10000="",
+        parent=None,
+    )
     return SimpleNamespace(key=key, fields=fields)
 
 
@@ -69,12 +76,18 @@ def _make_parent_issue(
     status: str = "In Progress",
     resolution: str = "",
     epic_link: str = "EPIC-1",
+    parent_key: str | None = None,
+    issue_type: str = "Task",
+    labels: list[str] | None = None,
 ):
     fields = SimpleNamespace(
         summary=summary,
         status=SimpleNamespace(name=status) if status else None,
         resolution=SimpleNamespace(name=resolution) if resolution else None,
         customfield_10000=epic_link,
+        parent=SimpleNamespace(key=parent_key) if parent_key else None,
+        issuetype=SimpleNamespace(name=issue_type) if issue_type else None,
+        labels=labels or [],
     )
     return SimpleNamespace(key=key, fields=fields)
 
@@ -206,6 +219,163 @@ def test_rewrite_payload_with_webui_logs_powershell_curl_on_timeout(mock_post, c
 
     rewrite_payload_with_ai(payload, config, {})
     assert any("PowerShell: curl.exe" in record.message for record in caplog.records)
+
+
+@patch("stats_core.reports.jira_weekly_email.requests.post")
+def test_rewrite_payload_with_webui_sanitizes_links_and_limits_to_two_sentences(mock_post):
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response_payload = {
+        "t1": (
+            "Results: Implemented API endpoint (\\\\srv\\share\\team\\notes.md). "
+            "See details at [build log](https://git.local/path/to/build). "
+            "Added tests for weekly report processing. Coordinated handover."
+        ),
+        "t2": (
+            "Plan: Continue rollout; see commit a1b2c3d4 and PR #123. "
+            "Next step in C:\\repo\\stats_core\\reports\\jira_weekly_email.py. "
+            "Prepare validation with QA."
+        ),
+        "t3": (
+            "Update: Expand coverage. "
+            "See git.local/pr/123 and /mnt/data/tmp/run.log. "
+            "Track regressions and align monitoring."
+        ),
+    }
+    response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(response_payload),
+                }
+            }
+        ]
+    }
+    mock_post.return_value = response
+
+    payload = {
+        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline"}],
+        "epics": [],
+        "next_week_plans": [
+            {
+                "epic_key": "EPIC-1",
+                "epic_name": "Epic One",
+                "items": [
+                    {"issue_key": "ABC-2", "text": "Old plan", "comment": "Old comment", "subtasks": []},
+                ],
+            }
+        ],
+    }
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira_weekly_email": {"ai_provider": "webui"},
+            "webui": {
+                "enabled": "true",
+                "url": "http://localhost:3000",
+                "endpoint": "/api/chat/completions",
+                "api_key": "cfg-key",
+                "model": "qwen",
+                "timeout_seconds": "30",
+            },
+        }
+    )
+
+    rewritten = rewrite_payload_with_ai(payload, config, {})
+    prompt = mock_post.call_args.kwargs["json"]["messages"][1]["content"]
+    assert "Maximum is 2 sentences." in prompt
+    assert rewritten["next_week_plans"][0]["items"][0]["text"] == "Old plan"
+    assert rewritten["next_week_plans"][0]["items"][0]["comment"] != "Old comment"
+    values = [
+        rewritten["highlights"][0]["headline"],
+        rewritten["next_week_plans"][0]["items"][0]["comment"],
+    ]
+    for value in values:
+        assert "http://" not in value and "https://" not in value
+        assert "git.local" not in value
+        assert "\\\\srv\\share" not in value
+        assert "C:\\repo" not in value
+        assert "/mnt/data/tmp" not in value
+        assert "see commit" not in value.lower()
+        assert "see pr" not in value.lower()
+        assert "results:" not in value.lower()
+        assert "plan:" not in value.lower()
+        assert "update:" not in value.lower()
+        sentences = [s for s in value.replace("?", ".").replace("!", ".").split(".") if s.strip()]
+        assert len(sentences) <= 2
+        assert len(value.split()) <= 48
+
+
+@patch("stats_core.reports.jira_weekly_email.requests.post")
+def test_rewrite_payload_with_ollama_sanitizes_links_and_limits_to_two_sentences(mock_post):
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response_payload = {
+        "t1": (
+            "Results: Fixed weekly report parser in src/stats_core/reports/parser.py. "
+            "See commit 9f3e4ab and https://git.local/c/12345. Added regression coverage."
+        ),
+        "t2": (
+            "Plan: Continue rollout in \\\\server\\share\\roadmap.md and C:\\repo\\next_steps.md; "
+            "coordinate remaining checks with QA and product owners this week."
+        ),
+        "t3": (
+            "Update: Collect final sign-off from /mnt/data/release-notes.md and git.local/pr/999. "
+            "Prepare deployment checklist."
+        ),
+    }
+    response.json.return_value = {"response": json.dumps(response_payload)}
+    mock_post.return_value = response
+
+    payload = {
+        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline"}],
+        "epics": [],
+        "next_week_plans": [
+            {
+                "epic_key": "EPIC-1",
+                "epic_name": "Epic One",
+                "items": [
+                    {"issue_key": "ABC-2", "text": "Old plan", "comment": "Old comment", "subtasks": []},
+                ],
+            }
+        ],
+    }
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira_weekly_email": {"ai_provider": "ollama"},
+            "ollama": {
+                "enabled": "true",
+                "url": "http://localhost:11434",
+                "model": "qwen",
+                "timeout_seconds": "30",
+                "temperature": "0.2",
+            },
+        }
+    )
+
+    rewritten = rewrite_payload_with_ai(payload, config, {})
+    prompt = mock_post.call_args.kwargs["json"]["prompt"]
+    assert "Maximum is 2 sentences." in prompt
+    assert rewritten["next_week_plans"][0]["items"][0]["text"] == "Old plan"
+    assert rewritten["next_week_plans"][0]["items"][0]["comment"] != "Old comment"
+    values = [
+        rewritten["highlights"][0]["headline"],
+        rewritten["next_week_plans"][0]["items"][0]["comment"],
+    ]
+    for value in values:
+        assert "http://" not in value and "https://" not in value
+        assert "git.local" not in value
+        assert "\\\\server\\share" not in value
+        assert "C:\\repo" not in value
+        assert "/mnt/data/release-notes.md" not in value
+        assert "see commit" not in value.lower()
+        assert "results:" not in value.lower()
+        assert "plan:" not in value.lower()
+        assert "update:" not in value.lower()
+        sentences = [s for s in value.replace("?", ".").replace("!", ".").split(".") if s.strip()]
+        assert len(sentences) <= 2
+        assert len(value.split()) <= 48
 
 
 def test_parse_vacations_excel_sheet_format(tmp_path: Path):
@@ -516,7 +686,8 @@ def test_jira_weekly_email_report_run_html_snapshot_and_diff(mock_jira_source_cl
     week10_text = week10_path.read_text(encoding="utf-8")
     assert "(ABC-1)" in week10_text
     assert "Report items" not in week10_text
-    assert "Feature delivery - Finished" in week10_text
+    assert "Feature delivery (ABC-1)" in week10_text
+    assert "Finished" in week10_text
     assert "Task completion:" not in week10_text
     assert "Parent task (ABC-2):" in week10_text
     assert "Subtask done - Done (ABC-4)" in week10_text
@@ -1139,6 +1310,83 @@ def test_jira_weekly_email_plans_include_report_tasks_and_in_progress_subtasks(m
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_excludes_non_in_progress_items_from_plans_and_progress_results(
+    mock_jira_source_cls,
+    tmp_path: Path,
+):
+    issues = [
+        _make_issue(
+            "ABC-90",
+            summary="Feature in todo",
+            issue_type="Feature",
+            status="To Do",
+            resolution="",
+            labels=[],
+            priority="Medium",
+            epic_link="EPIC-1",
+            comment_body="Todo stage update.",
+        ),
+        _make_issue(
+            "ABC-91",
+            summary="Subtask in todo",
+            issue_type="Sub-task",
+            status="To Do",
+            resolution="",
+            labels=[],
+            priority="Medium",
+            epic_link="",
+            parent_key="ABC-92",
+            comment_body="Subtask todo stage update.",
+        ),
+    ]
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_text = str(jql)
+        if "issuekey in (ABC-92)" in jql_text:
+            return [_make_parent_issue("ABC-92", summary="Parent task", status="In Progress", epic_link="EPIC-1")]
+        if "issuekey in (EPIC-1)" in jql_text:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        return issues
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "Feature in todo" not in text
+    assert "Subtask in todo" not in text
+    assert "Todo stage update." not in text
+    assert "Subtask todo stage update." not in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
 def test_jira_weekly_email_plans_include_in_progress_subtask_when_only_epic_is_report_scoped(
     mock_jira_source_cls,
     tmp_path: Path,
@@ -1202,6 +1450,228 @@ def test_jira_weekly_email_plans_include_in_progress_subtask_when_only_epic_is_r
     assert "Parent without report label (ABC-81)" in text
     assert "Scoped by epic subtask - In Progress (ABC-82)" in text
     assert "Subtask progress this week." in text
+    results_idx = text.index("Key Results and Achievements")
+    plans_idx = text.index("Next Week Plans")
+    subtask_result_idx = text.find("Scoped by epic subtask - In Progress (ABC-82)", results_idx, plans_idx)
+    assert subtask_result_idx != -1
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_resolves_epic_from_parent_chain_for_updated_subtask(
+    mock_jira_source_cls,
+    tmp_path: Path,
+):
+    issues = [
+        _make_issue(
+            "ABC-84",
+            summary="Chain subtask",
+            issue_type="Sub-task",
+            status="In Progress",
+            resolution="",
+            labels=[],
+            priority="Medium",
+            epic_link="",
+            parent_key="ABC-83",
+            comment_body="Subtask chain progress.",
+        ),
+    ]
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_text = str(jql)
+        if "issuekey in (ABC-83)" in jql_text:
+            return [
+                _make_parent_issue(
+                    "ABC-83",
+                    summary="Parent in chain",
+                    status="In Progress",
+                    epic_link="",
+                    parent_key="EPIC-1",
+                    issue_type="Story",
+                    labels=[],
+                )
+            ]
+        if "issuekey in (EPIC-1)" in jql_text:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        return issues
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "Epic One (EPIC-1)" in text
+    assert "Parent in chain (ABC-83)" in text
+    assert "Chain subtask - In Progress (ABC-84)" in text
+    assert "Subtask chain progress." in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_includes_in_progress_subtask_even_if_parent_finished(
+    mock_jira_source_cls,
+    tmp_path: Path,
+):
+    issues = [
+        _make_issue(
+            "ABC-86",
+            summary="In-progress subtask under finished parent",
+            issue_type="Sub-task",
+            status="In Progress",
+            resolution="",
+            labels=[],
+            priority="Medium",
+            epic_link="",
+            parent_key="ABC-85",
+            comment_body="Subtask moved forward this week.",
+        ),
+    ]
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_text = str(jql)
+        if "issuekey in (ABC-85)" in jql_text:
+            return [
+                _make_parent_issue(
+                    "ABC-85",
+                    summary="Finished parent task",
+                    status="Done",
+                    resolution="Done",
+                    epic_link="EPIC-1",
+                    labels=[],
+                )
+            ]
+        if "issuekey in (EPIC-1)" in jql_text:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        return issues
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "Epic One (EPIC-1)" in text
+    assert "Finished parent task (ABC-85)" in text
+    assert "In-progress subtask under finished parent - In Progress (ABC-86)" in text
+    assert "Subtask moved forward this week." in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_includes_custom_subtask_type_by_subtask_flag(
+    mock_jira_source_cls,
+    tmp_path: Path,
+):
+    issues = [
+        _make_issue(
+            "ABC-88",
+            summary="Custom subtask type in progress",
+            issue_type="QA Subtask",
+            issue_is_subtask=True,
+            status="In Progress",
+            resolution="",
+            labels=[],
+            priority="Medium",
+            epic_link="",
+            parent_key="ABC-87",
+            comment_body="Custom subtask progress.",
+        ),
+    ]
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_text = str(jql)
+        if "issuekey in (ABC-87)" in jql_text:
+            return [_make_parent_issue("ABC-87", summary="Parent for custom subtask", status="In Progress", epic_link="EPIC-1")]
+        if "issuekey in (EPIC-1)" in jql_text:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        return issues
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "Epic One (EPIC-1)" in text
+    assert "Parent for custom subtask (ABC-87)" in text
+    assert "Custom subtask type in progress - In Progress (ABC-88)" in text
+    assert "Custom subtask progress." in text
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
@@ -1213,7 +1683,7 @@ def test_jira_weekly_email_plans_include_epic_scoped_in_progress_task_without_is
         _make_issue(
             "ABC-73",
             summary="Epic scoped task",
-            issue_type="Task",
+            issue_type="New feature",
             status="In Progress",
             resolution="",
             labels=[],
@@ -1263,6 +1733,138 @@ def test_jira_weekly_email_plans_include_epic_scoped_in_progress_task_without_is
     assert "Epic One (EPIC-1)" in text
     assert "Epic scoped task (ABC-73)" in text
     assert "Ongoing implementation update." in text
+    assert "In Progress" in text
+    results_idx = text.index("Key Results and Achievements")
+    plans_idx = text.index("Next Week Plans")
+    issue_idx = text.find("Epic scoped task (ABC-73)", results_idx, plans_idx)
+    assert issue_idx != -1
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_plans_include_arbitrary_non_bug_type(mock_jira_source_cls, tmp_path: Path):
+    issues = [
+        _make_issue(
+            "ABC-89",
+            summary="Research stream item",
+            issue_type="Research",
+            status="In Progress",
+            resolution="",
+            labels=[],
+            priority="Medium",
+            epic_link="EPIC-1",
+            comment_body="Research progressed this week.",
+        ),
+    ]
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        if "issuekey in (EPIC-1)" in str(jql):
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        return issues
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "Epic One (EPIC-1)" in text
+    assert "Research stream item (ABC-89)" in text
+    assert "Research progressed this week." in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_excludes_closed_items_with_non_done_resolution(mock_jira_source_cls, tmp_path: Path):
+    issues = [
+        _make_issue(
+            "ABC-97",
+            summary="Completed valid",
+            issue_type="Task",
+            status="Done",
+            resolution="Done",
+            labels=[],
+            priority="Medium",
+            epic_link="EPIC-1",
+            comment_body="Delivered as planned.",
+        ),
+        _make_issue(
+            "ABC-98",
+            summary="Closed not for report",
+            issue_type="Task",
+            status="Done",
+            resolution="Won't Do",
+            labels=[],
+            priority="Medium",
+            epic_link="EPIC-1",
+            comment_body="Out of scope.",
+        ),
+    ]
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        if "issuekey in (EPIC-1)" in str(jql):
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        return issues
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "Completed valid (ABC-97)" in text
+    assert "Finished" in text
+    assert "Closed not for report" not in text
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")

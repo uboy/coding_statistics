@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 
 _DONE_VALUES = {"done", "resolved", "closed"}
-_TASK_VALUES = {"task", "feature", "improvement", "story", "sub-task", "subtask"}
+_REPORT_CLOSED_RESOLUTION_VALUES = {"done", "resolved"}
+_IN_PROGRESS_VALUES = {"in progress", "in-progress"}
 
 
 @dataclass(frozen=True)
@@ -203,6 +204,10 @@ def _is_finished(status: str, resolution: str) -> bool:
     return _normalize_key(status) in _DONE_VALUES or _normalize_key(resolution) in _DONE_VALUES
 
 
+def _is_in_progress_status(status: Any) -> bool:
+    return _normalize_key(status) in _IN_PROGRESS_VALUES
+
+
 def _safe_project_key(project: str) -> str:
     normalized = _normalize_text(project)
     if not re.fullmatch(r"[A-Za-z0-9_-]+", normalized):
@@ -221,7 +226,10 @@ def _fetch_epic_names(
     issue_details: dict[str, dict[str, str]] = {}
 
     for issue in all_issues:
+        issue_type = _normalize_key(getattr(getattr(issue.fields, "issuetype", None), "name", ""))
         epic_link = getattr(issue.fields, "customfield_10000", "") or ""
+        if not epic_link and issue_type == "epic":
+            epic_link = issue.key
         parent = getattr(issue.fields, "parent", None)
         parent_key = parent.key if parent else ""
         issue_epic_map[issue.key] = epic_link
@@ -235,25 +243,54 @@ def _fetch_epic_names(
             "labels": [str(label) for label in (getattr(issue.fields, "labels", []) or [])],
         }
 
-    missing_parent_keys = [key for key in parent_keys_needed if not issue_epic_map.get(key)]
-    if missing_parent_keys:
-        chunk_size = 50
-        for idx in range(0, len(missing_parent_keys), chunk_size):
-            chunk = missing_parent_keys[idx : idx + chunk_size]
-            parent_issues = jira.search_issues(
-                f"issuekey in ({', '.join(chunk)})",
-                maxResults=1000,
-                fields=["key", "customfield_10000", "summary", "status", "resolution", "labels"],
-            )
-            for parent_issue in parent_issues:
-                parent_epic = getattr(parent_issue.fields, "customfield_10000", "") or ""
-                issue_epic_map[parent_issue.key] = parent_epic
-                issue_details[parent_issue.key] = {
-                    "summary": _normalize_text(getattr(parent_issue.fields, "summary", "")),
-                    "status": _normalize_text(getattr(getattr(parent_issue.fields, "status", None), "name", "")),
-                    "resolution": _normalize_text(getattr(getattr(parent_issue.fields, "resolution", None), "name", "")),
-                    "labels": [str(label) for label in (getattr(parent_issue.fields, "labels", []) or [])],
-                }
+    pending_parent_keys = {key for key in parent_keys_needed if key}
+    fetched_parent_keys: set[str] = set()
+    chunk_size = 50
+    while pending_parent_keys:
+        chunk = [key for key in list(pending_parent_keys)[:chunk_size] if key not in fetched_parent_keys]
+        if not chunk:
+            break
+        fetched_parent_keys.update(chunk)
+        parent_issues = jira.search_issues(
+            f"issuekey in ({', '.join(chunk)})",
+            maxResults=1000,
+            fields=["key", "customfield_10000", "parent", "issuetype", "summary", "status", "resolution", "labels"],
+        )
+        pending_parent_keys.difference_update(chunk)
+        for parent_issue in parent_issues:
+            parent_type = _normalize_key(getattr(getattr(parent_issue.fields, "issuetype", None), "name", ""))
+            parent_parent = getattr(parent_issue.fields, "parent", None)
+            parent_parent_key = parent_parent.key if parent_parent else ""
+            parent_epic = getattr(parent_issue.fields, "customfield_10000", "") or ""
+            if not parent_epic and parent_type == "epic":
+                parent_epic = parent_issue.key
+
+            issue_epic_map[parent_issue.key] = parent_epic
+            issue_parent_map[parent_issue.key] = parent_parent_key
+            issue_details[parent_issue.key] = {
+                "summary": _normalize_text(getattr(parent_issue.fields, "summary", "")),
+                "status": _normalize_text(getattr(getattr(parent_issue.fields, "status", None), "name", "")),
+                "resolution": _normalize_text(getattr(getattr(parent_issue.fields, "resolution", None), "name", "")),
+                "labels": [str(label) for label in (getattr(parent_issue.fields, "labels", []) or [])],
+            }
+            if not parent_epic and parent_parent_key and parent_parent_key not in fetched_parent_keys:
+                pending_parent_keys.add(parent_parent_key)
+
+    def _resolve_epic_for_issue(issue_key: str) -> str:
+        visited: set[str] = set()
+        current_key = issue_key
+        while current_key and current_key not in visited:
+            visited.add(current_key)
+            epic_key = _normalize_text(issue_epic_map.get(current_key, ""))
+            if epic_key:
+                return epic_key
+            current_key = _normalize_text(issue_parent_map.get(current_key, ""))
+        return ""
+
+    for key in list(issue_epic_map.keys()):
+        resolved_epic = _resolve_epic_for_issue(key)
+        if resolved_epic:
+            issue_epic_map[key] = resolved_epic
 
     epic_keys = list({epic for epic in issue_epic_map.values() if epic})
     epic_names = jira_source.fetch_epic_names(epic_keys)
@@ -365,7 +402,9 @@ def collect_weekly_comment_evidence(
         priority = issue.fields.priority.name if issue.fields.priority else ""
         status = issue.fields.status.name if issue.fields.status else ""
         resolution = issue.fields.resolution.name if issue.fields.resolution else ""
-        issue_type = issue.fields.issuetype.name if issue.fields.issuetype else ""
+        issue_type_obj = issue.fields.issuetype if issue.fields.issuetype else None
+        issue_type = issue_type_obj.name if issue_type_obj else ""
+        issue_is_subtask = bool(getattr(issue_type_obj, "subtask", False))
 
         epic_link = issue_epic_map.get(issue_key, "")
         parent_key = issue_parent_map.get(issue_key, "")
@@ -409,7 +448,7 @@ def collect_weekly_comment_evidence(
                 "Comments": comments_in_week,
                 "Finished": _is_finished(status, resolution),
                 "Bug": _normalize_key(issue_type) == "bug",
-                "Subtask": _normalize_key(issue_type) in {"sub-task", "subtask"},
+                "Subtask": issue_is_subtask or _normalize_key(issue_type) in {"sub-task", "subtask"},
                 "Parent_Finished": parent_finished,
                 "Parent_Summary": summary_map.get(parent_key, ""),
                 "Parent_Status": status_map.get(parent_key, ""),
@@ -468,8 +507,7 @@ def _build_item_text(entry: dict[str, Any], *, mode: str) -> str:
         return f"{headline} - No progress this week."
 
     if mode == "completed":
-        headline = summary or comment_hint or "Task"
-        return f"{headline} - Finished"
+        return summary or issue_key or "Task"
 
     if mode == "subtask":
         if summary:
@@ -477,7 +515,10 @@ def _build_item_text(entry: dict[str, Any], *, mode: str) -> str:
         return comment_hint or "Subtask update"
 
     if mode == "plan":
-        return comment_hint or "Work will continue next week."
+        return comment_hint
+
+    if mode == "result_progress":
+        return summary or issue_key or "Task"
 
     if mode == "high":
         return summary or comment_hint or "High priority item"
@@ -514,7 +555,20 @@ def build_report_payload(
     report_all_labels = "@all" in labels_report
 
     for entry in evidence:
+        # FIX: Exclude low-priority bugs entirely from all processing
+        is_bug = bool(entry.get("Bug"))
+        priority_key = _normalize_key(entry.get("Priority"))
+        if is_bug and priority_key not in priority_high_values:
+            continue
+
         issue_key = _normalize_text(entry.get("Issue_Key"))
+        issue_type_key = _normalize_key(entry.get("Type"))
+        is_non_bug_task = (not is_bug) and issue_type_key != "epic"
+        resolution_key = _normalize_key(entry.get("Resolution"))
+        is_in_progress = _is_in_progress_status(entry.get("Status"))
+        # Exclude closed issues that are not explicitly Done/Resolved from report sections.
+        if entry.get("Finished") and resolution_key not in _REPORT_CLOSED_RESOLUTION_VALUES:
+            continue
         labels_norm = {_normalize_key(label) for label in (entry.get("Labels") or [])}
         epic_labels_norm = {_normalize_key(label) for label in (entry.get("Epic_Labels") or [])}
         epic_labels_known = bool(entry.get("Epic_Labels_Known"))
@@ -535,6 +589,7 @@ def build_report_payload(
                 "epic_name": epic_name,
                 "report_items": [],
                 "completed_items": [],
+                "progress_items": [],
                 "parent_subtasks": [],
                 "high_priority_items": [],
                 "bugs": {"closed": 0, "in_progress": 0},
@@ -551,18 +606,15 @@ def build_report_payload(
             )
 
         if entry.get("Bug"):
+            # This logic now only runs for high-priority bugs due to the check at the start
             if entry.get("Finished"):
                 epic_bucket["bugs"]["closed"] += 1
             else:
                 epic_bucket["bugs"]["in_progress"] += 1
-        elif entry.get("Finished") and _normalize_key(entry.get("Type")) in _TASK_VALUES:
+        elif entry.get("Finished") and is_non_bug_task:
             if entry.get("Subtask") and _normalize_text(entry.get("Parent_Key")):
                 parent_issue_key = _normalize_text(entry.get("Parent_Key"))
                 subtask_comment = _comment_hints_joined(entry.get("Comments") or [])
-                summary_key = _normalize_key(_normalize_text(entry.get("Summary")).rstrip(".!?"))
-                comment_key = _normalize_key(subtask_comment.rstrip(".!?"))
-                if summary_key and summary_key == comment_key:
-                    subtask_comment = ""
                 parent_map = epic_bucket["_parent_subtask_map"]
                 parent_group = parent_map.setdefault(
                     parent_issue_key,
@@ -586,6 +638,8 @@ def build_report_payload(
                 completed_item = {
                     "issue_key": issue_key,
                     "text": _build_item_text(entry, mode="completed"),
+                    "status": "Finished",
+                    "comment": _comment_hints_joined(entry.get("Comments") or []),
                 }
                 if issue_in_report_scope:
                     epic_bucket["report_items"].append(completed_item)
@@ -593,34 +647,47 @@ def build_report_payload(
                     epic_bucket["completed_items"].append(completed_item)
         elif (
             not entry.get("Finished")
-            and _normalize_key(entry.get("Type")) in _TASK_VALUES
+            and is_non_bug_task
+            and is_in_progress
         ):
             if entry.get("Subtask"):
                 parent_key = _normalize_text(entry.get("Parent_Key"))
                 parent_labels_norm = {_normalize_key(label) for label in (entry.get("Parent_Labels") or [])}
                 parent_report_scope = report_all_labels or bool(parent_labels_norm & labels_report)
-                parent_is_finished = _is_finished(
-                    _normalize_text(entry.get("Parent_Status")),
-                    _normalize_text(entry.get("Parent_Resolution")),
-                )
-                if parent_key and (parent_report_scope or issue_in_report_scope) and not parent_is_finished:
+                if parent_key and (parent_report_scope or issue_in_report_scope):
                     report_epic_ids.add(epic_identifier)
                     parent_text = _normalize_text(entry.get("Parent_Summary")) or parent_key
+                    subtask_comment = _comment_hints_joined(entry.get("Comments") or [])
+
+                    parent_map = epic_bucket["_parent_subtask_map"]
+                    parent_group = parent_map.setdefault(
+                        parent_key,
+                        {
+                            "parent_issue_key": parent_key,
+                            "parent_text": parent_text or "Task",
+                            "subtasks": [],
+                        },
+                    )
+                    parent_group["subtasks"].append(
+                        {
+                            "issue_key": issue_key,
+                            "text": _normalize_text(entry.get("Summary")) or issue_key,
+                            "status": _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution")),
+                            "comment": subtask_comment,
+                        }
+                    )
+
                     parent_item = plan_index.get((epic_identifier, parent_key))
                     if not parent_item:
                         parent_item = {
                             "issue_key": parent_key,
                             "text": parent_text,
                             "comment": "",
+                            "status": "",
                             "subtasks": [],
                         }
                         plans.setdefault(epic_identifier, []).append(parent_item)
                         plan_index[(epic_identifier, parent_key)] = parent_item
-                    subtask_comment = _comment_hints_joined(entry.get("Comments") or [])
-                    summary_key = _normalize_key(_normalize_text(entry.get("Summary")).rstrip(".!?"))
-                    comment_key = _normalize_key(subtask_comment.rstrip(".!?"))
-                    if summary_key and summary_key == comment_key:
-                        subtask_comment = ""
                     parent_item["subtasks"].append(
                         {
                             "issue_key": issue_key,
@@ -632,15 +699,26 @@ def build_report_payload(
             elif issue_report_scope or issue_in_report_scope:
                 plan_headline = _normalize_text(entry.get("Summary")) or issue_key
                 plan_comment = _build_item_text(entry, mode="plan")
+                progress_status = _normalize_text(entry.get("Status")) or "In Progress"
+                epic_bucket["progress_items"].append(
+                    {
+                        "issue_key": issue_key,
+                        "text": _build_item_text(entry, mode="result_progress"),
+                        "status": progress_status,
+                        "comment": plan_comment,
+                    }
+                )
                 existing_item = plan_index.get((epic_identifier, issue_key))
                 if existing_item:
                     existing_item["text"] = plan_headline
                     existing_item["comment"] = plan_comment
+                    existing_item["status"] = progress_status
                 else:
                     parent_plan_item = {
                         "issue_key": issue_key,
                         "text": plan_headline,
                         "comment": plan_comment,
+                        "status": progress_status,
                         "subtasks": [],
                     }
                     plans.setdefault(epic_identifier, []).append(parent_plan_item)
@@ -814,6 +892,7 @@ def apply_previous_order(payload: dict[str, Any], previous_snapshot: dict[str, A
                 rank = {key: idx for idx, key in enumerate(issue_order)}
                 epic["report_items"] = _apply_order_for_items(list(epic.get("report_items") or []), issue_order)
                 epic["completed_items"] = _apply_order_for_items(list(epic.get("completed_items") or []), issue_order)
+                epic["progress_items"] = _apply_order_for_items(list(epic.get("progress_items") or []), issue_order)
                 epic["high_priority_items"] = _apply_order_for_items(
                     list(epic.get("high_priority_items") or []), issue_order
                 )
@@ -841,51 +920,48 @@ def apply_previous_order(payload: dict[str, Any], previous_snapshot: dict[str, A
 
 def _collect_text_targets(payload: dict[str, Any]) -> list[tuple[str, str]]:
     targets: list[tuple[str, str]] = []
+
+    # SECTION: Highlights (SHOULD be processed)
     for idx, item in enumerate(payload.get("highlights") or []):
-        targets.append((f"highlights.{idx}.headline", _normalize_text(item.get("headline"))))
+        headline = _normalize_text(item.get("headline"))
+        if headline:
+            targets.append((f"highlights.{idx}.headline", headline))
 
+    # SECTION: Key Results (epics) -> comments from all task levels
     for epic_idx, epic in enumerate(payload.get("epics") or []):
-        for section in ("report_items", "completed_items", "high_priority_items"):
+        for section in ("report_items", "completed_items", "progress_items", "high_priority_items"):
             for item_idx, item in enumerate(epic.get(section) or []):
-                targets.append((f"epics.{epic_idx}.{section}.{item_idx}.text", _normalize_text(item.get("text"))))
-        for parent_idx, parent_group in enumerate(epic.get("parent_subtasks") or []):
-            targets.append(
-                (
-                    f"epics.{epic_idx}.parent_subtasks.{parent_idx}.parent_text",
-                    _normalize_text(parent_group.get("parent_text")),
-                )
-            )
-            for subtask_idx, subtask in enumerate(parent_group.get("subtasks") or []):
-                targets.append(
-                    (
-                        f"epics.{epic_idx}.parent_subtasks.{parent_idx}.subtasks.{subtask_idx}.text",
-                        _normalize_text(subtask.get("text")),
-                    )
-                )
-                targets.append(
-                    (
-                        f"epics.{epic_idx}.parent_subtasks.{parent_idx}.subtasks.{subtask_idx}.comment",
-                        _normalize_text(subtask.get("comment")),
-                    )
-                )
+                comment = _normalize_text(item.get("comment"))
+                if comment:
+                    targets.append((f"epics.{epic_idx}.{section}.{item_idx}.comment", comment))
 
+        for parent_idx, parent_group in enumerate(epic.get("parent_subtasks") or []):
+            for subtask_idx, subtask in enumerate(parent_group.get("subtasks") or []):
+                comment = _normalize_text(subtask.get("comment"))
+                if comment:
+                    targets.append(
+                        (
+                            f"epics.{epic_idx}.parent_subtasks.{parent_idx}.subtasks.{subtask_idx}.comment",
+                            comment,
+                        )
+                    )
+
+    # SECTION: Plans (next_week_plans) -> only comments
     for epic_idx, plan_epic in enumerate(payload.get("next_week_plans") or []):
         for item_idx, item in enumerate(plan_epic.get("items") or []):
-            targets.append((f"plans.{epic_idx}.items.{item_idx}.text", _normalize_text(item.get("text"))))
-            targets.append((f"plans.{epic_idx}.items.{item_idx}.comment", _normalize_text(item.get("comment"))))
+            comment = _normalize_text(item.get("comment"))
+            if comment:
+                targets.append((f"next_week_plans.{epic_idx}.items.{item_idx}.comment", comment))
+
             for subtask_idx, subtask in enumerate(item.get("subtasks") or []):
-                targets.append(
-                    (
-                        f"plans.{epic_idx}.items.{item_idx}.subtasks.{subtask_idx}.text",
-                        _normalize_text(subtask.get("text")),
+                subtask_comment = _normalize_text(subtask.get("comment"))
+                if subtask_comment:
+                    targets.append(
+                        (
+                            f"next_week_plans.{epic_idx}.items.{item_idx}.subtasks.{subtask_idx}.comment",
+                            subtask_comment,
+                        )
                     )
-                )
-                targets.append(
-                    (
-                        f"plans.{epic_idx}.items.{item_idx}.subtasks.{subtask_idx}.comment",
-                        _normalize_text(subtask.get("comment")),
-                    )
-                )
     return targets
 
 
@@ -931,24 +1007,107 @@ def _log_ollama_check_commands(ollama_url: str, model: str, has_api_key: bool) -
 def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) -> tuple[dict[str, str], str]:
     if not targets:
         return {}, ""
+
+    def _intent_from_path(path: str) -> str:
+        if path.startswith("next_week_plans."):
+            return "PLAN"
+        if path.startswith("highlights."):
+            return "HIGHLIGHT"
+        return "RESULT"
+
     prompt_lines = [
-        "Rewrite each value to concise business style with at most 1-2 sentences.",
-        "Preserve meaning and keep references intact.",
-        "Return only JSON object: {\"id\":\"rewritten text\", ...}.",
-        "IDs:",
+        "You are an expert technical writer preparing a formal weekly engineering report for management.",
+        "Rewrite each of the following input texts from a developer's raw notes into a polished, professional report entry.",
+        "Your task is to convert raw developer notes into a polished summary for a formal engineering report.",
+        "Follow these strict rules:",
+        "1. Style: Formal, professional, and concise.",
+        "2. Language: English.",
+        "3. Length: ONE concise sentence. Use a second sentence ONLY if absolutely necessary for clarity. Maximum is 2 sentences.",
+        "4. Content and Formatting:",
+        "   - For HIGHLIGHT: The text is 'Activity Name - Progress note'. Rewrite it as 'Activity Name: Key achievement summary.' Focus on the outcome. The activity name before the colon MUST be preserved.",
+        "   - For RESULT: Focus on concrete achievements, outcomes, and impact. (Что было сделано и какой результат).",
+        "   - For PLAN: Clearly state the next actions or planned work. (Что планируется сделать).",
+        "5. Exclusions: REMOVE ALL of the following:",
+        "   - Links and URLs (e.g., http://..., www....).",
+        "   - Code/repository references (PRs, MRs, commit hashes, file paths, 'see commit', '#123').",
+        "   - Jira ticket numbers (e.g., PROJ-123).",
+        "   - Conversational filler and noisy prefixes (e.g., 'results:', 'update:', 'details:', 'just a note').",
+        "6. Output Format: Return ONLY a valid JSON object mapping the original ID to the rewritten text. Example: {\"t1\":\"Rewritten text for t1.\", \"t2\":\"Rewritten text for t2.\"}",
+        "---",
+        "Input texts to rewrite:",
     ]
     target_map: dict[str, str] = {}
     for idx, (path, text_value) in enumerate(targets, start=start_index):
         target_id = f"t{idx}"
         target_map[target_id] = path
-        prompt_lines.append(f"{target_id}: {text_value}")
+        prompt_lines.append(f"ID: {target_id} [Intent: {_intent_from_path(path)}] Original: \"{text_value}\"")
     return target_map, "\n".join(prompt_lines)
+
+
+def _sanitize_ai_text(text: str) -> str:
+    cleaned = _normalize_text(text)
+    if not cleaned:
+        return ""
+
+    # Remove links and repository/file paths regardless of formatting.
+    cleaned = re.sub(r"\[[^\]]+\]\([^)]+\)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<(?:https?://|www\.|file://)[^>]+>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(?:https?://|ftp://|file://|www\.)\S+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b[a-z0-9.-]+\.[a-z]{2,}(?:/[^\s)\],;]+)+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\\\\[A-Za-z0-9._$ -]+\\[^\s,;)\]]+", "", cleaned)
+    cleaned = re.sub(r"\b[A-Za-z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*[^\\/:*?\"<>|\s,;)\]]*", "", cleaned)
+    cleaned = re.sub(r"(?:(?<=\s)|^)(?:\.\.?/|/)[^\s,;)\]]+", " ", cleaned)
+    cleaned = re.sub(r"\b(?:[A-Za-z0-9_.-]+/){1,}[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}\b", "", cleaned)
+    cleaned = re.sub(r"\b(?:[A-Za-z0-9_.-]+\\){1,}[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}\b", "", cleaned)
+    cleaned = re.sub(r"\b[0-9a-f]{7,40}\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"(?i)\b(?:pr|mr|pull request|merge request|commit)\b\s*[:#-]?\s*[A-Za-z0-9/_-]*",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?i)\b(?:results?|status|plan|update|details)\s*:\s*", "", cleaned)
+    cleaned = re.sub(r"(?i)\b(?:see|ref(?:erence)?)\s+(?:commit|pr|mr|pull request|merge request|link|url)\b", "", cleaned)
+    cleaned = re.sub(
+        r"\(\s*(?:https?://|www\.|file://|\\\\|[A-Za-z]:\\|/|\.\./|\./)[^)]*\)",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\[\s*(?:https?://|www\.|file://|\\\\|[A-Za-z]:\\|/|\.\./|\./)[^\]]*\]",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"[ ]{2,}", " ", cleaned)
+    cleaned = _normalize_text(cleaned.strip(" -,:;"))
+    if not cleaned:
+        return ""
+
+    sentences = [
+        part.strip(" -,:;")
+        for part in re.split(r"(?<=[.!?])\s+|\s*;\s*", cleaned)
+        if part.strip(" -,:;")
+    ]
+    if not sentences:
+        return ""
+
+    limited: list[str] = []
+    for sentence in sentences[:2]:
+        words = sentence.split()
+        if len(words) > 24:
+            sentence = " ".join(words[:24]).rstrip(" ,;:-")
+            if sentence and sentence[-1] not in ".!?":
+                sentence += "."
+        limited.append(sentence)
+    return _normalize_text(" ".join(limited))
 
 
 def _apply_rewrite_map(payload: dict[str, Any], target_map: dict[str, str], rewrite_map: dict[str, Any]) -> dict[str, Any]:
     updated = json.loads(json.dumps(payload))
     for target_id, target_path in target_map.items():
-        rewritten = _normalize_text(rewrite_map.get(target_id))
+        rewritten = _sanitize_ai_text(_normalize_text(rewrite_map.get(target_id)))
         if not rewritten:
             continue
         path_tokens = target_path.split(".")
@@ -1206,7 +1365,7 @@ def rewrite_payload_with_webui(payload: dict[str, Any], config: ConfigParser, ex
                 json={
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": "You rewrite report snippets and return strict JSON only."},
+                        {"role": "system", "content": "You are an AI assistant that rewrites raw text snippets into formal report entries, returning only a single, valid JSON object with the results."},
                         {"role": "user", "content": prompt},
                     ],
                     "stream": False,
@@ -1395,7 +1554,7 @@ def _extract_order(payload: dict[str, Any]) -> dict[str, Any]:
         epic_id = epic_key if epic_key else f"name::{epic_name}"
         epic_order.append(epic_id)
         keys: list[str] = []
-        for section in ("report_items", "completed_items", "high_priority_items"):
+        for section in ("report_items", "completed_items", "progress_items", "high_priority_items"):
             for item in epic.get(section) or []:
                 key = _normalize_text(item.get("issue_key"))
                 if key and key not in keys:
@@ -1419,7 +1578,7 @@ def _payload_to_lines(payload: dict[str, Any]) -> list[str]:
 
     for epic in payload.get("epics") or []:
         lines.append(f"EPIC {epic.get('epic_name')} ({epic.get('epic_key')})")
-        for section in ("report_items", "completed_items", "high_priority_items"):
+        for section in ("report_items", "completed_items", "progress_items", "high_priority_items"):
             for item in epic.get(section) or []:
                 lines.append(f"{section}:{item.get('issue_key')} {item.get('text')}")
         for group in epic.get("parent_subtasks") or []:
@@ -1706,9 +1865,9 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     rows.append("ul{margin:6px 0;padding:0;}")
     rows.append(".lvl1 li,.lvl2 li,.lvl3 li,.lvl4 li{list-style:none;margin:3px 0;position:relative;padding-left:18px;}")
     rows.append(".lvl1 li:before{content:'\\25A0';position:absolute;left:0;top:0;font-size:10px;line-height:1.2;color:#ffffff;}")
-    rows.append(".lvl2{margin-left:18px;}.lvl2 li:before{content:'\\25C6';position:absolute;left:0;top:0;font-size:10px;line-height:1.2;color:#ffffff;}")
-    rows.append(".lvl3{margin-left:36px;}.lvl3 li:before{content:'\\2022';position:absolute;left:0;top:0;font-size:12px;line-height:1.15;color:#ffffff;}")
-    rows.append(".lvl4{margin-left:54px;}.lvl4 li:before{content:'\\25E6';position:absolute;left:0;top:0;font-size:11px;line-height:1.2;color:#ffffff;}")
+    rows.append(".lvl2{margin-left:18px;}.lvl2 li:before{content:'\\25C6';position:absolute;left:0;top:0;font-size:12px;line-height:1.2;color:#ffffff;}")
+    rows.append(".lvl3{margin-left:36px;}.lvl3 li:before{content:'\\2022';position:absolute;left:0;top:0;font-size:12px;line-height:1.2;color:#ffffff;}")
+    rows.append(".lvl4{margin-left:20px;}.lvl4 li:before{content:'\\25E6';position:absolute;left:0;top:0;font-size:12px;line-height:1.2;color:#ffffff;}")
     rows.append("@media print{body{background:#ffffff;padding:0;}.sheet{width:100%;box-shadow:none;}}")
     rows.append("</style>")
     rows.append("</head>")
@@ -1758,10 +1917,19 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
         rows.append(f"<li><b>{epic_name} ({epic_key})</b></li>")
         rows.append("</ul>")
         rows.append("<ul class='lvl2'>")
-        for item in (epic.get("report_items") or []) + (epic.get("completed_items") or []):
+        for item in (epic.get("report_items") or []) + (epic.get("completed_items") or []) + (epic.get("progress_items") or []):
             text = html.escape(_normalize_text(item.get("text")))
             issue_key = html.escape(_normalize_text(item.get("issue_key")))
+            status = html.escape(_normalize_text(item.get("status")))
+            comment = html.escape(_normalize_text(item.get("comment")))
             rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
+            if status or comment:
+                rows.append("</ul><ul class='lvl3'>")
+                if status:
+                    rows.append(f"<li>{status}</li>")
+                if comment:
+                    rows.append(f"<li>{comment}</li>")
+                rows.append("</ul><ul class='lvl2'>")
         for group in epic.get("parent_subtasks") or []:
             parent_issue_key = html.escape(_normalize_text(group.get("parent_issue_key")))
             parent_text = html.escape(_normalize_text(group.get("parent_text")))
@@ -1815,10 +1983,14 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
             text = html.escape(_normalize_text(item.get("text")))
             comment = html.escape(_normalize_text(item.get("comment")))
             issue_key = html.escape(_normalize_text(item.get("issue_key")))
+            status = html.escape(_normalize_text(item.get("status")))
             rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
-            if comment:
+            if status or comment:
                 rows.append("</ul><ul class='lvl3'>")
-                rows.append(f"<li>{comment}</li>")
+                if status:
+                    rows.append(f"<li>{status}</li>")
+                if comment:
+                    rows.append(f"<li>{comment}</li>")
                 rows.append("</ul><ul class='lvl2'>")
             for subtask in item.get("subtasks") or []:
                 subtask_key = html.escape(_normalize_text(subtask.get("issue_key")))
@@ -2019,7 +2191,6 @@ class JiraWeeklyEmailReport:
             logger.info("SNAPSHOT NOT FOUND: expected_previous_week=%s", previous_week.key)
         payload = apply_previous_order(payload, previous_snapshot)
         payload = rewrite_payload_with_ai(payload, config, extra_params)
-        payload = apply_previous_order(payload, previous_snapshot)
 
         html_text = render_outlook_html(payload)
         output_name = _normalize_text(extra_params.get("output") or extra_params.get("output_file"))
