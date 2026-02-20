@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from configparser import ConfigParser
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -478,6 +478,36 @@ def test_parse_vacations_excel_real_template_60_days_from_2026_02_18():
         "Sergey Kovalev vacation 17.04.2026 - 19.04.2026",
         "Sergey Samarin vacation 08.04.2026 - 14.04.2026",
     ]
+
+
+def test_parse_vacations_excel_does_not_truncate_range_that_starts_within_horizon(tmp_path: Path):
+    path = tmp_path / "vac_cross_horizon.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Vacations2026"
+    ws.cell(row=3, column=2).value = "Name"
+
+    start_day = date(2026, 4, 17)
+    end_day = date(2026, 4, 30)
+    day = start_day
+    col = 6
+    while day <= end_day:
+        ws.cell(row=3, column=col).value = datetime.combine(day, datetime.min.time())
+        ws.cell(row=5, column=col).value = "p"
+        day += timedelta(days=1)
+        col += 1
+
+    ws.cell(row=5, column=2).value = "Denis Mazur"
+    wb.save(path)
+
+    lines = parse_vacations_excel(
+        path,
+        sheet="Vacations2026",
+        markers={"p"},
+        horizon_start=date(2026, 2, 18),
+        horizon_days=60,
+    )
+    assert lines == ["Denis Mazur vacation 17.04.2026 - 30.04.2026"]
 
 
 def test_render_outlook_html_uses_configurable_meta_header_and_footer_html():

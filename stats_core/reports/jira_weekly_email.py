@@ -1835,7 +1835,7 @@ def parse_vacations_excel(
         if not name:
             continue
 
-        selected_dates: list[date] = []
+        marker_dates: list[date] = []
         for col in range(6, max_col + 1):
             marker_raw = ws.cell(row=row, column=col).value
             marker_text = _normalize_key(marker_raw)
@@ -1850,28 +1850,33 @@ def parse_vacations_excel(
             day = date_by_col.get(col)
             if not day:
                 continue
+            marker_dates.append(day)
             if horizon_start <= day <= horizon_end:
-                selected_dates.append(day)
                 marker_hits_in_horizon += 1
 
-        if not selected_dates:
+        if not marker_dates:
             continue
 
-        selected_dates = sorted(set(selected_dates))
-        range_start = selected_dates[0]
-        range_end = selected_dates[0]
-        for day in selected_dates[1:]:
+        marker_dates = sorted(set(marker_dates))
+        ranges: list[tuple[date, date]] = []
+        range_start = marker_dates[0]
+        range_end = marker_dates[0]
+        for day in marker_dates[1:]:
             if day == range_end + timedelta(days=1):
                 range_end = day
+                continue
+            ranges.append((range_start, range_end))
+            range_start = day
+            range_end = day
+        ranges.append((range_start, range_end))
+
+        for range_start, range_end in ranges:
+            # Include any vacation range intersecting horizon, but keep original full boundaries.
+            if range_end < horizon_start or range_start > horizon_end:
                 continue
             vacation_lines.append(
                 f"{name} vacation {range_start.strftime('%d.%m.%Y')} - {range_end.strftime('%d.%m.%Y')}"
             )
-            range_start = day
-            range_end = day
-        vacation_lines.append(
-            f"{name} vacation {range_start.strftime('%d.%m.%Y')} - {range_end.strftime('%d.%m.%Y')}"
-        )
 
     logger.info(
         "VACATION PARSE RESULT: marker_hits=%s marker_hits_in_horizon=%s entries=%s",
