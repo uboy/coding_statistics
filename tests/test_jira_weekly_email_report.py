@@ -118,7 +118,7 @@ def test_rewrite_payload_with_webui_provider(mock_post):
         "choices": [
             {
                 "message": {
-                    "content": "{\"t1\":\"Updated headline\"}",
+                    "content": "{\"t1\":\"Updated highlight progress\"}",
                 }
             }
         ]
@@ -126,7 +126,7 @@ def test_rewrite_payload_with_webui_provider(mock_post):
     mock_post.return_value = response
 
     payload = {
-        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline"}],
+        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline", "comment": "Old comment"}],
         "epics": [],
         "next_week_plans": [],
     }
@@ -147,7 +147,8 @@ def test_rewrite_payload_with_webui_provider(mock_post):
     )
 
     rewritten = rewrite_payload_with_ai(payload, config, {})
-    assert rewritten["highlights"][0]["headline"] == "Updated headline"
+    assert rewritten["highlights"][0]["headline"] == "Old headline"
+    assert rewritten["highlights"][0]["comment"] == "Updated highlight progress"
     called_url = mock_post.call_args.kwargs["url"] if "url" in mock_post.call_args.kwargs else mock_post.call_args.args[0]
     assert called_url.endswith("/api/chat/completions")
     assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer cfg-key"
@@ -161,7 +162,7 @@ def test_rewrite_payload_with_webui_provider_avoids_duplicate_api_path(mock_post
         "choices": [
             {
                 "message": {
-                    "content": "{\"t1\":\"Updated headline\"}",
+                    "content": "{\"t1\":\"Updated highlight progress\"}",
                 }
             }
         ]
@@ -169,7 +170,7 @@ def test_rewrite_payload_with_webui_provider_avoids_duplicate_api_path(mock_post
     mock_post.return_value = response
 
     payload = {
-        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline"}],
+        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline", "comment": "Old comment"}],
         "epics": [],
         "next_week_plans": [],
     }
@@ -198,7 +199,7 @@ def test_rewrite_payload_with_webui_provider_avoids_duplicate_api_path(mock_post
 def test_rewrite_payload_with_webui_logs_powershell_curl_on_timeout(mock_post, caplog):
     mock_post.side_effect = Exception("read timeout")
     payload = {
-        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline"}],
+        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline", "comment": "Old comment"}],
         "epics": [],
         "next_week_plans": [],
     }
@@ -254,7 +255,7 @@ def test_rewrite_payload_with_webui_sanitizes_links_and_limits_to_two_sentences(
     mock_post.return_value = response
 
     payload = {
-        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline"}],
+        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline", "comment": "Old comment"}],
         "epics": [],
         "next_week_plans": [
             {
@@ -284,10 +285,12 @@ def test_rewrite_payload_with_webui_sanitizes_links_and_limits_to_two_sentences(
     rewritten = rewrite_payload_with_ai(payload, config, {})
     prompt = mock_post.call_args.kwargs["json"]["messages"][1]["content"]
     assert "Maximum is 2 sentences." in prompt
+    assert rewritten["highlights"][0]["headline"] == "Old headline"
+    assert rewritten["highlights"][0]["comment"] != "Old comment"
     assert rewritten["next_week_plans"][0]["items"][0]["text"] == "Old plan"
     assert rewritten["next_week_plans"][0]["items"][0]["comment"] != "Old comment"
     values = [
-        rewritten["highlights"][0]["headline"],
+        rewritten["highlights"][0]["comment"],
         rewritten["next_week_plans"][0]["items"][0]["comment"],
     ]
     for value in values:
@@ -328,7 +331,7 @@ def test_rewrite_payload_with_ollama_sanitizes_links_and_limits_to_two_sentences
     mock_post.return_value = response
 
     payload = {
-        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline"}],
+        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline", "comment": "Old comment"}],
         "epics": [],
         "next_week_plans": [
             {
@@ -357,10 +360,12 @@ def test_rewrite_payload_with_ollama_sanitizes_links_and_limits_to_two_sentences
     rewritten = rewrite_payload_with_ai(payload, config, {})
     prompt = mock_post.call_args.kwargs["json"]["prompt"]
     assert "Maximum is 2 sentences." in prompt
+    assert rewritten["highlights"][0]["headline"] == "Old headline"
+    assert rewritten["highlights"][0]["comment"] != "Old comment"
     assert rewritten["next_week_plans"][0]["items"][0]["text"] == "Old plan"
     assert rewritten["next_week_plans"][0]["items"][0]["comment"] != "Old comment"
     values = [
-        rewritten["highlights"][0]["headline"],
+        rewritten["highlights"][0]["comment"],
         rewritten["next_week_plans"][0]["items"][0]["comment"],
     ]
     for value in values:
@@ -736,6 +741,28 @@ def test_jira_weekly_email_highlights_include_finished_progress_and_no_progress(
             comment_body="Implemented API endpoint.",
         ),
         _make_issue(
+            "ABC-911",
+            summary="Active subtask in progress",
+            issue_type="Sub-task",
+            status="In Progress",
+            resolution="",
+            labels=[],
+            priority="Medium",
+            parent_key="ABC-91",
+            comment_body="Backend integration in progress.",
+        ),
+        _make_issue(
+            "ABC-912",
+            summary="Active subtask done",
+            issue_type="Sub-task",
+            status="Done",
+            resolution="Done",
+            labels=[],
+            priority="Medium",
+            parent_key="ABC-91",
+            comment_body="Closed.",
+        ),
+        _make_issue(
             "ABC-92",
             summary="Stalled highlight",
             issue_type="Task",
@@ -787,7 +814,10 @@ def test_jira_weekly_email_highlights_include_finished_progress_and_no_progress(
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
     assert "Finished highlight - Finished this week. (ABC-90)" in text
-    assert "Active highlight - Progress: Implemented API endpoint. (ABC-91)" in text
+    assert (
+        "Active highlight - Progress: Implemented API endpoint.; Active subtask in progress: "
+        "Backend integration in progress.; Active subtask done (ABC-91)"
+    ) in text
     assert "Stalled highlight - No progress this week. (ABC-92)" in text
 
 

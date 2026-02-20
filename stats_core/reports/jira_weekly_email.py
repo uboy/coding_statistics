@@ -493,6 +493,37 @@ def _comment_hints_joined(comments: Any) -> str:
     return latest_hint
 
 
+def _build_highlight_progress(entry: dict[str, Any], subtasks: list[dict[str, Any]]) -> str:
+    if entry.get("Finished"):
+        return "Finished this week."
+
+    progress_parts: list[str] = []
+    issue_comment = _comment_hints_joined(entry.get("Comments") or [])
+    if issue_comment:
+        progress_parts.append(issue_comment)
+
+    if not entry.get("Subtask"):
+        ordered_subtasks = sorted(
+            list(subtasks or []),
+            key=lambda item: _normalize_key(item.get("Issue_Key")),
+        )
+        for subtask in ordered_subtasks:
+            subtask_title = _normalize_text(subtask.get("Summary")) or _normalize_text(subtask.get("Issue_Key")) or "Subtask"
+            if subtask.get("Finished"):
+                progress_parts.append(subtask_title)
+                continue
+
+            subtask_comment = _comment_hints_joined(subtask.get("Comments") or [])
+            if subtask_comment:
+                progress_parts.append(f"{subtask_title}: {subtask_comment}")
+            else:
+                progress_parts.append(subtask_title)
+
+    if progress_parts:
+        return f"Progress: {'; '.join(progress_parts)}"
+    return "No progress this week."
+
+
 def _build_item_text(entry: dict[str, Any], *, mode: str) -> str:
     summary = _normalize_text(entry.get("Summary"))
     issue_key = _normalize_text(entry.get("Issue_Key"))
@@ -551,8 +582,17 @@ def build_report_payload(
     epics: dict[str, dict[str, Any]] = {}
     plans: dict[str, list[dict[str, Any]]] = {}
     plan_index: dict[tuple[str, str], dict[str, Any]] = {}
+    subtasks_by_parent: dict[str, list[dict[str, Any]]] = {}
     report_epic_ids: set[str] = set()
     report_all_labels = "@all" in labels_report
+
+    for item in evidence:
+        if not item.get("Subtask"):
+            continue
+        parent_key = _normalize_text(item.get("Parent_Key"))
+        if not parent_key:
+            continue
+        subtasks_by_parent.setdefault(parent_key, []).append(item)
 
     for entry in evidence:
         # FIX: Exclude low-priority bugs entirely from all processing
@@ -598,10 +638,12 @@ def build_report_payload(
         )
 
         if labels_norm & labels_highlights:
+            issue_summary = _normalize_text(entry.get("Summary"))
             highlights.append(
                 {
                     "issue_key": issue_key,
-                    "headline": _build_item_text(entry, mode="highlight"),
+                    "headline": issue_summary or issue_key or "Task",
+                    "comment": _build_highlight_progress(entry, subtasks_by_parent.get(issue_key, [])),
                 }
             )
 
@@ -921,11 +963,11 @@ def apply_previous_order(payload: dict[str, Any], previous_snapshot: dict[str, A
 def _collect_text_targets(payload: dict[str, Any]) -> list[tuple[str, str]]:
     targets: list[tuple[str, str]] = []
 
-    # SECTION: Highlights (SHOULD be processed)
+    # SECTION: Highlights -> only progress/comment (headline/title is never AI-processed)
     for idx, item in enumerate(payload.get("highlights") or []):
-        headline = _normalize_text(item.get("headline"))
-        if headline:
-            targets.append((f"highlights.{idx}.headline", headline))
+        comment = _normalize_text(item.get("comment"))
+        if comment:
+            targets.append((f"highlights.{idx}.comment", comment))
 
     # SECTION: Key Results (epics) -> comments from all task levels
     for epic_idx, epic in enumerate(payload.get("epics") or []):
@@ -1024,7 +1066,7 @@ def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) 
         "2. Language: English.",
         "3. Length: ONE concise sentence. Use a second sentence ONLY if absolutely necessary for clarity. Maximum is 2 sentences.",
         "4. Content and Formatting:",
-        "   - For HIGHLIGHT: The text is 'Activity Name - Progress note'. Rewrite it as 'Activity Name: Key achievement summary.' Focus on the outcome. The activity name before the colon MUST be preserved.",
+        "   - For HIGHLIGHT: Rewrite only the progress note for a highlighted task. Task title is handled separately and MUST NOT be repeated in output.",
         "   - For RESULT: Focus on concrete achievements, outcomes, and impact. (Что было сделано и какой результат).",
         "   - For PLAN: Clearly state the next actions or planned work. (Что планируется сделать).",
         "5. Exclusions: REMOVE ALL of the following:",
@@ -1574,7 +1616,12 @@ def _extract_order(payload: dict[str, Any]) -> dict[str, Any]:
 def _payload_to_lines(payload: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     for item in payload.get("highlights") or []:
-        lines.append(f"HIGHLIGHT {item.get('headline')} ({item.get('issue_key')})")
+        headline = _normalize_text(item.get("headline"))
+        comment = _normalize_text(item.get("comment"))
+        highlight_line = headline
+        if comment:
+            highlight_line = f"{headline} - {comment}" if headline else comment
+        lines.append(f"HIGHLIGHT {highlight_line} ({item.get('issue_key')})")
 
     for epic in payload.get("epics") or []:
         lines.append(f"EPIC {epic.get('epic_name')} ({epic.get('epic_key')})")
@@ -1901,9 +1948,14 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     rows.append("<tr>")
     rows.append(f"<td class='sec-label'>{highlights_title}</td><td class='sec-body'><ul class='lvl1'>")
     for item in payload.get("highlights") or []:
-        headline = html.escape(_normalize_text(item.get("headline")))
+        headline = _normalize_text(item.get("headline"))
+        comment = _normalize_text(item.get("comment"))
+        highlight_text = headline
+        if comment:
+            highlight_text = f"{headline} - {comment}" if headline else comment
+        headline_html = html.escape(highlight_text)
         issue_key = html.escape(_normalize_text(item.get("issue_key")))
-        rows.append(f"<li>{headline}{f' ({issue_key})' if issue_key else ''}</li>")
+        rows.append(f"<li>{headline_html}{f' ({issue_key})' if issue_key else ''}</li>")
     if not (payload.get("highlights") or []):
         rows.append("<li>No highlight updates in this week.</li>")
     rows.append("</ul></td></tr>")
