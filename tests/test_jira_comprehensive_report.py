@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from configparser import ConfigParser
 from pathlib import Path
+import re
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -515,11 +516,95 @@ def test_calculate_engineer_metrics_uses_members_jira_column():
     )
     code_volume_df = pd.DataFrame(columns=["username", "code_volume"])
 
-    engineer_metrics = calculate_engineer_metrics(issues_df, members_df, code_volume_df)
+    engineer_metrics = calculate_engineer_metrics(
+        issues_df,
+        members_df,
+        code_volume_df,
+        pd.DataFrame(columns=["Issue_Key", "Assignee", "Worklog_Author"]),
+    )
     assert engineer_metrics.shape[0] == 1
     row = engineer_metrics.iloc[0].to_dict()
     assert row["Bugs"] == 1
     assert row["Total_Resolved_Issues"] == 1
+
+
+def test_calculate_engineer_metrics_counts_assistance_from_unique_foreign_worklogs():
+    issues_df = pd.DataFrame(
+        [
+            {
+                "Issue_Key": "ABC-1",
+                "Summary": "Own task",
+                "Type": "Task",
+                "Status": "In Progress",
+                "Resolution": "",
+                "Assignee": "Alice Dev",
+                "Assignee_Username": "alice",
+                "Reporter": "Someone",
+                "Reporter_Username": "someone",
+                "Created": "2025-01-01",
+                "Resolved": "",
+                "Labels": "",
+            },
+            {
+                "Issue_Key": "ABC-2",
+                "Summary": "Foreign task one",
+                "Type": "Task",
+                "Status": "In Progress",
+                "Resolution": "",
+                "Assignee": "Bob Dev",
+                "Assignee_Username": "bob",
+                "Reporter": "Someone",
+                "Reporter_Username": "someone",
+                "Created": "2025-01-01",
+                "Resolved": "",
+                "Labels": "",
+            },
+            {
+                "Issue_Key": "ABC-3",
+                "Summary": "Foreign task two",
+                "Type": "Task",
+                "Status": "In Progress",
+                "Resolution": "",
+                "Assignee": "Charlie Dev",
+                "Assignee_Username": "charlie",
+                "Reporter": "Someone",
+                "Reporter_Username": "someone",
+                "Created": "2025-01-01",
+                "Resolved": "",
+                "Labels": "",
+            },
+        ]
+    )
+    members_df = pd.DataFrame(
+        [
+            {
+                "name": "Alice Dev",
+                "username": "alice",
+                "Jira": "alice",
+                "role": "engineer",
+            }
+        ]
+    )
+    code_volume_df = pd.DataFrame(columns=["username", "code_volume"])
+    worklog_entries_df = pd.DataFrame(
+        [
+            {"Issue_Key": "ABC-1", "Assignee": "Alice Dev", "Worklog_Author": "alice"},
+            {"Issue_Key": "ABC-2", "Assignee": "Bob Dev", "Worklog_Author": "alice"},
+            {"Issue_Key": "ABC-2", "Assignee": "Bob Dev", "Worklog_Author": "alice"},
+            {"Issue_Key": "ABC-3", "Assignee": "Charlie Dev", "Worklog_Author": "alice"},
+        ]
+    )
+
+    engineer_metrics = calculate_engineer_metrics(
+        issues_df,
+        members_df,
+        code_volume_df,
+        worklog_entries_df,
+    )
+
+    assert engineer_metrics.shape[0] == 1
+    row = engineer_metrics.iloc[0].to_dict()
+    assert row["Assistance_Provided"] == 2
 
 
 def test_build_monthly_summary_df_uses_ai_rewrite_map_when_available():
@@ -566,3 +651,5 @@ def test_build_monthly_summary_df_uses_ai_rewrite_map_when_available():
     assert "Delivered ArkUI workflow and stabilized behavior." in summary_text
     assert "Resolved 1 planned tasks on time." in summary_text
     assert "Resolved 1 reported issues." in summary_text
+    assert "- ABC-1:" not in summary_text
+    assert re.search(r"\b[A-Z]+-\d+\b", summary_text) is None

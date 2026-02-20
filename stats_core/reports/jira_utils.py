@@ -20,6 +20,64 @@ def norm_name(name: str) -> str:
     return re.sub(r"\s+", " ", name).strip().casefold()
 
 
+def _comment_body_to_text(body: Any) -> str:
+    if body is None:
+        return ""
+    if isinstance(body, str):
+        return body
+    if isinstance(body, list):
+        return " ".join(_comment_body_to_text(item) for item in body).strip()
+    if isinstance(body, dict):
+        parts: list[str] = []
+        stack = [body]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                text_value = node.get("text")
+                if isinstance(text_value, str) and text_value:
+                    parts.append(text_value)
+                content = node.get("content")
+                if isinstance(content, list):
+                    stack.extend(reversed(content))
+            elif isinstance(node, list):
+                stack.extend(reversed(node))
+        return " ".join(parts).strip()
+    return str(body)
+
+
+def _extract_last_comment_in_period(
+    jira_source: JiraSource,
+    issue_key: str,
+    start_dt: datetime.date,
+    end_dt: datetime.date,
+) -> str:
+    try:
+        comments = jira_source.get_all_comments(issue_key)
+    except Exception:
+        return ""
+    if not isinstance(comments, list):
+        return ""
+
+    latest_text = ""
+    latest_marker: tuple[datetime.date, int] | None = None
+    for idx, comment in enumerate(comments):
+        if not isinstance(comment, dict):
+            continue
+        updated_dt = _parse_jira_date(comment.get("updated"))
+        created_dt = _parse_jira_date(comment.get("created"))
+        comment_dt = updated_dt or created_dt
+        if not comment_dt or not (start_dt <= comment_dt <= end_dt):
+            continue
+        text = " ".join(_comment_body_to_text(comment.get("body")).split())
+        if not text:
+            continue
+        marker = (comment_dt, idx)
+        if latest_marker is None or marker >= latest_marker:
+            latest_marker = marker
+            latest_text = text
+    return latest_text
+
+
 def fetch_jira_data(
     jira_source: JiraSource,
     project: str,
@@ -216,6 +274,8 @@ def build_resolved_issues_snapshot(
 
         issue_type = getattr(issue.fields, "issuetype", None)
         issue_type_name = issue_type.name if issue_type else "Unknown"
+        description = getattr(issue.fields, "description", "") or ""
+        last_comment = _extract_last_comment_in_period(jira_source, issue.key, start_dt, end_dt)
 
         rows.append({
             "Issue_key": issue.key,
@@ -227,6 +287,8 @@ def build_resolved_issues_snapshot(
             "Parent_Key": parent_key or "",
             "Parent_Summary": parent_summary or "",
             "Type": issue_type_name,
+            "Description": description,
+            "Last_Comment": last_comment,
         })
 
     return pd.DataFrame(rows)

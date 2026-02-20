@@ -10,8 +10,10 @@ from configparser import ConfigParser
 from typing import Any
 
 import pandas as pd
+from docx import Document
 
 from . import registry
+from .jira_comprehensive import build_monthly_summary_df
 from .jira_utils import (
     fetch_jira_data,
     fetch_jira_activity_data,
@@ -84,6 +86,69 @@ def generate_excel_report(
     excel_path = Path(f"{output_file}.xlsx")
     grouped_data.to_excel(excel_path)
     print(f"Excel report successfully created: {excel_path}")
+
+
+def _to_weekly_summary_source_df(resolved_issues_df: pd.DataFrame) -> pd.DataFrame:
+    if resolved_issues_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "Issue_Key",
+                "Summary",
+                "Type",
+                "Epic_Link",
+                "Epic_Name",
+                "Resolved",
+                "Description",
+                "Last_Comment",
+                "Resolution",
+            ]
+        )
+    summary_df = resolved_issues_df.rename(
+        columns={
+            "Issue_key": "Issue_Key",
+            "Resolution_Date": "Resolved",
+        }
+    ).copy()
+    for column in ("Issue_Key", "Summary", "Type", "Epic_Link", "Epic_Name", "Resolved"):
+        if column not in summary_df.columns:
+            summary_df[column] = ""
+    if "Description" not in summary_df.columns:
+        summary_df["Description"] = ""
+    if "Last_Comment" not in summary_df.columns:
+        summary_df["Last_Comment"] = ""
+    if "Resolution" not in summary_df.columns:
+        summary_df["Resolution"] = "Done"
+    return summary_df
+
+
+def add_summary_section_to_document(document: Document, summary_df: pd.DataFrame) -> None:
+    document.add_heading("Summary", level=1)
+    if summary_df.empty:
+        document.add_paragraph("No summary items for the specified period.")
+        return
+
+    sorted_summary = summary_df.copy()
+    sorted_summary["_epic_sort"] = sorted_summary["Epic_Name"].fillna("").astype(str).str.casefold()
+    sorted_summary = sorted_summary.sort_values(by=["_epic_sort", "Epic_Link"], kind="mergesort")
+
+    for _, row in sorted_summary.iterrows():
+        epic_name = str(row.get("Epic_Name") or "Unknown Epic")
+        epic_link = str(row.get("Epic_Link") or "").strip()
+        heading = f"{epic_name} ({epic_link})" if epic_link else epic_name
+        document.add_heading(heading, level=2)
+
+        summary_text = str(row.get("Summary") or "").strip()
+        if not summary_text:
+            document.add_paragraph("No summary details.")
+            continue
+        for line in summary_text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("- "):
+                document.add_paragraph(line[2:], style="List Bullet 2")
+            else:
+                document.add_paragraph(line)
 
 
 @registry.register
@@ -162,6 +227,8 @@ class JiraWeeklyReport:
         headers = generate_week_headers(valid_weeks, data)
         epic_summary = generate_epic_resolved_hierarchy(resolved_issues_df)
         epic_progress_summary = generate_epic_progress_from_worklogs(worklogs_df)
+        weekly_summary_source_df = _to_weekly_summary_source_df(resolved_issues_df)
+        weekly_summary_df = build_monthly_summary_df(weekly_summary_source_df, config, extra_params)
 
         # Generate file suffix
         file_suffix = generate_file_suffix()
@@ -179,8 +246,6 @@ class JiraWeeklyReport:
 
         # Generate Word report if requested
         if "word" in output_formats:
-            from docx import Document
-
             document = Document()
             document.add_heading(f"JIRA Report: {project} - {start_date}-{end_date}", level=1)
 
@@ -204,6 +269,9 @@ class JiraWeeklyReport:
 
             # Add Epic Progress
             add_epic_progress_to_document(document, epic_summary, jira_url, epic_progress_summary)
+
+            # Add Summary section
+            add_summary_section_to_document(document, weekly_summary_df)
 
             # Add Resolved Tasks section
             add_resolved_tasks_section(document, resolved_issues_df)

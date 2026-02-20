@@ -1068,12 +1068,10 @@ def build_monthly_summary_df(
 
         summary_lines: list[str] = []
         for item in planned_items:
-            rewritten = _sanitize_summary_ai_text(rewrite_map.get(item["id"])) or item["fallback"]
-            issue_key = _compact_text(item.get("issue_key"))
-            if issue_key:
-                summary_lines.append(f"- {issue_key}: {rewritten}")
-            else:
-                summary_lines.append(f"- {rewritten}")
+            rewritten = _sanitize_summary_ai_text(rewrite_map.get(item["id"]))
+            if not rewritten:
+                rewritten = _sanitize_summary_ai_text(item["fallback"]) or item["fallback"]
+            summary_lines.append(f"- {rewritten}")
 
         summary_lines.append(f"Resolved {planned_count} planned tasks on time.")
         if bug_count > 0:
@@ -1261,7 +1259,10 @@ def read_code_volume(code_volume_file: str | None) -> pd.DataFrame:
 
 
 def calculate_engineer_metrics(
-    issues_df: pd.DataFrame, members_df: pd.DataFrame, code_volume_df: pd.DataFrame
+    issues_df: pd.DataFrame,
+    members_df: pd.DataFrame,
+    code_volume_df: pd.DataFrame,
+    worklog_entries_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Calculate metrics for Engineers."""
     metrics: list[dict[str, Any]] = []
@@ -1294,6 +1295,18 @@ def calculate_engineer_metrics(
         if labels_value is not None
         else pd.Series([""] * len(issues_df), index=issues_df.index)
     )
+    issue_assignee_username_by_key: dict[str, str] = {}
+    issue_assignee_name_by_key: dict[str, str] = {}
+    if "Issue_Key" in issues_df.columns:
+        issue_keys_value = issues_df.get("Issue_Key", pd.Series([""] * len(issues_df), index=issues_df.index))
+        for idx in issues_df.index:
+            issue_key_norm = _normalize_text(issue_keys_value.loc[idx])
+            if not issue_key_norm:
+                continue
+            if issue_key_norm in issue_assignee_username_by_key:
+                continue
+            issue_assignee_username_by_key[issue_key_norm] = _normalize_text(assignee_username_value.loc[idx])
+            issue_assignee_name_by_key[issue_key_norm] = _normalize_text(assignee_value.loc[idx])
 
     for _, engineer in engineers.iterrows():
         username = str(engineer.get("username", "")).strip()
@@ -1306,6 +1319,9 @@ def calculate_engineer_metrics(
         jira_username_norm = _normalize_text(jira_username)
 
         identifier_candidates = {jira_username_norm, username_norm} - {""}
+        assistance_identity = set(identifier_candidates)
+        if name_norm:
+            assistance_identity.add(name_norm)
 
         user_mask = assignee_username_norm.isin(identifier_candidates)
         if name_norm:
@@ -1327,7 +1343,38 @@ def calculate_engineer_metrics(
         code_quality = bugs / features if features > 0 else 0
 
         doc_tasks = labels_norm.loc[resolved_issues.index].str.contains("documentation", case=False, na=False).sum()
-        assistance_provided = labels_norm.loc[user_issues.index].str.contains("dev_assistance", case=False, na=False).sum()
+        assistance_issue_keys: set[str] = set()
+        if (
+            not worklog_entries_df.empty
+            and "Issue_Key" in worklog_entries_df.columns
+            and "Worklog_Author" in worklog_entries_df.columns
+            and assistance_identity
+        ):
+            worklog_issue_keys = worklog_entries_df["Issue_Key"].fillna("").astype(str).map(_normalize_text)
+            worklog_authors = worklog_entries_df["Worklog_Author"].fillna("").astype(str).map(_normalize_text)
+            worklog_assignees = (
+                worklog_entries_df.get(
+                    "Assignee",
+                    pd.Series([""] * len(worklog_entries_df), index=worklog_entries_df.index),
+                )
+                .fillna("")
+                .astype(str)
+                .map(_normalize_text)
+            )
+            author_mask = worklog_authors.isin(assistance_identity)
+            for idx in worklog_entries_df[author_mask].index:
+                issue_key_norm = worklog_issue_keys.loc[idx]
+                if not issue_key_norm:
+                    continue
+                issue_assignee_candidates = {
+                    issue_assignee_username_by_key.get(issue_key_norm, ""),
+                    issue_assignee_name_by_key.get(issue_key_norm, ""),
+                    worklog_assignees.loc[idx],
+                } - {""}
+                if issue_assignee_candidates & assistance_identity:
+                    continue
+                assistance_issue_keys.add(issue_key_norm)
+        assistance_provided = len(assistance_issue_keys)
 
         metrics.append(
             {
@@ -1669,7 +1716,12 @@ class JiraComprehensiveReport:
         pm_metrics = pd.DataFrame()
 
         if not members_df.empty:
-            engineer_metrics = calculate_engineer_metrics(issues_df, members_df, code_volume_df)
+            engineer_metrics = calculate_engineer_metrics(
+                issues_df,
+                members_df,
+                code_volume_df,
+                worklog_entries_df,
+            )
             qa_metrics = calculate_qa_metrics(issues_df, members_df)
             pm_metrics = calculate_pm_metrics(issues_df, members_df, jira, jql_query)
         else:

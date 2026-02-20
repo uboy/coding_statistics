@@ -16,7 +16,8 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
 ### Reports
 - **jira_weekly** (`stats_core/reports/jira_weekly.py`):
   - Builds weekly Jira views based on worklogs + resolutions.
-  - Produces Word sections (table view, list view, engineer activity, epic progress, resolved tasks).
+  - Produces Word sections (table view, list view, engineer activity, epic progress, summary, resolved tasks).
+  - `Summary` section is epic-grouped and supports AI rewriting through Ollama/Open WebUI (`ai_provider` + provider settings).
   - Produces Excel grouped by assignee/week.
 - **jira_comprehensive** (`stats_core/reports/jira_comprehensive.py`):
   - Generates multi-sheet Excel: Issues, Links, Engineer/QA/PM metrics, Worklog activity, Worklog entries.

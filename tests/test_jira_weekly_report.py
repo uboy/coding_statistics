@@ -4,6 +4,7 @@ Tests for Jira weekly report covering various scenarios.
 
 import pytest
 from datetime import datetime, timedelta
+from configparser import ConfigParser
 from unittest.mock import Mock, MagicMock, patch
 import pandas as pd
 from docx import Document
@@ -448,3 +449,103 @@ def test_add_resolved_tasks_section_lists_subtask_under_parent():
     texts = [p.text for p in document.paragraphs]
     assert any("PARENT-1: Parent" in text for text in texts)
     assert any("SUB-1: Subtask" in text for text in texts)
+
+
+@patch("stats_core.reports.jira_weekly.generate_file_suffix", return_value="")
+@patch("stats_core.reports.jira_weekly.build_monthly_summary_df")
+@patch("stats_core.reports.jira_weekly.build_resolved_issues_snapshot")
+@patch("stats_core.reports.jira_weekly.fetch_jira_activity_data")
+@patch("stats_core.reports.jira_weekly.fetch_jira_data")
+@patch("stats_core.reports.jira_weekly.JiraSource")
+def test_jira_weekly_report_word_contains_summary_section(
+    mock_jira_source_cls,
+    mock_fetch_jira_data,
+    mock_fetch_jira_activity_data,
+    mock_build_resolved,
+    mock_build_summary,
+    mock_suffix,
+    tmp_path,
+):
+    config = ConfigParser()
+    config.add_section("jira")
+    config.set("jira", "jira-url", "https://test-jira.com")
+    config.set("jira", "username", "testuser")
+    config.set("jira", "password", "testpass")
+    config.add_section("reporting")
+    config.set("reporting", "output_dir", str(tmp_path))
+
+    mock_jira_source = Mock(spec=JiraSource)
+    mock_jira_source.jira_url = "https://test-jira.com"
+    mock_jira_source_cls.return_value = mock_jira_source
+
+    mock_fetch_jira_data.return_value = pd.DataFrame(
+        [
+            {
+                "Issue_key": "TEST-1",
+                "Summary": "Task closed",
+                "Assignee": "John Doe",
+                "Final_Assignee": "John Doe",
+                "Status": "Resolved",
+                "Resolution_Date": "2025-01-15",
+                "Created_Date": "2025-01-13",
+                "Week": "2025-W03",
+                "Epic_Link": "EPIC-1",
+                "Epic_Name": "Epic One",
+                "Parent_Key": "",
+                "Parent_Summary": "",
+                "Type": "Task",
+            }
+        ]
+    )
+    mock_fetch_jira_activity_data.return_value = (pd.DataFrame(), pd.DataFrame())
+    mock_build_resolved.return_value = pd.DataFrame(
+        [
+            {
+                "Issue_key": "TEST-1",
+                "Summary": "Task closed",
+                "Resolution_Date": "2025-01-15",
+                "Resolution_Week": "2025-W03",
+                "Epic_Link": "EPIC-1",
+                "Epic_Name": "Epic One",
+                "Parent_Key": "",
+                "Parent_Summary": "",
+                "Type": "Task",
+                "Description": "Implemented weekly summary section.",
+                "Last_Comment": "Delivered finalized implementation.",
+            }
+        ]
+    )
+    mock_build_summary.return_value = pd.DataFrame(
+        [
+            {
+                "Epic_Link": "EPIC-1",
+                "Epic_Name": "Epic One",
+                "Summary": "- TEST-1: Implemented weekly summary section and finalized delivery.\nResolved 1 planned tasks on time.\nResolved 1 reported issues.",
+                "Planned_Tasks_Resolved": 1,
+                "Reported_Issues_Resolved": 1,
+            }
+        ]
+    )
+
+    report = JiraWeeklyReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["word"],
+        extra_params={
+            "project": "TEST",
+            "start": "2025-01-13",
+            "end": "2025-01-19",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    word_path = tmp_path / "jira_report_TEST_2025-01-13-2025-01-19.docx"
+    assert word_path.exists()
+    document = Document(word_path)
+    texts = [paragraph.text for paragraph in document.paragraphs]
+    assert any(text == "Summary" for text in texts)
+    assert any("Epic One (EPIC-1)" == text for text in texts)
+    assert any("Implemented weekly summary section and finalized delivery." in text for text in texts)
+    assert any("Resolved 1 planned tasks on time." in text for text in texts)
+    assert any("Resolved 1 reported issues." in text for text in texts)

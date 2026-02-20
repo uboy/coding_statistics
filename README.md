@@ -105,7 +105,12 @@ Worklog-driven attribution: if time is logged on an issue within the selected pe
 2. **List View** - Tasks grouped by assignee and week, showing weekly progress
 3. **Engineer Weekly Activity** - Per engineer weekly breakdown with time logged by that engineer, status/resolution, and comments (including worklog comments) added/updated in the week
 4. **Epic Progress** - Resolved tasks grouped by epics, plus Progressed Tasks (issues with worklogs but no resolution during the period) with parent/sub-task hierarchy
-5. **Resolved Tasks** - Chronological list of resolved tasks by week
+5. **Summary** - Epic-level weekly achievements (AI-assisted, 1-2 sentences per resolved planned task/sub-task) with mandatory counters:
+   - `Resolved xx planned tasks on time.`
+   - `Resolved xx reported issues.` (if bugs were resolved in epic)
+6. **Resolved Tasks** - Chronological list of resolved tasks by week
+
+`Summary` AI processing in `jira_weekly` supports the same providers/options as `jira_weekly_email` (`ai_provider=ollama|webui`, plus `[ollama]` / `[webui]` settings).
 
 Each view is generated as a separate section in the Word document. Excel export contains a pivot table grouped by assignee and week.
 
