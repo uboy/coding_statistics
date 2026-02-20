@@ -37,3 +37,4 @@ OUTPUT FORMAT
 - Files changed (with brief rationale)
 - Commands run + results
 - Acceptance criteria checklist (PASS/FAIL with evidence)
+- Commit message text (mandatory, ready to copy/paste; concise and reflects implemented changes)

@@ -9,6 +9,7 @@ Generates a multi-sheet Excel workbook:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -16,9 +17,10 @@ from configparser import ConfigParser
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import pandas as pd
+import requests
 from pandas.api.types import is_object_dtype, is_string_dtype
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -31,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 _DONE_STATUSES = {"done", "resolved", "closed"}
+_SUMMARY_MAX_SENTENCES = 2
 
 _TT_COUNTER_PATTERNS: dict[str, re.Pattern[str]] = {
     # Accept counters written as:
@@ -62,6 +65,153 @@ def _normalize_text(value: Any) -> str:
     except Exception:
         pass
     return " ".join(str(value).strip().split()).casefold()
+
+
+def _compact_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return " ".join(str(value).strip().split())
+
+
+def _bool_value(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _strip_wrapping_quotes(value: str) -> str:
+    cleaned = _compact_text(value)
+    if len(cleaned) >= 2 and ((cleaned[0] == '"' and cleaned[-1] == '"') or (cleaned[0] == "'" and cleaned[-1] == "'")):
+        return cleaned[1:-1].strip()
+    return cleaned
+
+
+def _to_plain_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return _compact_text(_comment_body_to_text(value))
+    return _compact_text(value)
+
+
+def _summarize_detail(detail: str) -> str:
+    text = _compact_text(detail)
+    if not text:
+        return ""
+    sentences = [
+        token.strip(" -,:;")
+        for token in re.split(r"(?<=[.!?])\s+", text)
+        if token.strip(" -,:;")
+    ]
+    if not sentences:
+        return ""
+    limited = " ".join(sentences[:_SUMMARY_MAX_SENTENCES]).strip()
+    if limited and limited[-1] not in ".!?":
+        limited += "."
+    words = limited.split()
+    if len(words) > 45:
+        limited = " ".join(words[:45]).rstrip(" ,;:-")
+        if limited and limited[-1] not in ".!?":
+            limited += "..."
+    return limited
+
+
+def _fallback_issue_achievement(summary: str, description: str, last_comment: str) -> str:
+    base = _compact_text(summary) or "Task completed"
+    detail = _summarize_detail(last_comment) or _summarize_detail(description)
+    if detail:
+        if detail.casefold().startswith(base.casefold()):
+            return detail
+        return f"{base}. {detail}"
+    return f"{base}. Delivered within the reporting period."
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else None
+    except Exception:
+        pass
+    start_idx = raw.find("{")
+    end_idx = raw.rfind("}")
+    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
+        return None
+    try:
+        value = json.loads(raw[start_idx : end_idx + 1])
+        return value if isinstance(value, dict) else None
+    except Exception:
+        return None
+
+
+def _sanitize_summary_ai_text(text: Any) -> str:
+    cleaned = _compact_text(text)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"(?:https?://|ftp://|file://|www\.)\S+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b[A-Z]+-\d+\b", "", cleaned)
+    cleaned = re.sub(r"\b[0-9a-f]{7,40}\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(?i)\b(?:pr|mr|pull request|merge request|commit)\b\s*[:#-]?\s*[A-Za-z0-9/_-]*", "", cleaned)
+    cleaned = _compact_text(cleaned.strip(" -,:;"))
+    if not cleaned:
+        return ""
+    return _summarize_detail(cleaned)
+
+
+def _build_summary_prompt(items: list[dict[str, str]], *, start_index: int = 1) -> tuple[dict[str, str], str]:
+    prompt_lines = [
+        "You are preparing a monthly software delivery summary for ArkUI OpenHarmony framework development.",
+        "Task: rewrite EACH issue into concise achievement text.",
+        "Strict rules:",
+        "1) Output language: English.",
+        "2) For each item, produce exactly 1-2 short complete sentences.",
+        "3) Focus on RESULT and delivered value, not process details.",
+        "4) Use only provided fields: issue title, description, latest comment.",
+        "5) Exclude all links, repository references, file paths, PR/MR mentions, commit hashes, and Jira keys.",
+        "6) Do not invent facts; if details are weak, state a safe concrete completion outcome.",
+        "7) Keep phrasing clear for monthly management summary.",
+        "8) Return ONLY one valid JSON object mapping id to rewritten text.",
+        "JSON example: {\"t1\":\"...\", \"t2\":\"...\"}",
+        "---",
+        "Input items:",
+    ]
+    target_map: dict[str, str] = {}
+    for idx, item in enumerate(items, start=start_index):
+        target_id = f"t{idx}"
+        target_map[target_id] = item["id"]
+        prompt_lines.append(
+            f'ID={target_id}; title="{item.get("summary", "")}"; description="{item.get("description", "")}"; latest_comment="{item.get("last_comment", "")}"'
+        )
+    return target_map, "\n".join(prompt_lines)
+
+
+def _build_webui_api_url(base_url: str, endpoint: str) -> str:
+    base = _compact_text(base_url).rstrip("/")
+    ep = _compact_text(endpoint)
+    if not ep:
+        return base
+    if ep.startswith("http://") or ep.startswith("https://"):
+        return ep.rstrip("/")
+    ep_path = "/" + ep.lstrip("/")
+    if base.endswith(ep_path):
+        return base
+    parts = urlsplit(base)
+    if not parts.scheme or not parts.netloc:
+        if not base:
+            return ep_path
+        return f"{base}/{ep.lstrip('/')}"
+    base_path = parts.path.rstrip("/")
+    merged_path = f"{base_path}{ep_path}" if base_path else ep_path
+    return urlunsplit((parts.scheme, parts.netloc, merged_path, "", ""))
 
 
 def _jira_user_identifier(user: Any | None) -> str:
@@ -423,13 +573,21 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
             all_links.append({"Issue_Key": key, "Source": "Description", "URL": link})
 
         comments: list[str] = []
+        latest_comment_text = ""
+        latest_comment_meta: tuple[str, int] | None = None
         if hasattr(issue.fields, "comment") and issue.fields.comment.comments:
-            for comment in issue.fields.comment.comments:
+            for comment_idx, comment in enumerate(issue.fields.comment.comments):
                 comment_text = _comment_body_to_text(comment.body)
                 comment_author = comment.author.displayName if comment.author else "Unknown"
                 comment_created = comment.created[:10] if comment.created else ""
                 comment_id = getattr(comment, "id", "") or ""
                 comments.append(f"[{comment_created}] {comment_author}: {comment_text}")
+                created_raw = str(comment.created or "")
+                if comment_text:
+                    marker = (created_raw, comment_idx)
+                    if latest_comment_meta is None or marker >= latest_comment_meta:
+                        latest_comment_meta = marker
+                        latest_comment_text = comment_text
 
                 for link in extract_urls_from_text(comment_text):
                     all_links.append(
@@ -494,6 +652,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                 "Remaining_Hours": remaining,
                 "Description": description,
                 "Comments": all_comments_text,
+                "Last_Comment": latest_comment_text,
                 "Labels": labels,
                 "Epic_Link": epic_link,
                 "Epic_Name": epic_name,
@@ -605,6 +764,332 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
             results_df = _sort_by_epic_and_resolved(results_df)
 
     return issues_df, links_df, results_df
+
+
+def _rewrite_summary_items_with_ollama(
+    items: list[dict[str, str]],
+    config: ConfigParser,
+    extra_params: dict[str, Any],
+) -> dict[str, str]:
+    ollama_enabled = _bool_value(
+        extra_params.get("ollama_enabled", config.get("ollama", "enabled", fallback="true")),
+        True,
+    )
+    if not ollama_enabled:
+        return {}
+    model = _compact_text(extra_params.get("ollama_model") or config.get("ollama", "model", fallback=""))
+    if not model:
+        logger.warning("Summary AI: Ollama model is not configured; using deterministic summary text.")
+        return {}
+    if not items:
+        return {}
+
+    ollama_url = _compact_text(extra_params.get("ollama_url") or config.get("ollama", "url", fallback="http://localhost:11434"))
+    ollama_api_key = _strip_wrapping_quotes(
+        _compact_text(extra_params.get("ollama_api_key") or config.get("ollama", "api_key", fallback=""))
+    )
+    timeout_seconds = int(
+        _compact_text(extra_params.get("ollama_timeout_seconds") or config.get("ollama", "timeout_seconds", fallback="60"))
+        or "60"
+    )
+    temperature = float(
+        _compact_text(extra_params.get("ollama_temperature") or config.get("ollama", "temperature", fallback="0.2"))
+        or "0.2"
+    )
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if ollama_api_key:
+        headers["Authorization"] = f"Bearer {ollama_api_key}"
+
+    rewritten: dict[str, str] = {}
+    batch_size = 8
+    for i in range(0, len(items), batch_size):
+        batch = items[i : i + batch_size]
+        target_map, prompt = _build_summary_prompt(batch, start_index=i + 1)
+        try:
+            response = requests.post(
+                f"{ollama_url.rstrip('/')}/api/generate",
+                headers=headers,
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": temperature},
+                },
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            response_json = response.json()
+            response_text = str(response_json.get("response", "") or "")
+            rewrite_map = _extract_json_object(response_text) or {}
+            for target_id, issue_id in target_map.items():
+                candidate = _sanitize_summary_ai_text(rewrite_map.get(target_id))
+                if candidate:
+                    rewritten[issue_id] = candidate
+        except Exception as exc:
+            logger.warning("Summary AI (Ollama) batch %s failed: %s", i // batch_size + 1, exc)
+    return rewritten
+
+
+def _rewrite_summary_items_with_webui(
+    items: list[dict[str, str]],
+    config: ConfigParser,
+    extra_params: dict[str, Any],
+) -> dict[str, str]:
+    webui_section = config["webui"] if config.has_section("webui") else {}
+    webui_enabled = _bool_value(
+        extra_params.get("webui_enabled")
+        or webui_section.get("enabled")
+        or config.get("webui", "enabled", fallback="false"),
+        False,
+    )
+    if not webui_enabled:
+        return {}
+    model = _compact_text(
+        extra_params.get("webui_model")
+        or webui_section.get("model")
+        or config.get("webui", "model", fallback="")
+    )
+    if not model:
+        logger.warning("Summary AI: WebUI model is not configured; using deterministic summary text.")
+        return {}
+    if not items:
+        return {}
+
+    base_url = _compact_text(
+        extra_params.get("webui_url")
+        or webui_section.get("url")
+        or config.get("webui", "url", fallback="http://localhost:3000")
+    )
+    endpoint = _compact_text(
+        extra_params.get("webui_endpoint")
+        or webui_section.get("endpoint")
+        or config.get("webui", "endpoint", fallback="/api/chat/completions")
+    )
+    api_url = _build_webui_api_url(base_url, endpoint)
+    webui_api_key = _strip_wrapping_quotes(
+        _compact_text(
+            extra_params.get("webui_api_key")
+            or webui_section.get("api_key")
+            or config.get("webui", "api_key", fallback="")
+        )
+    )
+    timeout_seconds = int(
+        _compact_text(
+            extra_params.get("webui_timeout_seconds")
+            or webui_section.get("timeout_seconds")
+            or config.get("webui", "timeout_seconds", fallback="120")
+        )
+        or "120"
+    )
+    connect_timeout_seconds = int(
+        _compact_text(
+            extra_params.get("webui_connect_timeout_seconds")
+            or webui_section.get("connect_timeout_seconds")
+            or config.get("webui", "connect_timeout_seconds", fallback="10")
+        )
+        or "10"
+    )
+    temperature = float(
+        _compact_text(
+            extra_params.get("webui_temperature")
+            or webui_section.get("temperature")
+            or config.get("webui", "temperature", fallback="0.2")
+        )
+        or "0.2"
+    )
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if webui_api_key:
+        headers["Authorization"] = f"Bearer {webui_api_key}"
+
+    rewritten: dict[str, str] = {}
+    batch_size = 8
+    for i in range(0, len(items), batch_size):
+        batch = items[i : i + batch_size]
+        target_map, prompt = _build_summary_prompt(batch, start_index=i + 1)
+        try:
+            response = requests.post(
+                api_url,
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You rewrite software task evidence into short, business-facing achievement statements. "
+                                "Return only strict JSON."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                    "temperature": temperature,
+                },
+                timeout=(connect_timeout_seconds, timeout_seconds),
+            )
+            response.raise_for_status()
+            response_json = response.json()
+            response_text = ""
+            choices = response_json.get("choices")
+            if isinstance(choices, list) and choices:
+                first_choice = choices[0] or {}
+                message = first_choice.get("message") or {}
+                response_text = str(message.get("content", "") or "")
+            if not response_text:
+                response_text = str(response_json.get("response", "") or "")
+            rewrite_map = _extract_json_object(response_text) or {}
+            for target_id, issue_id in target_map.items():
+                candidate = _sanitize_summary_ai_text(rewrite_map.get(target_id))
+                if candidate:
+                    rewritten[issue_id] = candidate
+        except Exception as exc:
+            logger.warning("Summary AI (WebUI) batch %s failed: %s", i // batch_size + 1, exc)
+    return rewritten
+
+
+def rewrite_summary_items_with_ai(
+    items: list[dict[str, str]],
+    config: ConfigParser,
+    extra_params: dict[str, Any],
+) -> dict[str, str]:
+    section = config["jira_comprehensive"] if config.has_section("jira_comprehensive") else {}
+    provider_raw = _compact_text(extra_params.get("ai_provider") or section.get("ai_provider"))
+    if provider_raw:
+        provider = provider_raw.casefold()
+    else:
+        webui_enabled = _bool_value(
+            extra_params.get("webui_enabled", config.get("webui", "enabled", fallback="false")),
+            False,
+        )
+        provider = "webui" if webui_enabled else "ollama"
+    if provider == "webui":
+        return _rewrite_summary_items_with_webui(items, config, extra_params)
+    if provider not in {"", "ollama"}:
+        logger.warning("Summary AI: unknown ai_provider=%s, falling back to ollama.", provider)
+    return _rewrite_summary_items_with_ollama(items, config, extra_params)
+
+
+def build_monthly_summary_df(
+    issues_df: pd.DataFrame,
+    config: ConfigParser,
+    extra_params: dict[str, Any],
+) -> pd.DataFrame:
+    columns = [
+        "Epic_Link",
+        "Epic_Name",
+        "Summary",
+        "Planned_Tasks_Resolved",
+        "Reported_Issues_Resolved",
+    ]
+    if issues_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    resolved_mask = _resolved_mask(issues_df) & _countable_mask(issues_df)
+    resolved_df = issues_df[resolved_mask].copy()
+    if resolved_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    for required_col in ("Type", "Issue_Key", "Epic_Name", "Epic_Link"):
+        if required_col not in resolved_df.columns:
+            resolved_df[required_col] = ""
+    if "Resolved" not in resolved_df.columns:
+        resolved_df["Resolved"] = ""
+    if "Last_Comment" not in resolved_df.columns:
+        resolved_df["Last_Comment"] = ""
+    if "Description" not in resolved_df.columns:
+        resolved_df["Description"] = ""
+    if "Summary" not in resolved_df.columns:
+        resolved_df["Summary"] = ""
+
+    resolved_df["_type_norm"] = resolved_df["Type"].fillna("").astype(str).map(_normalize_text)
+    resolved_df["_epic_norm"] = resolved_df["Epic_Name"].fillna("").astype(str).map(_normalize_text)
+    resolved_df["_resolved_sort"] = pd.to_datetime(resolved_df["Resolved"], errors="coerce")
+    resolved_df = resolved_df.sort_values(
+        by=["_epic_norm", "_resolved_sort", "Issue_Key"],
+        ascending=[True, True, True],
+        na_position="last",
+        kind="mergesort",
+    )
+
+    epic_payloads: list[dict[str, Any]] = []
+    ai_inputs: list[dict[str, str]] = []
+    for (epic_link_raw, epic_name_raw), epic_df in resolved_df.groupby(["Epic_Link", "Epic_Name"], dropna=False, sort=False):
+        epic_link = _compact_text(epic_link_raw)
+        epic_name = _compact_text(epic_name_raw) or "Unknown Epic"
+        bug_count = int((epic_df["_type_norm"] == "bug").sum())
+
+        planned_df = epic_df[~epic_df["_type_norm"].isin({"bug", "epic"})]
+        planned_items: list[dict[str, str]] = []
+        for _, row in planned_df.iterrows():
+            issue_key = _compact_text(row.get("Issue_Key"))
+            summary = _to_plain_text(row.get("Summary"))
+            description = _to_plain_text(row.get("Description"))
+            last_comment = _to_plain_text(row.get("Last_Comment"))
+            if not last_comment:
+                last_comment = _to_plain_text(row.get("Comments"))
+            item_id = f"{epic_link or 'NOEPIC'}::{issue_key or str(len(planned_items) + 1)}"
+            fallback = _fallback_issue_achievement(summary, description, last_comment)
+            planned_item = {
+                "id": item_id,
+                "issue_key": issue_key,
+                "summary": summary,
+                "description": description,
+                "last_comment": last_comment,
+                "fallback": fallback,
+            }
+            planned_items.append(planned_item)
+            ai_inputs.append(
+                {
+                    "id": item_id,
+                    "summary": summary,
+                    "description": description,
+                    "last_comment": last_comment,
+                }
+            )
+
+        epic_payloads.append(
+            {
+                "epic_link": epic_link,
+                "epic_name": epic_name,
+                "planned_items": planned_items,
+                "bug_count": bug_count,
+            }
+        )
+
+    rewrite_map = rewrite_summary_items_with_ai(ai_inputs, config, extra_params) if ai_inputs else {}
+
+    rows: list[dict[str, Any]] = []
+    for epic in epic_payloads:
+        planned_items = epic["planned_items"]
+        bug_count = int(epic["bug_count"])
+        planned_count = len(planned_items)
+
+        summary_lines: list[str] = []
+        for item in planned_items:
+            rewritten = _sanitize_summary_ai_text(rewrite_map.get(item["id"])) or item["fallback"]
+            issue_key = _compact_text(item.get("issue_key"))
+            if issue_key:
+                summary_lines.append(f"- {issue_key}: {rewritten}")
+            else:
+                summary_lines.append(f"- {rewritten}")
+
+        summary_lines.append(f"Resolved {planned_count} planned tasks on time.")
+        if bug_count > 0:
+            summary_lines.append(f"Resolved {bug_count} reported issues.")
+
+        rows.append(
+            {
+                "Epic_Link": epic["epic_link"],
+                "Epic_Name": epic["epic_name"],
+                "Summary": "\n".join(summary_lines),
+                "Planned_Tasks_Resolved": planned_count,
+                "Reported_Issues_Resolved": bug_count,
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
 
 
 def fetch_worklog_activity(
@@ -1011,6 +1496,7 @@ def export_to_excel(
     issues_df: pd.DataFrame,
     links_df: pd.DataFrame,
     results_df: pd.DataFrame,
+    summary_df: pd.DataFrame,
     engineer_metrics: pd.DataFrame,
     qa_metrics: pd.DataFrame,
     pm_metrics: pd.DataFrame,
@@ -1022,6 +1508,7 @@ def export_to_excel(
     issues_df = _sanitize_dataframe_for_excel(issues_df)
     links_df = _sanitize_dataframe_for_excel(links_df)
     results_df = _sanitize_dataframe_for_excel(results_df)
+    summary_df = _sanitize_dataframe_for_excel(summary_df)
     engineer_metrics = _sanitize_dataframe_for_excel(engineer_metrics)
     qa_metrics = _sanitize_dataframe_for_excel(qa_metrics)
     pm_metrics = _sanitize_dataframe_for_excel(pm_metrics)
@@ -1037,6 +1524,9 @@ def export_to_excel(
 
         if not results_df.empty:
             results_df.to_excel(writer, sheet_name="Results", index=False)
+
+        if not summary_df.empty:
+            summary_df.to_excel(writer, sheet_name="Summary", index=False)
 
         if not engineer_metrics.empty:
             engineer_metrics.to_excel(writer, sheet_name="Engineer_Performance", index=False)
@@ -1156,6 +1646,7 @@ class JiraComprehensiveReport:
         if issues_df.empty:
             logger.warning("No issues found matching the query.")
             return
+        summary_df = build_monthly_summary_df(issues_df, config, extra_params)
 
         worklog_activity_df = fetch_worklog_activity(
             jira_source,
@@ -1205,6 +1696,7 @@ class JiraComprehensiveReport:
             issues_df,
             links_df,
             results_df,
+            summary_df,
             engineer_metrics,
             qa_metrics,
             pm_metrics,
@@ -1221,9 +1713,10 @@ class JiraComprehensiveReport:
             resolved_count = 0
 
         logger.info(
-            "REPORT SUMMARY: issues=%s links=%s results=%s resolved=%s",
+            "REPORT SUMMARY: issues=%s links=%s results=%s summary_epics=%s resolved=%s",
             len(issues_df),
             len(links_df),
             len(results_df),
+            len(summary_df),
             resolved_count,
         )

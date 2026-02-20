@@ -15,6 +15,7 @@ from openpyxl import load_workbook
 from stats_core.reports.jira_comprehensive import (
     JiraComprehensiveReport,
     build_jql_query,
+    build_monthly_summary_df,
     calculate_engineer_metrics,
     fetch_jira_data,
 )
@@ -295,6 +296,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     assert "Issues" in wb.sheetnames
     assert "Links" in wb.sheetnames
     assert "Results" in wb.sheetnames
+    assert "Summary" in wb.sheetnames
     assert "Engineer_Performance" in wb.sheetnames
     assert "QA_Performance" in wb.sheetnames
     assert "PM_Performance" in wb.sheetnames
@@ -373,6 +375,41 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     assert abc2_rows
     assert str(abc2_rows[0]["Result"]).casefold() == "no results"
     assert "focusedCommentId=202" in str(abc2_rows[0]["Result_Links"])
+
+    summary_sheet = wb["Summary"]
+    summary_headers = [cell.value for cell in summary_sheet[1]]
+    epic_link_col = summary_headers.index("Epic_Link") + 1
+    epic_name_col = summary_headers.index("Epic_Name") + 1
+    summary_col = summary_headers.index("Summary") + 1
+    planned_col = summary_headers.index("Planned_Tasks_Resolved") + 1
+    bug_col = summary_headers.index("Reported_Issues_Resolved") + 1
+    summary_rows: list[dict[str, object]] = []
+    for row_idx in range(2, summary_sheet.max_row + 1):
+        summary_rows.append(
+            {
+                "Epic_Link": summary_sheet.cell(row=row_idx, column=epic_link_col).value,
+                "Epic_Name": summary_sheet.cell(row=row_idx, column=epic_name_col).value,
+                "Summary": summary_sheet.cell(row=row_idx, column=summary_col).value,
+                "Planned_Tasks_Resolved": summary_sheet.cell(row=row_idx, column=planned_col).value,
+                "Reported_Issues_Resolved": summary_sheet.cell(row=row_idx, column=bug_col).value,
+            }
+        )
+
+    epic_one_summary = next(row for row in summary_rows if row["Epic_Name"] == "Epic One")
+    epic_two_summary = next(row for row in summary_rows if row["Epic_Name"] == "Epic Two")
+
+    assert int(epic_one_summary["Planned_Tasks_Resolved"]) == 1
+    assert int(epic_one_summary["Reported_Issues_Resolved"]) == 1
+    assert "Resolved 1 planned tasks on time." in str(epic_one_summary["Summary"])
+    assert "Resolved 1 reported issues." in str(epic_one_summary["Summary"])
+    assert "- ABC-2:" in str(epic_one_summary["Summary"])
+
+    assert int(epic_two_summary["Planned_Tasks_Resolved"]) == 2
+    assert int(epic_two_summary["Reported_Issues_Resolved"]) == 0
+    assert "Resolved 2 planned tasks on time." in str(epic_two_summary["Summary"])
+    assert "reported issues" not in str(epic_two_summary["Summary"])
+    assert "- ABC-6:" in str(epic_two_summary["Summary"])
+    assert "- ABC-7:" in str(epic_two_summary["Summary"])
 
     def _sheet_row(sheet_name: str) -> dict[str, object]:
         sheet = wb[sheet_name]
@@ -483,3 +520,49 @@ def test_calculate_engineer_metrics_uses_members_jira_column():
     row = engineer_metrics.iloc[0].to_dict()
     assert row["Bugs"] == 1
     assert row["Total_Resolved_Issues"] == 1
+
+
+def test_build_monthly_summary_df_uses_ai_rewrite_map_when_available():
+    issues_df = pd.DataFrame(
+        [
+            {
+                "Issue_Key": "ABC-1",
+                "Summary": "Task one",
+                "Type": "Task",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolved": "2025-01-02",
+                "Description": "Initial implementation.",
+                "Last_Comment": "Feature completed.",
+                "Epic_Link": "EPIC-1",
+                "Epic_Name": "Epic One",
+            },
+            {
+                "Issue_Key": "ABC-2",
+                "Summary": "Bug one",
+                "Type": "Bug",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolved": "2025-01-03",
+                "Description": "",
+                "Last_Comment": "Bug fixed.",
+                "Epic_Link": "EPIC-1",
+                "Epic_Name": "Epic One",
+            },
+        ]
+    )
+    config = ConfigParser()
+
+    with patch("stats_core.reports.jira_comprehensive.rewrite_summary_items_with_ai") as mock_rewrite:
+        mock_rewrite.return_value = {"EPIC-1::ABC-1": "Delivered ArkUI workflow and stabilized behavior."}
+        summary_df = build_monthly_summary_df(issues_df, config, extra_params={})
+
+    assert summary_df.shape[0] == 1
+    row = summary_df.iloc[0].to_dict()
+    assert row["Epic_Name"] == "Epic One"
+    assert row["Planned_Tasks_Resolved"] == 1
+    assert row["Reported_Issues_Resolved"] == 1
+    summary_text = str(row["Summary"])
+    assert "Delivered ArkUI workflow and stabilized behavior." in summary_text
+    assert "Resolved 1 planned tasks on time." in summary_text
+    assert "Resolved 1 reported issues." in summary_text

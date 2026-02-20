@@ -2154,36 +2154,49 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
         epic_name = html.escape(_normalize_text(epic.get("epic_name")))
         epic_key = html.escape(_normalize_text(epic.get("epic_key")))
         high_priority_issue_keys = {
-            _normalize_text(item.get("issue_key"))
+            _normalize_key(item.get("issue_key"))
             for item in (epic.get("high_priority_items") or [])
-            if _normalize_text(item.get("issue_key"))
+            if _normalize_key(item.get("issue_key"))
         }
         rows.append("<ul class='lvl1'>")
         rows.append(f"<li><b>{epic_name} ({epic_key})</b></li>")
         rows.append("</ul>")
         rows.append("<ul class='lvl2'>")
+        regular_seen_issue_keys: set[str] = set()
         for item in (epic.get("report_items") or []) + (epic.get("completed_items") or []) + (epic.get("progress_items") or []):
+            item_issue_key_norm = _normalize_key(item.get("issue_key"))
             item_issue_key = _normalize_text(item.get("issue_key"))
-            if item_issue_key and item_issue_key in high_priority_issue_keys:
+            if item_issue_key_norm and item_issue_key_norm in high_priority_issue_keys:
+                continue
+            if item_issue_key_norm and item_issue_key_norm in regular_seen_issue_keys:
                 continue
             text = html.escape(_normalize_text(item.get("text")))
             issue_key = html.escape(item_issue_key)
             status = html.escape(_normalize_text(item.get("status")))
             comment = html.escape(_normalize_text(item.get("comment")))
-            rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
-            if status or comment:
+            status_suffix = f" - {status}" if status else ""
+            rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}{status_suffix}</li>")
+            if comment:
                 rows.append("</ul><ul class='lvl3'>")
-                if status:
-                    rows.append(f"<li>{status}</li>")
-                if comment:
-                    rows.append(f"<li>{comment}</li>")
+                rows.append(f"<li>{comment}</li>")
                 rows.append("</ul><ul class='lvl2'>")
+            if item_issue_key_norm:
+                regular_seen_issue_keys.add(item_issue_key_norm)
         for group in epic.get("parent_subtasks") or []:
-            parent_issue_key = html.escape(_normalize_text(group.get("parent_issue_key")))
+            parent_issue_key_raw = _normalize_text(group.get("parent_issue_key"))
+            parent_issue_key = html.escape(parent_issue_key_raw)
             parent_text = html.escape(_normalize_text(group.get("parent_text")))
+            filtered_subtasks = []
+            for subtask in group.get("subtasks") or []:
+                subtask_issue_key = _normalize_key(subtask.get("issue_key"))
+                if subtask_issue_key and subtask_issue_key in high_priority_issue_keys:
+                    continue
+                filtered_subtasks.append(subtask)
+            if not filtered_subtasks:
+                continue
             rows.append(f"<li>{parent_text}{f' ({parent_issue_key})' if parent_issue_key else ''}:</li>")
             rows.append("</ul><ul class='lvl3'>")
-            for subtask in group.get("subtasks") or []:
+            for subtask in filtered_subtasks:
                 subtask_key = html.escape(_normalize_text(subtask.get("issue_key")))
                 subtask_text = html.escape(_normalize_text(subtask.get("text")))
                 subtask_status = html.escape(_normalize_text(subtask.get("status")))
@@ -2198,19 +2211,23 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
         if epic.get("high_priority_items"):
             rows.append(f"<li><b>{high_priority_title}</b></li>")
             rows.append("</ul><ul class='lvl3'>")
+            high_seen_issue_keys: set[str] = set()
             for item in epic.get("high_priority_items") or []:
+                item_issue_key_norm = _normalize_key(item.get("issue_key"))
+                if item_issue_key_norm and item_issue_key_norm in high_seen_issue_keys:
+                    continue
                 text = html.escape(_normalize_text(item.get("text")))
                 issue_key = html.escape(_normalize_text(item.get("issue_key")))
                 status = html.escape(_normalize_text(item.get("status")))
                 comment = html.escape(_normalize_text(item.get("comment")))
-                rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
-                if status or comment:
+                status_suffix = f" - {status}" if status else ""
+                rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}{status_suffix}</li>")
+                if comment:
                     rows.append("<ul class='lvl4'>")
-                    if status:
-                        rows.append(f"<li>{status}</li>")
-                    if comment:
-                        rows.append(f"<li>{comment}</li>")
+                    rows.append(f"<li>{comment}</li>")
                     rows.append("</ul>")
+                if item_issue_key_norm:
+                    high_seen_issue_keys.add(item_issue_key_norm)
             rows.append("</ul><ul class='lvl2'>")
         bugs = epic.get("bugs") or {}
         closed_bugs = int(bugs.get("closed", 0))
@@ -2253,13 +2270,11 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
             comment = html.escape(_normalize_text(item.get("comment")))
             issue_key = html.escape(_normalize_text(item.get("issue_key")))
             status = html.escape(_normalize_text(item.get("status")))
-            rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
-            if status or comment:
+            status_suffix = f" - {status}" if status else ""
+            rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}{status_suffix}</li>")
+            if comment:
                 rows.append("</ul><ul class='lvl3'>")
-                if status:
-                    rows.append(f"<li>{status}</li>")
-                if comment:
-                    rows.append(f"<li>{comment}</li>")
+                rows.append(f"<li>{comment}</li>")
                 rows.append("</ul><ul class='lvl2'>")
             for subtask in item.get("subtasks") or []:
                 subtask_key = html.escape(_normalize_text(subtask.get("issue_key")))
