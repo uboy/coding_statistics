@@ -1337,6 +1337,10 @@ def test_jira_weekly_email_plans_include_report_tasks_and_in_progress_subtasks(m
     assert "Parent report task (ABC-70)" in text
     assert "Subtask in progress - In Progress (ABC-71)" in text
     assert "Subtask done - Done (ABC-72)" in text
+    results_idx = text.index("Key Results and Achievements")
+    plans_idx = text.index("Next Week Plans")
+    results_text = text[results_idx:plans_idx]
+    assert results_text.count("Parent report task (ABC-70)") == 1
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")

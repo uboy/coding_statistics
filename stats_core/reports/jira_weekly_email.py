@@ -183,19 +183,31 @@ def _comment_body_to_text(body: Any) -> str:
     if isinstance(body, list):
         return " ".join(_comment_body_to_text(item) for item in body).strip()
     if isinstance(body, dict):
+        node_type = _normalize_key(body.get("type"))
+        content = body.get("content")
+        if node_type in {"bulletlist", "orderedlist"} and isinstance(content, list):
+            items: list[str] = []
+            for item in content:
+                item_text = _normalize_text(_comment_body_to_text(item))
+                item_text = re.sub(r"^-+\s*", "", item_text)
+                if item_text:
+                    items.append(f"- {item_text}")
+            return "; ".join(items)
+        if node_type == "listitem" and isinstance(content, list):
+            item_text = _normalize_text(" ".join(_comment_body_to_text(part) for part in content))
+            return f"- {item_text}" if item_text else ""
+        if node_type in {"hardbreak", "hard_break"}:
+            return "; "
+
         parts: list[str] = []
-        stack = [body]
-        while stack:
-            node = stack.pop()
-            if isinstance(node, dict):
-                text_value = node.get("text")
-                if isinstance(text_value, str) and text_value:
-                    parts.append(text_value)
-                content = node.get("content")
-                if isinstance(content, list):
-                    stack.extend(reversed(content))
-            elif isinstance(node, list):
-                stack.extend(reversed(node))
+        text_value = body.get("text")
+        if isinstance(text_value, str) and text_value:
+            parts.append(text_value)
+        if isinstance(content, list):
+            for item in content:
+                part_text = _comment_body_to_text(item)
+                if part_text:
+                    parts.append(part_text)
         return " ".join(parts).strip()
     return str(body)
 
@@ -493,6 +505,17 @@ def _comment_hints_joined(comments: Any) -> str:
     return latest_hint
 
 
+def _split_progress_points(text: Any) -> list[str]:
+    raw = _normalize_text(text)
+    if not raw:
+        return []
+    normalized = re.sub(r"[•▪◦]+", "; ", raw)
+    normalized = re.sub(r"(?:(?<=^)|(?<=[;:]))\s*\d+[.)]\s+", "; ", normalized)
+    normalized = re.sub(r"(?:(?<=^)|(?<=[;:]))\s*-\s+", "; ", normalized)
+    parts = [_normalize_text(part) for part in normalized.split(";")]
+    return [part for part in parts if part]
+
+
 def _build_highlight_progress(entry: dict[str, Any], subtasks: list[dict[str, Any]]) -> str:
     if entry.get("Finished"):
         return "Finished this week."
@@ -500,7 +523,8 @@ def _build_highlight_progress(entry: dict[str, Any], subtasks: list[dict[str, An
     progress_parts: list[str] = []
     issue_comment = _comment_hints_joined(entry.get("Comments") or [])
     if issue_comment:
-        progress_parts.append(issue_comment)
+        issue_points = _split_progress_points(issue_comment)
+        progress_parts.extend(issue_points or [issue_comment])
 
     if not entry.get("Subtask"):
         ordered_subtasks = sorted(
@@ -515,7 +539,11 @@ def _build_highlight_progress(entry: dict[str, Any], subtasks: list[dict[str, An
 
             subtask_comment = _comment_hints_joined(subtask.get("Comments") or [])
             if subtask_comment:
-                progress_parts.append(f"{subtask_title}: {subtask_comment}")
+                subtask_points = _split_progress_points(subtask_comment)
+                if subtask_points:
+                    progress_parts.append(f"{subtask_title}: {'; '.join(subtask_points)}")
+                else:
+                    progress_parts.append(f"{subtask_title}: {subtask_comment}")
             else:
                 progress_parts.append(subtask_title)
 
@@ -786,6 +814,13 @@ def build_report_payload(
                 key=lambda item: _normalize_key(item.get("issue_key")),
             )
             parent_groups.append(group)
+        parent_issue_keys = {_normalize_text(group.get("parent_issue_key")) for group in parent_groups}
+        if parent_issue_keys:
+            epic["progress_items"] = [
+                item
+                for item in (epic.get("progress_items") or [])
+                if _normalize_text(item.get("issue_key")) not in parent_issue_keys
+            ]
         epic["parent_subtasks"] = parent_groups
         epic_entries.append(epic)
 
@@ -1059,8 +1094,8 @@ def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) 
 
     prompt_lines = [
         "You are an expert technical writer preparing a formal weekly engineering report for management.",
-        "Rewrite each of the following input texts from a developer's raw notes into a polished, professional report entry.",
-        "Your task is to convert raw developer notes into a polished summary for a formal engineering report.",
+        "Rewrite each input into a polished management-ready report entry.",
+        "Important: model quality is limited, so follow the rules exactly and prioritize correctness over creativity.",
         "Follow these strict rules:",
         "1. Style: Formal, professional, and concise.",
         "2. Language: English.",
@@ -1069,12 +1104,18 @@ def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) 
         "   - For HIGHLIGHT: Rewrite only the progress note for a highlighted task. Task title is handled separately and MUST NOT be repeated in output.",
         "   - For RESULT: Focus on concrete achievements, outcomes, and impact. (Что было сделано и какой результат).",
         "   - For PLAN: Clearly state the next actions or planned work. (Что планируется сделать).",
+        "   - If input contains multiple progress points (lists, semicolons, bullet-like items), keep them as short semicolon-separated clauses in one sentence.",
+        "   - Keep status meanings clear (e.g., completed / in progress / blocked).",
         "5. Exclusions: REMOVE ALL of the following:",
         "   - Links and URLs (e.g., http://..., www....).",
         "   - Code/repository references (PRs, MRs, commit hashes, file paths, 'see commit', '#123').",
         "   - Jira ticket numbers (e.g., PROJ-123).",
         "   - Conversational filler and noisy prefixes (e.g., 'results:', 'update:', 'details:', 'just a note').",
-        "6. Output Format: Return ONLY a valid JSON object mapping the original ID to the rewritten text. Example: {\"t1\":\"Rewritten text for t1.\", \"t2\":\"Rewritten text for t2.\"}",
+        "6. Quality checks before output:",
+        "   - Do NOT cut off words or leave unfinished phrases.",
+        "   - End each sentence with proper punctuation.",
+        "   - Return plain text only (no markdown, no numbering unless present as a compact list inside the sentence).",
+        "7. Output Format: Return ONLY a valid JSON object mapping the original ID to the rewritten text. Example: {\"t1\":\"Rewritten text for t1.\", \"t2\":\"Rewritten text for t2.\"}",
         "---",
         "Input texts to rewrite:",
     ]
@@ -1129,7 +1170,7 @@ def _sanitize_ai_text(text: str) -> str:
 
     sentences = [
         part.strip(" -,:;")
-        for part in re.split(r"(?<=[.!?])\s+|\s*;\s*", cleaned)
+        for part in re.split(r"(?<=[.!?])\s+", cleaned)
         if part.strip(" -,:;")
     ]
     if not sentences:
@@ -1138,10 +1179,10 @@ def _sanitize_ai_text(text: str) -> str:
     limited: list[str] = []
     for sentence in sentences[:2]:
         words = sentence.split()
-        if len(words) > 24:
-            sentence = " ".join(words[:24]).rstrip(" ,;:-")
+        if len(words) > 40:
+            sentence = " ".join(words[:40]).rstrip(" ,;:-")
             if sentence and sentence[-1] not in ".!?":
-                sentence += "."
+                sentence += "..."
         limited.append(sentence)
     return _normalize_text(" ".join(limited))
 
