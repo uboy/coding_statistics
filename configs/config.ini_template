@@ -1,0 +1,152 @@
+[global]
+member-list = report_inputs/members.xlsx
+
+[reporting]
+output_dir = reports
+links_file = report_inputs/input.txt
+
+[cache]
+enabled = true
+file = data/cache/cache.json
+ttl_days = 0
+
+[gerrit]
+gerrit-url = <gerrit-url, e.g. http://my.gerrit.com/>
+username = <your username>
+password = <your password>
+
+[gitlab]
+gitlab-url = <gitlab url, e.g. https://gitlab.com>
+token = <token>
+branch = <branch>
+
+[codehub]
+codehub-url = <codehub url, e.g. https://codehub.com/>
+token = <token>
+project = <project>
+branch = <branch>
+
+[jira]
+jira-url = <jira url, e.g. https://jira.com/
+username = <your username>
+password = <your password>
+
+[sharepoint]
+sharepoint-url = <sharepoint url, e.g. http://office.com/>
+documents_folder = <some_root>
+username = <your username>
+password = <your password>
+
+[gitee]
+per_page = 20
+pause_after_requests = 5
+pause_duration = 3
+gitee-url = https://gitee.com
+# get new token here
+token = <token>
+# format for repository:
+repository = openharmony/arkui_ace_engine,openharmony-sig/arkcompiler_ets_frontend
+branch = master
+
+[gitcode]
+per_page = 70
+pause_after_requests = 10
+pause_duration = 6
+gitcode-url = https://gitcode.com/
+# get new token here https://gitcode.com/setting/token-classic
+token = <token>
+# format for repository:
+repository = OH_003/arkui_ace_engine
+branch = master
+
+[proxy]
+# Optional: Proxy configuration for all API requests
+# If not set, will use HTTP_PROXY/HTTPS_PROXY environment variables
+# For URLs with special characters in password, use URL encoding:
+#   @ -> %40
+#   : -> %3A
+#   / -> %2F
+#   % -> %25 (double % to escape)
+# Example: http://username:password%40@proxy.example.com:8080
+# http = http://proxy.example.com:8080
+# https = https://proxy.example.com:8080
+# no_proxy = localhost,127.0.0.1,.local
+
+[ssl]
+# Optional: SSL certificate verification settings
+# verify = true
+# bundle_ca = bundle-ca
+# check_hostname = true
+# 
+# If bundle-ca causes "basic constraints" or "CERTIFICATE_VERIFY_FAILED" errors:
+# 1. The code now uses urllib3 custom SSL context which is more lenient
+# 2. Try using a different bundle-ca file (re-export from your CA)
+# 3. Set check_hostname = false (less secure, but may help with some certificates)
+# 4. Set verify = false (NOT RECOMMENDED, completely disables SSL verification)
+# 5. Leave unset to use default system certificates (if bundle-ca not found)
+
+[ollama]
+# Local Ollama endpoint
+url = http://localhost:11434
+# Optional API key for proxy/gateway deployments
+api_key =
+# Example model: qwen2.5:14b
+model =
+timeout_seconds = 60
+temperature = 0.2
+enabled = true
+
+[webui]
+# Open WebUI (OpenAI-compatible) endpoint
+url = http://localhost:3000
+endpoint = /api/chat/completions
+api_key =
+# Example model: qwen2.5:14b
+model =
+timeout_seconds = 60
+temperature = 0.2
+enabled = false
+
+[jira_weekly_email]
+# Optional default project, can be overridden with --params project=ABC
+project =
+output_dir = reports
+# Optional snapshot directory for previous-week ordering and diff.
+# Default behavior: same directory as output_dir.
+snapshot_dir = reports
+vacation_file =
+vacation_sheet = Vacations2026
+vacation_marker_values = p,P
+# Anchor for vacations horizon: today | week_start
+vacation_horizon_anchor = today
+vacation_horizon_days = 60
+priority_high_values = High,Highest
+labels_highlights = highlights
+# Epic inclusion filter labels for weekly email report.
+# Default: report
+# Special value: @all -> include issues with any labels (disables label filtering).
+labels_report = report
+title_main = TelmaST Weekly Report
+chapter_highlights_title = Highlights
+chapter_results_title = Key Results and Achievements
+chapter_next_week_title = Next Week Plans
+chapter_vacations_title = Vacations (next 60 days)
+chapter_results_high_priority_subtitle = High priority items
+chapter_results_bugs_subtitle = Bugs summary
+console_diff_title = Changes vs Previous Week
+# Table header labels and values
+header_project_info_title = Weekly execution summary
+header_banner_bg_color = rgb(63,78,0)
+meta_active_iteration_label = Active iteration
+meta_active_iteration_value =
+meta_report_period_label = Report Period
+meta_report_owner_label = Report Owner
+meta_report_owner_value =
+meta_team_member_label = Team Member
+meta_team_member_value =
+# Optional raw HTML block appended after report sections.
+footer_html =
+# AI backend for text rewrite: ollama | webui
+ai_provider = ollama
+bugs_summary_template_closed_in_progress = {closed} trouble reports/issues are analyzed and closed, {in_progress} currently in progress, {open} open in project.
+

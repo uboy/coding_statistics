@@ -1,7 +1,7 @@
 """
 Centralised configuration utilities.
 
-The existing scripts relied on ad-hoc parsing of ``config.ini`` in each file.
+The existing scripts relied on ad-hoc parsing of ``config`` in each file.
 This module provides a consolidated loader with the following features:
 
 * Single entry point ``load_config`` that returns a ``ConfigParser`` ready for
@@ -21,7 +21,7 @@ import urllib.parse
 from configparser import ConfigParser
 from typing import Iterable, Mapping, MutableMapping, Any
 
-DEFAULT_CONFIG_FILE = pathlib.Path("config.ini")
+DEFAULT_CONFIG_FILE = pathlib.Path("configs/local/config.ini")
 logger = logging.getLogger(__name__)
 TOKEN_HINTS: Mapping[str, str] = {
     "gitee": (
@@ -56,7 +56,8 @@ def load_config(path: pathlib.Path | str = DEFAULT_CONFIG_FILE) -> ConfigParser:
     Load configuration from the given path.
 
     Args:
-        path: Path to the configuration file.  Defaults to ``config.ini`` in
+        path: Path to the configuration file.  Defaults to
+              ``configs/local/config.ini`` in
               the current working directory.
     """
     cfg_path = pathlib.Path(path)
@@ -148,7 +149,7 @@ def interactive_token_setup(config: ConfigParser, services: Iterable[str], path:
             config.write(fh)
         print(f"Файл конфигурации обновлён: {cfg_path}")
     else:
-        print("Токены не были обновлены. Обновите config.ini вручную при необходимости.")
+        print("Токены не были обновлены. Обновите configs/local/config.ini вручную при необходимости.")
 
 
 def create_cache_manager(config: ConfigParser):
@@ -159,14 +160,15 @@ def create_cache_manager(config: ConfigParser):
         CacheManager instance configured from [cache] section
     """
     from .cache import CacheManager
+    from .pathing import resolve_cache_path
 
     if config.has_section("cache"):
         cache_section = config["cache"]
-        cache_file = cache_section.get("file", "cache.json")
+        cache_file = str(resolve_cache_path(cache_section.get("file")))
         enabled = cache_section.getboolean("enabled", True)
         ttl_days = cache_section.getint("ttl_days", 0)
     else:
-        cache_file = "cache.json"
+        cache_file = str(resolve_cache_path(None))
         enabled = True
         ttl_days = 0
 
@@ -220,7 +222,7 @@ def get_proxy_config(config: ConfigParser) -> dict[str, str | None] | None:
     Get proxy configuration from config file or environment variables.
     
     Priority:
-    1. [proxy] section in config.ini (http, https, no_proxy)
+    1. [proxy] section in config file (http, https, no_proxy)
     2. Environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
     
     Returns:

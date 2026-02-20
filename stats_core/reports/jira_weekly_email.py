@@ -481,6 +481,93 @@ def collect_weekly_comment_evidence(
     )
     return evidence
 
+
+def _issue_type_name(issue: Any) -> str:
+    fields = getattr(issue, "fields", None)
+    issue_type = getattr(fields, "issuetype", None)
+    return _normalize_text(getattr(issue_type, "name", ""))
+
+
+def _issue_status_name(issue: Any) -> str:
+    fields = getattr(issue, "fields", None)
+    status = getattr(fields, "status", None)
+    return _normalize_text(getattr(status, "name", ""))
+
+
+def _issue_resolution_name(issue: Any) -> str:
+    fields = getattr(issue, "fields", None)
+    resolution = getattr(fields, "resolution", None)
+    if resolution is None:
+        return ""
+    return _normalize_text(getattr(resolution, "name", ""))
+
+
+def _is_bug_issue(issue: Any) -> bool:
+    return _normalize_key(_issue_type_name(issue)) == "bug"
+
+
+def _is_open_bug_issue(issue: Any) -> bool:
+    if not _is_bug_issue(issue):
+        return False
+    resolution_key = _normalize_key(_issue_resolution_name(issue))
+    return not resolution_key or resolution_key == "unresolved"
+
+
+def _is_in_progress_bug_issue(issue: Any) -> bool:
+    if not _is_bug_issue(issue):
+        return False
+    return _is_in_progress_status(_issue_status_name(issue))
+
+
+def _count_issues_for_jql(jira: Any, jql: str, fallback_match: Any) -> int:
+    try:
+        result = jira.search_issues(
+            jql,
+            maxResults=0,
+            fields=["key", "issuetype", "status", "resolution"],
+        )
+    except Exception as exc:
+        logger.warning("Bug counters query failed: jql=%s error=%s", jql, exc)
+        return 0
+    total = getattr(result, "total", None)
+    if isinstance(total, int):
+        return total
+    if isinstance(result, list):
+        return sum(1 for issue in result if fallback_match(issue))
+    try:
+        materialized = list(result)
+    except Exception:
+        return 0
+    return sum(1 for issue in materialized if fallback_match(issue))
+
+
+def collect_project_bug_stats(jira_source: JiraSource, project: str) -> dict[str, int]:
+    jira = jira_source.jira
+    project_key = _safe_project_key(project)
+    in_progress_jql = (
+        f"project = {project_key} "
+        "AND issuetype = Bug "
+        "AND statusCategory = 'In Progress'"
+    )
+    open_jql = (
+        f"project = {project_key} "
+        "AND issuetype = Bug "
+        "AND resolution = Unresolved"
+    )
+    in_progress = _count_issues_for_jql(jira, in_progress_jql, _is_in_progress_bug_issue)
+    open_count = _count_issues_for_jql(jira, open_jql, _is_open_bug_issue)
+    logger.info(
+        "PROJECT BUG COUNTS: project=%s in_progress=%s open=%s",
+        project,
+        in_progress,
+        open_count,
+    )
+    return {
+        "in_progress": in_progress,
+        "open": open_count,
+    }
+
+
 def _first_sentence(text: str) -> str:
     value = _normalize_text(text)
     if not value:
@@ -605,6 +692,7 @@ def build_report_payload(
     labels_highlights: set[str],
     labels_report: set[str],
     priority_high_values: set[str],
+    project_bug_stats: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     highlights: list[dict[str, str]] = []
     epics: dict[str, dict[str, Any]] = {}
@@ -613,6 +701,7 @@ def build_report_payload(
     subtasks_by_parent: dict[str, list[dict[str, Any]]] = {}
     report_epic_ids: set[str] = set()
     report_all_labels = "@all" in labels_report
+    project_bug_stats = project_bug_stats or {"in_progress": 0, "open": 0}
 
     for item in evidence:
         if not item.get("Subtask"):
@@ -850,7 +939,7 @@ def build_report_payload(
         )
 
     logger.info(
-        "PAYLOAD SUMMARY: project=%s week=%s evidence=%s epics_total=%s epics_in_report=%s highlights=%s report_items=%s completed_items=%s parent_subtasks=%s plans=%s high_priority=%s bugs_closed=%s bugs_in_progress=%s",
+        "PAYLOAD SUMMARY: project=%s week=%s evidence=%s epics_total=%s epics_in_report=%s highlights=%s report_items=%s completed_items=%s parent_subtasks=%s plans=%s high_priority=%s bugs_closed=%s bugs_in_progress=%s project_bugs_in_progress=%s project_bugs_open=%s",
         project,
         week.key,
         len(evidence),
@@ -864,6 +953,8 @@ def build_report_payload(
         sum(len(epic.get("high_priority_items") or []) for epic in epic_entries),
         sum(int((epic.get("bugs") or {}).get("closed") or 0) for epic in epic_entries),
         sum(int((epic.get("bugs") or {}).get("in_progress") or 0) for epic in epic_entries),
+        int(project_bug_stats.get("in_progress") or 0),
+        int(project_bug_stats.get("open") or 0),
     )
     return {
         "meta": {
@@ -875,6 +966,10 @@ def build_report_payload(
         "highlights": highlights,
         "epics": epic_entries,
         "next_week_plans": next_week_plans,
+        "project_bugs": {
+            "in_progress": int(project_bug_stats.get("in_progress") or 0),
+            "open": int(project_bug_stats.get("open") or 0),
+        },
         "vacations": [],
         "titles": {
             "main": config.get("jira_weekly_email", "title_main", fallback="Weekly Report"),
@@ -891,6 +986,14 @@ def build_report_payload(
             ),
             "bugs_subtitle": config.get(
                 "jira_weekly_email", "chapter_results_bugs_subtitle", fallback="Bugs summary"
+            ),
+            "bugs_summary_template": config.get(
+                "jira_weekly_email",
+                "bugs_summary_template_closed_in_progress",
+                fallback=(
+                    "{closed} trouble reports/issues are analyzed and closed, "
+                    "{in_progress} currently in progress, {open} open in project."
+                ),
             ),
             "header_project_info": config.get(
                 "jira_weekly_email", "header_project_info_title", fallback="Weekly execution summary"
@@ -1903,6 +2006,15 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     vacations_title = _cfg_html("vacations", "Vacations (next 60 days)")
     high_priority_title = _cfg_html("high_priority_subtitle", "High priority items")
     bugs_title = _cfg_html("bugs_subtitle", "Bugs summary")
+    bugs_summary_template = _normalize_text(
+        titles.get(
+            "bugs_summary_template",
+            (
+                "{closed} trouble reports/issues are analyzed and closed, "
+                "{in_progress} currently in progress, {open} open in project."
+            ),
+        )
+    )
     header_project_info = _cfg_html("header_project_info", "Weekly execution summary")
     header_banner_bg_color = html.escape(_normalize_text(titles.get("header_banner_bg_color", "rgb(63,78,0)")))
     meta_report_period = _cfg_html("meta_report_period", "Report Period")
@@ -2055,11 +2167,23 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
             rows.append("</ul><ul class='lvl2'>")
         bugs = epic.get("bugs") or {}
         closed_bugs = int(bugs.get("closed", 0))
-        in_progress_bugs = int(bugs.get("in_progress", 0))
-        if closed_bugs or in_progress_bugs:
+        project_bugs = payload.get("project_bugs") or {}
+        in_progress_bugs = int(project_bugs.get("in_progress", bugs.get("in_progress", 0)) or 0)
+        open_bugs = int(project_bugs.get("open", 0) or 0)
+        if closed_bugs or in_progress_bugs or open_bugs:
+            try:
+                bugs_summary_line = bugs_summary_template.format(
+                    closed=closed_bugs,
+                    in_progress=in_progress_bugs,
+                    open=open_bugs,
+                )
+            except Exception:
+                bugs_summary_line = (
+                    f"{closed_bugs} trouble reports/issues are analyzed and closed, "
+                    f"{in_progress_bugs} currently in progress, {open_bugs} open in project."
+                )
             rows.append(
-                f"<li><b>{bugs_title}</b>: {closed_bugs} trouble reports/issues are analyzed and closed, "
-                f"{in_progress_bugs} currently in progress.</li>"
+                f"<li><b>{bugs_title}</b>: {html.escape(_normalize_text(bugs_summary_line))}</li>"
             )
         rows.append("</ul>")
         if epic_idx < len(payload.get("epics") or []) - 1:
@@ -2190,6 +2314,7 @@ class JiraWeeklyEmailReport:
 
         jira_source = JiraSource(config["jira"])
         evidence = collect_weekly_comment_evidence(jira_source, project, week)
+        project_bug_stats = collect_project_bug_stats(jira_source, project)
         payload = build_report_payload(
             evidence,
             week,
@@ -2198,6 +2323,7 @@ class JiraWeeklyEmailReport:
             labels_highlights=labels_highlights,
             labels_report=labels_report,
             priority_high_values=priority_high_values,
+            project_bug_stats=project_bug_stats,
         )
 
         vacation_file = _strip_wrapping_quotes(

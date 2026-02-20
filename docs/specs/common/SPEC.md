@@ -6,7 +6,7 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
 ## Primary Functions
 
 ### CLI
-- **setup**: Generates `config.ini` from `config.ini_template` if missing and guides token/credential onboarding.
+- **setup**: Generates `configs/local/config.ini` from `configs/config.ini_template` if missing and guides token/credential onboarding.
 - **run**: Executes a report by name, with date range, sources, output formats, and extra params.
 
 ### Data Collection
@@ -27,7 +27,7 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
   - Keeps Epic/task order using previous snapshots and prints red/green/white diff to console only.
   - Supports configurable labels (`labels_highlights`, `labels_report`) and optional vacations from Excel.
 - **unified_review** (`stats_core/reports/unified_review.py`):
-  - Processes links from `input.txt` (or config override), auto-detects platform by URL, and exports summary tables.
+  - Processes links from `report_inputs/input.txt` (or config override), auto-detects platform by URL, and exports summary tables.
 
 ### Export
 - **Excel**: `stats_core/export/excel.py` with optional templates.
@@ -35,14 +35,14 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
 - **CSV**: `stats_core/export/csv_export.py`.
 
 ### Caching
-- **CacheManager** (`stats_core/cache.py`): Caches API responses and link-processing results in `cache.json`, with optional TTL.
+- **CacheManager** (`stats_core/cache.py`): Caches API responses and link-processing results in `data/cache/cache.json`, with optional TTL.
 
 ## Inputs and Outputs
 
 ### Inputs
-- `config.ini` (created from `config.ini_template` by setup)
-- `input.txt` (link list for unified_review, unless overridden)
-- `members.xlsx` (team list for Jira reports)
+- `configs/local/config.ini` (created from `configs/config.ini_template` by setup)
+- `report_inputs/input.txt` (link list for unified_review, unless overridden; legacy root `input.txt` supported)
+- `report_inputs/members.xlsx` (team list for Jira reports; legacy root `members.xlsx` supported)
 - Optional: `code_volume.xlsx` (jira_comprehensive metrics)
 - Optional: templates in `templates/word` and `templates/excel`
 - Optional: `bundle-ca` (custom CA for SSL)
@@ -76,7 +76,7 @@ python stats_main.py setup
 python stats_main.py run \
   --report jira_weekly \
   --start 2025-02-01 --end 2025-02-28 \
-  --params project=ABC member_list_file=members.xlsx include_empty_weeks=True \
+  --params project=ABC member_list_file=report_inputs/members.xlsx include_empty_weeks=True \
   --output-formats excel word
 
 python stats_main.py run \
@@ -99,7 +99,7 @@ python stats_main.py run \
 - **Jira comprehensive**:
   - Excel-only; no Word/CSV output.
   - Requires JQL or project+dates or version/epic filters.
-  - Member-based metrics depend on `members.xlsx` columns.
+  - Member-based metrics depend on `report_inputs/members.xlsx` columns.
 - **Jira weekly email**:
   - HTML-only output.
   - Diff is printed to console only (not embedded into report HTML).

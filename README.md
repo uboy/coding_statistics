@@ -22,7 +22,8 @@ templates/
 
 1. Install dependencies: `pip install -r requirements.txt`
 2. Generate/verify configuration: `python stats_main.py setup`
-   - Copies `config.ini_template` if needed.
+   - Copies `configs/config.ini_template` if needed.
+   - Default config path: `configs/local/config.ini`.
    - Prompts for tokens if they are missing (GitHub, Gitee, etc.).
 3. Fill in relevant sections `[gitee]`, `[gitcode]`, `[github]`, `[gitlab]`, `[codehub]`, `[gerrit]`, `[jira]`, `[reporting]`.
    - For AI weekly email report also configure `[ollama]` and optional defaults in `[jira_weekly_email]`.
@@ -32,7 +33,7 @@ templates/
 # Running Reports
 
 ```
-# Unified review report from links (input.txt) export to Excel/CSV/Word
+# Unified review report from links (default: report_inputs/input.txt) export to Excel/CSV/Word
 python stats_main.py run \
   --report unified_review \
   --output-formats excel word
@@ -42,7 +43,7 @@ python stats_main.py run \
   --report jira_weekly \
   --start 2025-02-01 \
   --end 2025-02-28 \
-  --params project=ABC include_empty_weeks=True member_list_file=members.xlsx \
+  --params project=ABC include_empty_weeks=True member_list_file=report_inputs/members.xlsx \
   --output-formats excel word
 
 # Comprehensive Jira report (Excel-only, migrated from legacy jira_ranking_report.py)
@@ -50,7 +51,7 @@ python stats_main.py run \
   --report jira_comprehensive \
   --start 2025-02-01 \
   --end 2025-02-28 \
-  --params project=ABC member_list_file=members.xlsx code_volume_file=code_volume.xlsx \
+  --params project=ABC member_list_file=report_inputs/members.xlsx code_volume_file=code_volume.xlsx \
   --output-formats excel
 
 # Weekly Jira email report (HTML-only, with optional Ollama text polishing)
@@ -58,7 +59,7 @@ python stats_main.py run \
   --report jira_weekly_email \
   --params project=ABC week_date=2026-02-18 labels_highlights=highlights labels_report=report ai_provider=ollama ollama_enabled=true vacation_file=TelmaST_Team_Vacation.xlsx vacation_sheet=Vacations2026
 
-- Для `unified_review` параметры `--start/--end` опциональны. Если их не задавать, будут обработаны все ссылки из `reporting.links_file` (по умолчанию `input.txt`). При указании дат в отчёт попадут только PR/коммиты, замёрженные в указанный период.
+- Для `unified_review` параметры `--start/--end` опциональны. Если их не задавать, будут обработаны все ссылки из `reporting.links_file` (по умолчанию `report_inputs/input.txt`, с fallback на legacy `input.txt`). При указании дат в отчёт попадут только PR/коммиты, замёрженные в указанный период.
 - Источник для каждой ссылки определяется автоматически по URL, так что `--sources` задавать не обязательно.
 - Для `jira_weekly` параметр `--sources` необязателен, по умолчанию используется `jira`. Если нужны другие источники, их можно указать явно.
 - Для `jira_comprehensive` можно передать `--params jql=...` (или `version=...` / `epic=...`) вместо `project+dates`.
@@ -112,21 +113,21 @@ Each view is generated as a separate section in the Word document. Excel export 
 The toolkit includes a two-level caching system to speed up repeated runs:
 
 1. **API-level caching**: All API requests are cached automatically. This reduces redundant calls to Git services when processing the same repositories or links.
-2. **Link-level caching**: Results from processing individual links (PRs/commits) are cached, so re-running the same `input.txt` file is much faster.
+2. **Link-level caching**: Results from processing individual links (PRs/commits) are cached, so re-running the same `report_inputs/input.txt` file is much faster.
 
-Cache configuration in `config.ini`:
+Cache configuration in `configs/local/config.ini`:
 ```ini
 [cache]
 ; Enable/disable caching (true/false)
 enabled = true
 ; Path to cache file (JSON format, can be edited manually)
-file = cache.json
+file = data/cache/cache.json
 ; Time-to-live in days (0 = no expiration)
 ttl_days = 0
 ```
 
-- Cache is stored in JSON format, so you can manually edit `cache.json` if needed.
-- To clear cache, delete `cache.json` or set `enabled = false`.
+- Cache is stored in JSON format, so you can manually edit `data/cache/cache.json` if needed.
+- To clear cache, delete `data/cache/cache.json` or set `enabled = false`.
 - Cache is automatically saved after each report run.
 
 # Templates and Export
@@ -154,13 +155,13 @@ pytest tests
 
 Windows:
 ```
-build_stats_tool.cmd
+scripts/build/build_stats_tool.cmd
 ```
 
 Linux/macOS:
 ```
-chmod +x build_stats_tool.sh
-./build_stats_tool.sh
+chmod +x scripts/build/build_stats_tool.sh
+./scripts/build/build_stats_tool.sh
 ```
 
 Outputs `dist/stats_tool` executable (PyInstaller-based) bundling Python + templates.

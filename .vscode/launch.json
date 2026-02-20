@@ -1,17 +1,110 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python Debugger: Current File with Arguments",
+            "name": "Stats: Setup Config",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "program": "${workspaceFolder}/stats_main.py",
             "console": "integratedTerminal",
             "args": [
-                "-d 2024-08-01"
+                "setup",
+                "--config",
+                "configs/local/config.ini"
+            ]
+        },
+        {
+            "name": "Stats: Unified Review (Current Month)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/stats_main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "run",
+                "--config",
+                "configs/local/config.ini",
+                "--report",
+                "unified_review",
+                "--start",
+                "2026-02-01",
+                "--end",
+                "2026-02-20",
+                "--output-formats",
+                "excel",
+                "word",
+                "--params",
+                "output_dir=reports"
+            ]
+        },
+        {
+            "name": "Stats: Jira Weekly (Current Month)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/stats_main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "run",
+                "--config",
+                "configs/local/config.ini",
+                "--report",
+                "jira_weekly",
+                "--start",
+                "2026-02-01",
+                "--end",
+                "2026-02-20",
+                "--output-formats",
+                "excel",
+                "word",
+                "--params",
+                "project=ABC",
+                "member_list_file=report_inputs/members.xlsx",
+                "output_dir=reports"
+            ]
+        },
+        {
+            "name": "Stats: Jira Comprehensive (Current Month)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/stats_main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "run",
+                "--config",
+                "configs/local/config.ini",
+                "--report",
+                "jira_comprehensive",
+                "--start",
+                "2026-02-01",
+                "--end",
+                "2026-02-20",
+                "--output-formats",
+                "excel",
+                "--params",
+                "project=ABC",
+                "member_list_file=report_inputs/members.xlsx",
+                "output_dir=reports"
+            ]
+        },
+        {
+            "name": "Stats: Jira Weekly Email (Current Week)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/stats_main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "run",
+                "--config",
+                "configs/local/config.ini",
+                "--report",
+                "jira_weekly_email",
+                "--output-formats",
+                "html",
+                "--params",
+                "project=ABC",
+                "week_date=2026-02-20",
+                "labels_highlights=highlights",
+                "labels_report=report",
+                "output_dir=reports"
             ]
         }
     ]

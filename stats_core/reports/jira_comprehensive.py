@@ -4,7 +4,7 @@ Jira comprehensive report - migrated from legacy jira_ranking_report.py.
 Generates a multi-sheet Excel workbook:
 - Issues (detailed issue export including description/comments)
 - Links (URLs extracted from descriptions/comments)
-- Engineer/QA/PM performance sheets (requires members.xlsx)
+- Engineer/QA/PM performance sheets (requires report_inputs/members.xlsx by default)
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from pandas.api.types import is_object_dtype, is_string_dtype
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Font, PatternFill
 
+from ..pathing import resolve_member_list_path
 from ..sources.jira import JiraSource
 from . import registry
 
@@ -1140,7 +1141,8 @@ class JiraComprehensiveReport:
         params["jql"] = _extra_param(extra_params, "jql")
         params["member_list_file"] = _extra_param(
             extra_params, "member_list_file", "member-list-file"
-        ) or "members.xlsx"
+        )
+        params["member_list_file"] = str(resolve_member_list_path(params["member_list_file"]))
         params["code_volume_file"] = _extra_param(
             extra_params, "code_volume_file", "code-volume-file"
         )

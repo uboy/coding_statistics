@@ -23,7 +23,7 @@
 - Tests: `pytest tests`
 - Lint: TODO (no linter configured)
 - Typecheck: TODO (no type checker configured)
-- Build (binary): `build_stats_tool.cmd` (Windows) / `./build_stats_tool.sh` (Linux/macOS)
+- Build (binary): `scripts/build/build_stats_tool.cmd` (Windows) / `./scripts/build/build_stats_tool.sh` (Linux/macOS)
 
 ## Change Policy
 - Keep diffs minimal and additive
@@ -31,7 +31,7 @@
 - No secrets/tokens/credentials in repo or logs
 - No drive-by refactors unrelated to the task
 - Follow the 3-role workflow: Architect -> Approved spec -> Developer -> Reviewer
-- Keep `README.md`, `SPEC.md`, and relevant design docs in sync when adding/changing report capabilities
+- Keep `README.md`, `docs/specs/common/SPEC.md`, and relevant design docs in sync when adding/changing report capabilities
 
 ## Definition of Done
 - Requirements implemented exactly as approved spec

@@ -30,7 +30,7 @@ class JiraSource:
         self.password = config_section.get("password", "")
         
         if not (self.jira_url and self.username and self.password):
-            raise ValueError("Jira credentials are not configured in config.ini [jira].")
+            raise ValueError("Jira credentials are not configured in configs/local/config.ini [jira].")
 
         jira_options: dict[str, Any] = {"verify": "bundle-ca"} if Path("bundle-ca").exists() else {"verify": True}
         self.jira = JIRA(server=self.jira_url, basic_auth=(self.username, self.password), options=jira_options)

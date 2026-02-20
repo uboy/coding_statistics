@@ -15,6 +15,7 @@ import pathlib
 from typing import Sequence
 
 from . import config as config_utils
+from .pathing import resolve_config_template_path, resolve_links_file_path
 from .stats.collector import collect_stats, CollectorParams, SOURCE_BUILDERS
 from .reports import registry as report_registry
 
@@ -27,10 +28,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     setup_cmd = sub.add_parser("setup", help="Guide through config/token setup.")
-    setup_cmd.add_argument("--config", default=str(config_utils.DEFAULT_CONFIG_FILE), help="Path to config.ini.")
+    setup_cmd.add_argument(
+        "--config",
+        default=str(config_utils.DEFAULT_CONFIG_FILE),
+        help="Path to config file (default: configs/local/config.ini).",
+    )
 
     run_cmd = sub.add_parser("run", help="Execute a report.")
-    run_cmd.add_argument("--config", default=str(config_utils.DEFAULT_CONFIG_FILE), help="Path to config.ini.")
+    run_cmd.add_argument(
+        "--config",
+        default=str(config_utils.DEFAULT_CONFIG_FILE),
+        help="Path to config file (default: configs/local/config.ini).",
+    )
     run_cmd.add_argument("--report", required=True, choices=report_registry.available_reports())
     run_cmd.add_argument("--sources", nargs="+", help="Optional list of sources to pull from. Defaults to jira for Jira reports with custom flow.")
     run_cmd.add_argument("--start", help="Start date (YYYY-MM-DD)")
@@ -63,10 +72,11 @@ def _available_sources(config) -> list[str]:
 def cmd_setup(config_path: pathlib.Path | str) -> None:
     cfg_path = pathlib.Path(config_path)
     if not cfg_path.exists():
-        template_path = pathlib.Path("config.ini_template")
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        template_path = resolve_config_template_path()
         if template_path.exists():
             cfg_path.write_text(template_path.read_text(encoding="utf-8"), encoding="utf-8")
-            print(f"Создан {cfg_path} на основе config.ini_template.")
+            print(f"Создан {cfg_path} на основе {template_path}.")
         else:
             cfg_path.write_text("[jira]\nurl=\nusername=\npassword=\n", encoding="utf-8")
             print(f"Создан минимальный {cfg_path}. Заполните секции вручную.")
@@ -101,7 +111,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     reporting_section = config["reporting"] if config.has_section("reporting") else {}
     links_file = args.links_file or extra_params.get("links_file") or reporting_section.get("links_file")
     if links_file:
-        extra_params.setdefault("links_file", links_file)
+        extra_params.setdefault("links_file", str(resolve_links_file_path(links_file)))
 
     # Some reports have their own data collection flow and do not use Collector.
     # - jira_weekly: pulls Jira issues directly.
@@ -114,7 +124,9 @@ def cmd_run(args: argparse.Namespace) -> None:
             if missing:
                 print("⚠️  Не хватает токенов для следующих сервисов:")
                 for service in missing:
-                    hint = config_utils.TOKEN_HINTS.get(service, "Добавьте необходимые данные в config.ini.")
+                    hint = config_utils.TOKEN_HINTS.get(
+                        service, "Добавьте необходимые данные в configs/local/config.ini."
+                    )
                     print(f"  - [{service}] {hint}")
                 raise SystemExit("Заполните токены и повторите команду.")
         # Reports with custom data-collection flows don't use the shared dataset.
@@ -130,7 +142,9 @@ def cmd_run(args: argparse.Namespace) -> None:
             if missing:
                 print("⚠️  Не хватает токенов для следующих сервисов:")
                 for service in missing:
-                    hint = config_utils.TOKEN_HINTS.get(service, "Добавьте необходимые данные в config.ini.")
+                    hint = config_utils.TOKEN_HINTS.get(
+                        service, "Добавьте необходимые данные в configs/local/config.ini."
+                    )
                     print(f"  - [{service}] {hint}")
                 raise SystemExit("Заполните токены и повторите команду.")
 

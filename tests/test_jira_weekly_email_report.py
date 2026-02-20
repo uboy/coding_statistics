@@ -971,6 +971,88 @@ def test_jira_weekly_email_omits_empty_high_priority_and_bugs(mock_jira_source_c
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_bugs_summary_uses_project_level_in_progress_and_open(mock_jira_source_cls, tmp_path: Path):
+    weekly_issues = [
+        _make_issue(
+            "ABC-15",
+            summary="Closed high bug",
+            issue_type="Bug",
+            status="Done",
+            resolution="Done",
+            labels=["reportx"],
+            priority="High",
+            comment_body="Fixed this week.",
+        )
+    ]
+    in_progress_bug = _make_issue(
+        "ABC-16",
+        summary="Background bug in progress",
+        issue_type="Bug",
+        status="In Progress",
+        resolution="",
+        labels=[],
+        priority="Low",
+        comment_body="Still in progress.",
+    )
+    open_bug = _make_issue(
+        "ABC-17",
+        summary="Open bug backlog item",
+        issue_type="Bug",
+        status="To Do",
+        resolution="",
+        labels=[],
+        priority="Low",
+        comment_body="Open.",
+    )
+
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_text = str(jql)
+        if "issuekey in (EPIC-1)" in jql_text:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "statusCategory = 'In Progress'" in jql_text:
+            return [in_progress_bug]
+        if "resolution = Unresolved" in jql_text:
+            return [in_progress_bug, open_bug]
+        return weekly_issues
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "Bugs summary" in text
+    assert "1 trouble reports/issues are analyzed and closed, 1 currently in progress, 2 open in project." in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
 def test_jira_weekly_email_labels_report_all_includes_any_labels(mock_jira_source_cls, tmp_path: Path):
     issues = [
         _make_issue(

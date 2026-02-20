@@ -5,7 +5,10 @@ members.xlsx
 member_cache.json
 cache.json
 config.ini
+configs/local/config.ini
 __pycache__
+.pytest_cache
+.vscode
 build
 dist
 *.spec

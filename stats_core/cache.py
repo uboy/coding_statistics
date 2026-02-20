@@ -42,7 +42,7 @@ class CacheManager:
 
     def __init__(
         self,
-        cache_file: str = "cache.json",
+        cache_file: str = "data/cache/cache.json",
         enabled: bool = True,
         ttl_days: int = 0,
     ):
@@ -92,6 +92,9 @@ class CacheManager:
             logger.debug("Cache is disabled, skipping save")
             return
         try:
+            parent = os.path.dirname(self.cache_file)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             with open(self.cache_file, "w", encoding="utf-8") as f:
                 json.dump(self._cache, f, ensure_ascii=False, indent=2)
             link_count = len(self._cache.get("links", {}))

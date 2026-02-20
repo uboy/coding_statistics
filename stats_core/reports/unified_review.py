@@ -13,6 +13,7 @@ from configparser import ConfigParser
 from pathlib import Path
 
 from ..export import excel as excel_export, csv_export, word as word_export
+from ..pathing import resolve_links_file_path
 from . import registry
 from .unified_review_utils import HEADERS, parse_links, process_link
 
@@ -86,8 +87,8 @@ class UnifiedReviewReport:
             logger.debug("No proxy configuration found")
 
         extra_params = extra_params or {}
-        links_file = extra_params.get("links_file") or _get_reporting_value(config, "links_file", "input.txt")
-        links_file = links_file.strip() if links_file else links_file
+        raw_links_file = extra_params.get("links_file") or _get_reporting_value(config, "links_file", None)
+        links_file = str(resolve_links_file_path(raw_links_file))
         output_dir = extra_params.get("output_dir") or _get_reporting_value(config, "output_dir", "reports")
         output_base = Path(output_dir)
         output_base.mkdir(parents=True, exist_ok=True)
@@ -233,4 +234,3 @@ def _get_reporting_value(config: ConfigParser, key: str, fallback: str | None = 
     if config.has_section("reporting"):
         return config["reporting"].get(key, fallback)
     return fallback
-
