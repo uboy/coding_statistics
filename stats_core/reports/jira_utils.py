@@ -240,9 +240,24 @@ def build_resolved_issues_snapshot(
 
     issue_epic_map: dict[str, str | None] = {}
     issue_summary_map: dict[str, str] = {}
+    issue_status_map: dict[str, str] = {}
+    issue_resolved_map: dict[str, str] = {}
+    issue_labels_map: dict[str, str] = {}
     for issue in all_issues:
         issue_epic_map[issue.key] = getattr(issue.fields, "customfield_10000", None)
         issue_summary_map[issue.key] = issue.fields.summary
+        status = issue.fields.status.name if getattr(issue.fields, "status", None) else ""
+        issue_status_map[issue.key] = status
+        resolved_raw = getattr(issue.fields, "resolutiondate", "") or ""
+        issue_resolved_map[issue.key] = str(resolved_raw)[:10] if resolved_raw else ""
+        labels_raw = getattr(issue.fields, "labels", None)
+        if isinstance(labels_raw, (list, tuple, set)):
+            labels_text = ", ".join(str(label) for label in labels_raw if str(label).strip())
+        elif isinstance(labels_raw, str):
+            labels_text = labels_raw.strip()
+        else:
+            labels_text = ""
+        issue_labels_map[issue.key] = labels_text
 
     rows: list[dict[str, Any]] = []
 
@@ -271,19 +286,32 @@ def build_resolved_issues_snapshot(
             epic_link = issue_epic_map.get(parent_key, "")
 
         epic_name = epic_names.get(epic_link, "Unknown Epic") if epic_link else "Unknown Epic"
+        epic_status = issue_status_map.get(epic_link or "", "")
+        epic_resolved = issue_resolved_map.get(epic_link or "", "")
+        epic_labels = issue_labels_map.get(epic_link or "", "")
 
         issue_type = getattr(issue.fields, "issuetype", None)
         issue_type_name = issue_type.name if issue_type else "Unknown"
+        status_name = issue.fields.status.name if getattr(issue.fields, "status", None) else ""
+        resolution = issue.fields.resolution.name if getattr(issue.fields, "resolution", None) else ""
         description = getattr(issue.fields, "description", "") or ""
         last_comment = _extract_last_comment_in_period(jira_source, issue.key, start_dt, end_dt)
+        labels = issue_labels_map.get(issue.key, "")
 
         rows.append({
             "Issue_key": issue.key,
             "Summary": issue.fields.summary,
+            "Status": status_name,
+            "Resolution": resolution,
             "Resolution_Date": resolution_date,
             "Resolution_Week": resolution_dt.strftime("%G-W%V"),
             "Epic_Link": epic_link or "",
             "Epic_Name": epic_name,
+            "Epic_Status": epic_status,
+            "Epic_Resolved": epic_resolved,
+            "Epic_Labels": epic_labels,
+            "Labels": labels,
+            "Parent": parent_key or "",
             "Parent_Key": parent_key or "",
             "Parent_Summary": parent_summary or "",
             "Type": issue_type_name,

@@ -225,6 +225,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             assignee_username="carol",
             reporter_display="Carol",
             reporter_username="carol",
+            labels=["report"],
         ),
         _make_issue(
             "EPIC-2",
@@ -235,6 +236,7 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
             assignee_username="carol",
             reporter_display="Carol",
             reporter_username="carol",
+            labels=["report"],
         ),
     ]
 
@@ -403,14 +405,13 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     assert int(epic_one_summary["Reported_Issues_Resolved"]) == 1
     assert "Resolved 1 planned tasks on time." in str(epic_one_summary["Summary"])
     assert "Resolved 1 reported issues." in str(epic_one_summary["Summary"])
-    assert "- ABC-2:" in str(epic_one_summary["Summary"])
+    assert str(epic_one_summary["Summary"]).count("- ") == 1
 
     assert int(epic_two_summary["Planned_Tasks_Resolved"]) == 2
     assert int(epic_two_summary["Reported_Issues_Resolved"]) == 0
     assert "Resolved 2 planned tasks on time." in str(epic_two_summary["Summary"])
     assert "reported issues" not in str(epic_two_summary["Summary"])
-    assert "- ABC-6:" in str(epic_two_summary["Summary"])
-    assert "- ABC-7:" in str(epic_two_summary["Summary"])
+    assert str(epic_two_summary["Summary"]).count("- ") == 1
 
     def _sheet_row(sheet_name: str) -> dict[str, object]:
         sheet = wb[sheet_name]
@@ -611,6 +612,17 @@ def test_build_monthly_summary_df_uses_ai_rewrite_map_when_available():
     issues_df = pd.DataFrame(
         [
             {
+                "Issue_Key": "EPIC-1",
+                "Summary": "Epic one",
+                "Type": "Epic",
+                "Status": "In Progress",
+                "Resolution": "",
+                "Resolved": "",
+                "Labels": "report",
+                "Epic_Link": "",
+                "Epic_Name": "Epic One",
+            },
+            {
                 "Issue_Key": "ABC-1",
                 "Summary": "Task one",
                 "Type": "Task",
@@ -619,6 +631,7 @@ def test_build_monthly_summary_df_uses_ai_rewrite_map_when_available():
                 "Resolved": "2025-01-02",
                 "Description": "Initial implementation.",
                 "Last_Comment": "Feature completed.",
+                "Labels": "",
                 "Epic_Link": "EPIC-1",
                 "Epic_Name": "Epic One",
             },
@@ -631,6 +644,7 @@ def test_build_monthly_summary_df_uses_ai_rewrite_map_when_available():
                 "Resolved": "2025-01-03",
                 "Description": "",
                 "Last_Comment": "Bug fixed.",
+                "Labels": "",
                 "Epic_Link": "EPIC-1",
                 "Epic_Name": "Epic One",
             },
@@ -653,3 +667,134 @@ def test_build_monthly_summary_df_uses_ai_rewrite_map_when_available():
     assert "Resolved 1 reported issues." in summary_text
     assert "- ABC-1:" not in summary_text
     assert re.search(r"\b[A-Z]+-\d+\b", summary_text) is None
+
+
+def test_build_monthly_summary_df_filters_report_epics_and_groups_subtasks():
+    issues_df = pd.DataFrame(
+        [
+            {
+                "Issue_Key": "EPIC-REPORT",
+                "Summary": "Report epic",
+                "Type": "Epic",
+                "Status": "In Progress",
+                "Resolution": "",
+                "Resolved": "",
+                "Labels": "report",
+                "Epic_Link": "",
+                "Epic_Name": "Report Epic",
+            },
+            {
+                "Issue_Key": "EPIC-NOREPORT",
+                "Summary": "Other epic",
+                "Type": "Epic",
+                "Status": "In Progress",
+                "Resolution": "",
+                "Resolved": "",
+                "Labels": "other",
+                "Epic_Link": "",
+                "Epic_Name": "Other Epic",
+            },
+            {
+                "Issue_Key": "EPIC-CLOSED-OLD",
+                "Summary": "Closed old epic",
+                "Type": "Epic",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolved": "2024-12-01",
+                "Labels": "report",
+                "Epic_Link": "",
+                "Epic_Name": "Closed Old Epic",
+            },
+            {
+                "Issue_Key": "ABC-10",
+                "Summary": "Parent feature",
+                "Type": "Task",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolved": "2025-01-10",
+                "Description": "Parent implementation",
+                "Last_Comment": "Parent delivered",
+                "Labels": "",
+                "Epic_Link": "EPIC-REPORT",
+                "Epic_Name": "Report Epic",
+                "Parent": "",
+                "Parent_Summary": "",
+            },
+            {
+                "Issue_Key": "ABC-11",
+                "Summary": "Subtask one",
+                "Type": "Sub-task",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolved": "2025-01-11",
+                "Description": "Subtask part one",
+                "Last_Comment": "Part one done",
+                "Labels": "",
+                "Epic_Link": "EPIC-REPORT",
+                "Epic_Name": "Report Epic",
+                "Parent": "ABC-10",
+                "Parent_Summary": "Parent feature",
+            },
+            {
+                "Issue_Key": "ABC-12",
+                "Summary": "Subtask two",
+                "Type": "Sub-task",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolved": "2025-01-12",
+                "Description": "Subtask part two",
+                "Last_Comment": "Part two done",
+                "Labels": "",
+                "Epic_Link": "EPIC-REPORT",
+                "Epic_Name": "Report Epic",
+                "Parent": "ABC-10",
+                "Parent_Summary": "Parent feature",
+            },
+            {
+                "Issue_Key": "ABC-20",
+                "Summary": "Excluded by epic label",
+                "Type": "Task",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolved": "2025-01-15",
+                "Description": "Should be excluded",
+                "Last_Comment": "",
+                "Labels": "",
+                "Epic_Link": "EPIC-NOREPORT",
+                "Epic_Name": "Other Epic",
+            },
+            {
+                "Issue_Key": "ABC-30",
+                "Summary": "Excluded by old closed epic",
+                "Type": "Task",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolved": "2025-01-16",
+                "Description": "Should be excluded",
+                "Last_Comment": "",
+                "Labels": "",
+                "Epic_Link": "EPIC-CLOSED-OLD",
+                "Epic_Name": "Closed Old Epic",
+            },
+        ]
+    )
+    config = ConfigParser()
+
+    with patch("stats_core.reports.jira_comprehensive.rewrite_summary_items_with_ai") as mock_rewrite:
+        mock_rewrite.side_effect = lambda items, *_: {item["id"]: f"Grouped summary for {item['id']}" for item in items}
+        summary_df = build_monthly_summary_df(
+            issues_df,
+            config,
+            extra_params={"start": "2025-01-01", "end": "2025-01-31"},
+        )
+
+    ai_inputs = mock_rewrite.call_args.args[0]
+    assert len(ai_inputs) == 1
+    assert "subtask" in ai_inputs[0]["description"].casefold()
+
+    assert summary_df.shape[0] == 1
+    row = summary_df.iloc[0].to_dict()
+    assert row["Epic_Link"] == "EPIC-REPORT"
+    assert row["Planned_Tasks_Resolved"] == 3
+    summary_text = str(row["Summary"])
+    assert summary_text.count("- ") == 1

@@ -97,10 +97,18 @@ def _to_weekly_summary_source_df(resolved_issues_df: pd.DataFrame) -> pd.DataFra
                 "Type",
                 "Epic_Link",
                 "Epic_Name",
+                "Epic_Status",
+                "Epic_Resolved",
+                "Epic_Labels",
                 "Resolved",
+                "Status",
+                "Resolution",
+                "Labels",
+                "Parent",
+                "Parent_Key",
+                "Parent_Summary",
                 "Description",
                 "Last_Comment",
-                "Resolution",
             ]
         )
     summary_df = resolved_issues_df.rename(
@@ -109,15 +117,34 @@ def _to_weekly_summary_source_df(resolved_issues_df: pd.DataFrame) -> pd.DataFra
             "Resolution_Date": "Resolved",
         }
     ).copy()
-    for column in ("Issue_Key", "Summary", "Type", "Epic_Link", "Epic_Name", "Resolved"):
+    for column in (
+        "Issue_Key",
+        "Summary",
+        "Type",
+        "Epic_Link",
+        "Epic_Name",
+        "Epic_Status",
+        "Epic_Resolved",
+        "Epic_Labels",
+        "Resolved",
+        "Status",
+        "Resolution",
+        "Labels",
+        "Parent",
+        "Parent_Key",
+        "Parent_Summary",
+    ):
         if column not in summary_df.columns:
             summary_df[column] = ""
+    if "Parent_Key" in summary_df.columns:
+        summary_df["Parent"] = summary_df["Parent"].fillna("").astype(str)
+        parent_keys = summary_df["Parent_Key"].fillna("").astype(str)
+        empty_parent_mask = summary_df["Parent"].str.strip().eq("")
+        summary_df.loc[empty_parent_mask, "Parent"] = parent_keys.loc[empty_parent_mask]
     if "Description" not in summary_df.columns:
         summary_df["Description"] = ""
     if "Last_Comment" not in summary_df.columns:
         summary_df["Last_Comment"] = ""
-    if "Resolution" not in summary_df.columns:
-        summary_df["Resolution"] = "Done"
     return summary_df
 
 

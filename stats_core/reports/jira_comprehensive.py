@@ -14,7 +14,7 @@ import logging
 import os
 import re
 from configparser import ConfigParser
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 _DONE_STATUSES = {"done", "resolved", "closed"}
 _SUMMARY_MAX_SENTENCES = 2
+_SUBTASK_TYPES = {"sub-task", "subtask", "sub task"}
 
 _TT_COUNTER_PATTERNS: dict[str, re.Pattern[str]] = {
     # Accept counters written as:
@@ -175,11 +176,12 @@ def _build_summary_prompt(items: list[dict[str, str]], *, start_index: int = 1) 
         "1) Output language: English.",
         "2) For each item, produce exactly 1-2 short complete sentences.",
         "3) Focus on RESULT and delivered value, not process details.",
-        "4) Use only provided fields: issue title, description, latest comment.",
+        "4) Use only provided fields: issue title, description, latest comment, grouping hint.",
         "5) Exclude all links, repository references, file paths, PR/MR mentions, commit hashes, and Jira keys.",
         "6) Do not invent facts; if details are weak, state a safe concrete completion outcome.",
         "7) Keep phrasing clear for monthly management summary.",
-        "8) Return ONLY one valid JSON object mapping id to rewritten text.",
+        "8) Input item can represent a feature group (parent task + subtasks); summarize the whole feature in one statement.",
+        "9) Return ONLY one valid JSON object mapping id to rewritten text.",
         "JSON example: {\"t1\":\"...\", \"t2\":\"...\"}",
         "---",
         "Input items:",
@@ -189,9 +191,185 @@ def _build_summary_prompt(items: list[dict[str, str]], *, start_index: int = 1) 
         target_id = f"t{idx}"
         target_map[target_id] = item["id"]
         prompt_lines.append(
-            f'ID={target_id}; title="{item.get("summary", "")}"; description="{item.get("description", "")}"; latest_comment="{item.get("last_comment", "")}"'
+            f'ID={target_id}; title="{item.get("summary", "")}"; description="{item.get("description", "")}"; latest_comment="{item.get("last_comment", "")}"; grouping_hint="{item.get("grouping_hint", "")}"'
         )
     return target_map, "\n".join(prompt_lines)
+
+
+def _parse_label_set(value: Any) -> set[str]:
+    text = _compact_text(value).casefold()
+    if not text:
+        return set()
+    return {token for token in re.split(r"[\s,;|]+", text) if token}
+
+
+def _parse_iso_date(value: Any) -> date | None:
+    text = _compact_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _summary_period(extra_params: dict[str, Any]) -> tuple[date | None, date | None]:
+    start_raw = _first_value(
+        [
+            extra_params.get("start"),
+            extra_params.get("start_date"),
+            extra_params.get("start-date"),
+        ]
+    )
+    end_raw = _first_value(
+        [
+            extra_params.get("end"),
+            extra_params.get("end_date"),
+            extra_params.get("end-date"),
+        ]
+    )
+    return _parse_iso_date(start_raw), _parse_iso_date(end_raw)
+
+
+def _resolved_in_period(resolved_date: date | None, start_dt: date | None, end_dt: date | None) -> bool:
+    if resolved_date is None:
+        return False
+    if start_dt and end_dt:
+        return start_dt <= resolved_date <= end_dt
+    return True
+
+
+def _build_epic_metadata_map(issues_df: pd.DataFrame) -> dict[str, dict[str, str]]:
+    if issues_df.empty:
+        return {}
+    if "Type" not in issues_df.columns or "Issue_Key" not in issues_df.columns:
+        return {}
+
+    epic_rows = issues_df[issues_df["Type"].fillna("").astype(str).map(_normalize_text) == "epic"]
+    if epic_rows.empty:
+        return {}
+
+    metadata: dict[str, dict[str, str]] = {}
+    for _, row in epic_rows.iterrows():
+        epic_key = _compact_text(row.get("Issue_Key"))
+        if not epic_key:
+            continue
+        metadata[epic_key] = {
+            "labels": _compact_text(row.get("Labels")),
+            "status": _compact_text(row.get("Status")),
+            "resolved": _compact_text(row.get("Resolved")),
+        }
+    return metadata
+
+
+def _compose_grouped_summary_inputs(
+    planned_df: pd.DataFrame,
+    epic_link: str,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    parent_key_map: dict[str, str] = {}
+    for _, row in planned_df.iterrows():
+        issue_key = _compact_text(row.get("Issue_Key"))
+        if issue_key:
+            parent_key_map[issue_key] = _compact_text(row.get("Parent_Summary")) or _to_plain_text(row.get("Summary"))
+
+    subtask_parent_keys: set[str] = set()
+    for _, row in planned_df.iterrows():
+        type_norm = _normalize_text(row.get("Type"))
+        parent_key = _compact_text(row.get("Parent")) or _compact_text(row.get("Parent_Key"))
+        if type_norm in _SUBTASK_TYPES and parent_key:
+            subtask_parent_keys.add(parent_key)
+
+    grouped: dict[str, dict[str, Any]] = {}
+    ordered_group_keys: list[str] = []
+    for _, row in planned_df.iterrows():
+        issue_key = _compact_text(row.get("Issue_Key"))
+        parent_key = _compact_text(row.get("Parent")) or _compact_text(row.get("Parent_Key"))
+        parent_summary = _compact_text(row.get("Parent_Summary")) or parent_key_map.get(parent_key, "")
+        type_norm = _normalize_text(row.get("Type"))
+        is_subtask = type_norm in _SUBTASK_TYPES
+
+        if is_subtask and parent_key:
+            group_key = parent_key
+        elif issue_key and issue_key in subtask_parent_keys:
+            group_key = issue_key
+        else:
+            group_key = issue_key or f"row-{len(ordered_group_keys) + 1}"
+
+        if group_key not in grouped:
+            ordered_group_keys.append(group_key)
+            grouped[group_key] = {
+                "group_key": group_key,
+                "parent_summary": parent_key_map.get(group_key, "") or parent_summary,
+                "items": [],
+            }
+        grouped[group_key]["items"].append(
+            {
+                "issue_key": issue_key,
+                "summary": _to_plain_text(row.get("Summary")),
+                "description": _to_plain_text(row.get("Description")),
+                "last_comment": _to_plain_text(row.get("Last_Comment")) or _to_plain_text(row.get("Comments")),
+                "is_subtask": is_subtask,
+            }
+        )
+
+    grouped_items: list[dict[str, str]] = []
+    ai_inputs: list[dict[str, str]] = []
+    for idx, group_key in enumerate(ordered_group_keys, start=1):
+        group = grouped[group_key]
+        components = group.get("items", [])
+        if not components:
+            continue
+
+        main_summary = _compact_text(group.get("parent_summary")) or _compact_text(components[0].get("summary")) or "Task"
+        description_parts: list[str] = []
+        comment_parts: list[str] = []
+        grouping_hint = ""
+        if len(components) > 1:
+            subtask_labels: list[str] = []
+            for component in components:
+                label = _compact_text(component.get("summary"))
+                if component.get("is_subtask"):
+                    subtask_labels.append(label)
+                if _compact_text(component.get("description")):
+                    description_parts.append(_compact_text(component.get("description")))
+                if _compact_text(component.get("last_comment")):
+                    comment_parts.append(_compact_text(component.get("last_comment")))
+            if subtask_labels:
+                grouping_hint = (
+                    f"Feature group: parent task '{main_summary}' includes subtasks: "
+                    + "; ".join(subtask_labels)
+                )
+                description_parts.append(grouping_hint)
+        else:
+            only = components[0]
+            if _compact_text(only.get("description")):
+                description_parts.append(_compact_text(only.get("description")))
+            if _compact_text(only.get("last_comment")):
+                comment_parts.append(_compact_text(only.get("last_comment")))
+
+        merged_description = " ".join(description_parts).strip()
+        merged_comment = " ".join(comment_parts).strip()
+        fallback = _fallback_issue_achievement(main_summary, merged_description, merged_comment)
+        item_id = f"{epic_link or 'NOEPIC'}::{group_key or str(idx)}"
+        grouped_item = {
+            "id": item_id,
+            "summary": main_summary,
+            "description": merged_description,
+            "last_comment": merged_comment,
+            "grouping_hint": grouping_hint,
+            "fallback": fallback,
+        }
+        grouped_items.append(grouped_item)
+        ai_inputs.append(
+            {
+                "id": item_id,
+                "summary": main_summary,
+                "description": merged_description,
+                "last_comment": merged_comment,
+                "grouping_hint": grouping_hint,
+            }
+        )
+    return grouped_items, ai_inputs
 
 
 def _build_webui_api_url(base_url: str, endpoint: str) -> str:
@@ -440,24 +618,34 @@ def _sort_by_epic_and_resolved(df: pd.DataFrame) -> pd.DataFrame:
     return sorted_df.drop(columns=["_sort_epic_name", "_sort_resolved"])
 
 
-def _fetch_epic_names(jira, epic_keys: list[str]) -> dict[str, str]:
+def _fetch_epic_metadata(jira, epic_keys: list[str]) -> dict[str, dict[str, str]]:
     if not epic_keys:
         return {}
     epic_keys = [key for key in epic_keys if key]
     if not epic_keys:
         return {}
 
-    epic_names: dict[str, str] = {}
+    epic_metadata: dict[str, dict[str, str]] = {}
     chunk_size = 50
     for i in range(0, len(epic_keys), chunk_size):
         chunk = epic_keys[i:i + chunk_size]
         epics = jira.search_issues(
             f"issuekey in ({', '.join(chunk)})",
             maxResults=1000,
-            fields=["key", "summary"],
+            fields=["key", "summary", "status", "resolutiondate", "labels"],
         )
-        epic_names.update({epic.key: epic.fields.summary for epic in epics})
-    return epic_names
+        for epic in epics:
+            labels_raw = getattr(epic.fields, "labels", None) or []
+            labels = ", ".join(str(label) for label in labels_raw if str(label).strip())
+            status_name = getattr(getattr(epic.fields, "status", None), "name", "") or ""
+            resolved_raw = getattr(epic.fields, "resolutiondate", "") or ""
+            epic_metadata[epic.key] = {
+                "name": _compact_text(getattr(epic.fields, "summary", "")),
+                "status": _compact_text(status_name),
+                "resolved": _compact_text(str(resolved_raw)[:10]),
+                "labels": _compact_text(labels),
+            }
+    return epic_metadata
 
 
 def _build_comment_link(jira_url: str, issue_key: str, comment_id: str | None) -> str:
@@ -548,7 +736,8 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                     parent_epic = getattr(parent_issue.fields, "customfield_10000", "") or ""
                     issue_epic_map[parent_issue.key] = parent_epic
 
-    epic_name_map = _fetch_epic_names(jira, list({value for value in issue_epic_map.values() if value}))
+    epic_metadata_map = _fetch_epic_metadata(jira, list({value for value in issue_epic_map.values() if value}))
+    epic_name_map = {key: value.get("name", "") for key, value in epic_metadata_map.items()}
     jira_url = jira._options.get("server", "")
 
     for issue in all_issues:
@@ -632,6 +821,7 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
         if not epic_link and parent_key:
             epic_link = issue_epic_map.get(parent_key, "")
         epic_name = epic_name_map.get(epic_link, "Unknown Epic") if epic_link else "Unknown Epic"
+        epic_meta = epic_metadata_map.get(epic_link, {}) if epic_link else {}
 
         data.append(
             {
@@ -656,6 +846,9 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
                 "Labels": labels,
                 "Epic_Link": epic_link,
                 "Epic_Name": epic_name,
+                "Epic_Status": epic_meta.get("status", ""),
+                "Epic_Resolved": epic_meta.get("resolved", ""),
+                "Epic_Labels": epic_meta.get("labels", ""),
                 "Parent": parent_key,
             }
         )
@@ -994,14 +1187,44 @@ def build_monthly_summary_df(
     for required_col in ("Type", "Issue_Key", "Epic_Name", "Epic_Link"):
         if required_col not in resolved_df.columns:
             resolved_df[required_col] = ""
-    if "Resolved" not in resolved_df.columns:
-        resolved_df["Resolved"] = ""
-    if "Last_Comment" not in resolved_df.columns:
-        resolved_df["Last_Comment"] = ""
-    if "Description" not in resolved_df.columns:
-        resolved_df["Description"] = ""
-    if "Summary" not in resolved_df.columns:
-        resolved_df["Summary"] = ""
+    for optional_col in (
+        "Resolved",
+        "Last_Comment",
+        "Description",
+        "Summary",
+        "Labels",
+        "Status",
+        "Parent",
+        "Parent_Key",
+        "Parent_Summary",
+        "Epic_Labels",
+        "Epic_Status",
+        "Epic_Resolved",
+    ):
+        if optional_col not in resolved_df.columns:
+            resolved_df[optional_col] = ""
+    if "Parent_Key" in resolved_df.columns:
+        resolved_df["Parent"] = resolved_df["Parent"].fillna("").astype(str)
+        parent_keys = resolved_df["Parent_Key"].fillna("").astype(str)
+        empty_parent_mask = resolved_df["Parent"].str.strip().eq("")
+        resolved_df.loc[empty_parent_mask, "Parent"] = parent_keys.loc[empty_parent_mask]
+
+    epic_metadata_map = _build_epic_metadata_map(issues_df)
+    if epic_metadata_map:
+        for col_name, meta_key in (
+            ("Epic_Labels", "labels"),
+            ("Epic_Status", "status"),
+            ("Epic_Resolved", "resolved"),
+        ):
+            values: list[str] = []
+            for _, row in resolved_df.iterrows():
+                current_value = _compact_text(row.get(col_name))
+                if current_value:
+                    values.append(current_value)
+                    continue
+                epic_key = _compact_text(row.get("Epic_Link"))
+                values.append(_compact_text(epic_metadata_map.get(epic_key, {}).get(meta_key)))
+            resolved_df[col_name] = values
 
     resolved_df["_type_norm"] = resolved_df["Type"].fillna("").astype(str).map(_normalize_text)
     resolved_df["_epic_norm"] = resolved_df["Epic_Name"].fillna("").astype(str).map(_normalize_text)
@@ -1013,47 +1236,41 @@ def build_monthly_summary_df(
         kind="mergesort",
     )
 
+    summary_start_dt, summary_end_dt = _summary_period(extra_params)
     epic_payloads: list[dict[str, Any]] = []
     ai_inputs: list[dict[str, str]] = []
     for (epic_link_raw, epic_name_raw), epic_df in resolved_df.groupby(["Epic_Link", "Epic_Name"], dropna=False, sort=False):
         epic_link = _compact_text(epic_link_raw)
+        if not epic_link:
+            continue
         epic_name = _compact_text(epic_name_raw) or "Unknown Epic"
+
+        epic_meta = epic_metadata_map.get(epic_link, {})
+        epic_labels_raw = _first_value(list(epic_df.get("Epic_Labels", pd.Series([], dtype=str)).tolist())) or epic_meta.get("labels", "")
+        epic_status_raw = _first_value(list(epic_df.get("Epic_Status", pd.Series([], dtype=str)).tolist())) or epic_meta.get("status", "")
+        epic_resolved_raw = _first_value(list(epic_df.get("Epic_Resolved", pd.Series([], dtype=str)).tolist())) or epic_meta.get("resolved", "")
+
+        has_report_label = "report" in _parse_label_set(epic_labels_raw)
+        epic_resolved_dt = _parse_iso_date(epic_resolved_raw)
+        epic_status_norm = _normalize_text(epic_status_raw)
+        epic_is_open = epic_resolved_dt is None and epic_status_norm not in _DONE_STATUSES
+        epic_closed_in_period = _resolved_in_period(epic_resolved_dt, summary_start_dt, summary_end_dt)
+        if not (has_report_label and (epic_is_open or epic_closed_in_period)):
+            continue
+
         bug_count = int((epic_df["_type_norm"] == "bug").sum())
 
         planned_df = epic_df[~epic_df["_type_norm"].isin({"bug", "epic"})]
-        planned_items: list[dict[str, str]] = []
-        for _, row in planned_df.iterrows():
-            issue_key = _compact_text(row.get("Issue_Key"))
-            summary = _to_plain_text(row.get("Summary"))
-            description = _to_plain_text(row.get("Description"))
-            last_comment = _to_plain_text(row.get("Last_Comment"))
-            if not last_comment:
-                last_comment = _to_plain_text(row.get("Comments"))
-            item_id = f"{epic_link or 'NOEPIC'}::{issue_key or str(len(planned_items) + 1)}"
-            fallback = _fallback_issue_achievement(summary, description, last_comment)
-            planned_item = {
-                "id": item_id,
-                "issue_key": issue_key,
-                "summary": summary,
-                "description": description,
-                "last_comment": last_comment,
-                "fallback": fallback,
-            }
-            planned_items.append(planned_item)
-            ai_inputs.append(
-                {
-                    "id": item_id,
-                    "summary": summary,
-                    "description": description,
-                    "last_comment": last_comment,
-                }
-            )
+        planned_issue_count = int(planned_df.shape[0])
+        grouped_items, grouped_ai_inputs = _compose_grouped_summary_inputs(planned_df, epic_link)
+        ai_inputs.extend(grouped_ai_inputs)
 
         epic_payloads.append(
             {
                 "epic_link": epic_link,
                 "epic_name": epic_name,
-                "planned_items": planned_items,
+                "planned_items": grouped_items,
+                "planned_issue_count": planned_issue_count,
                 "bug_count": bug_count,
             }
         )
@@ -1064,7 +1281,7 @@ def build_monthly_summary_df(
     for epic in epic_payloads:
         planned_items = epic["planned_items"]
         bug_count = int(epic["bug_count"])
-        planned_count = len(planned_items)
+        planned_count = int(epic.get("planned_issue_count", len(planned_items)))
 
         summary_lines: list[str] = []
         for item in planned_items:

@@ -113,7 +113,7 @@ class JiraSource:
                 maxResults=max_results,
                 fields=[
                     "key", "summary", "assignee", "resolution", "resolutiondate", "status", "updated",
-                    "customfield_10000", "parent", "issuetype", "created"
+                    "customfield_10000", "parent", "issuetype", "created", "description", "labels"
                 ]
             )
             all_issues.extend(issues)
