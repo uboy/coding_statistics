@@ -110,6 +110,85 @@ def test_resolve_week_window_from_compact_week_and_year():
     assert week.end == date(2026, 2, 22)
 
 
+def test_jira_weekly_email_missing_project_does_not_raise(tmp_path: Path):
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {},
+        }
+    )
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "week_date": "2026-03-03",
+            "output_dir": str(tmp_path),
+        },
+    )
+    assert not (tmp_path / "jira_weekly_email__26'w10.html").exists()
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_invalid_vacation_horizon_days_does_not_raise(mock_jira_source_cls, tmp_path: Path):
+    issues = [
+        _make_issue(
+            "ABC-10",
+            summary="Report task done",
+            issue_type="Task",
+            status="Done",
+            resolution="Done",
+            labels=["reportx"],
+            priority="Medium",
+            comment_body="Done this week.",
+        )
+    ]
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        if "issuekey in (EPIC-1)" in str(jql):
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        return issues
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "vacation_file": str(tmp_path / "missing-vacations.xlsx"),
+            "vacation_horizon_days": "abc",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    assert html_path.exists()
+
+
 @patch("stats_core.reports.jira_weekly_email.requests.post")
 def test_rewrite_payload_with_webui_provider(mock_post):
     response = Mock()

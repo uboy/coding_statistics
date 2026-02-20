@@ -71,6 +71,7 @@ python stats_main.py run \
 - Для Ollama можно задать `ollama_api_key` (CLI param) или `[ollama].api_key` в конфиге.
 - Для WebUI можно выбрать `ai_provider=webui` и задать `webui_url`, `webui_endpoint`, `webui_model`, `webui_api_key` (или секцию `[webui]`).
 - Для `vacation_file`: абсолютный путь используется как есть, относительный резолвится от parent-каталога проекта.
+  Рекомендуемое место файла отпусков: `report_inputs/<vacations>.xlsx` (например, `report_inputs/vacations.xlsx`).
 - Для `vacation_horizon_anchor`: `today` (по умолчанию) или `week_start`.
 - Заголовки/поля шапки конфигурируются в `[jira_weekly_email]`: `header_project_info_title`, `header_banner_bg_color`, `meta_active_iteration_*`, `meta_report_period_label`, `meta_report_owner_*`, `meta_team_member_*`.
 - Дополнительная HTML-строка в конце отчёта задаётся через `footer_html` (вставляется как raw HTML).

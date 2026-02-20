@@ -89,6 +89,31 @@ def _strip_wrapping_quotes(value: str) -> str:
     return cleaned
 
 
+def _parse_positive_int_with_fallback(value: Any, default: int, *, name: str) -> int:
+    text = _normalize_text(value)
+    if not text:
+        return default
+    try:
+        parsed = int(text)
+    except ValueError:
+        logger.error(
+            "Invalid %s=%r. Expected a positive integer. Using default=%s.",
+            name,
+            value,
+            default,
+        )
+        return default
+    if parsed <= 0:
+        logger.error(
+            "Invalid %s=%r. Value must be > 0. Using default=%s.",
+            name,
+            value,
+            default,
+        )
+        return default
+    return parsed
+
+
 def _week_key(year: int, week: int) -> str:
     return f"{str(year)[-2:]}\'w{week:02d}"
 
@@ -2300,6 +2325,24 @@ class JiraWeeklyEmailReport:
         if "html" not in output_formats:
             logger.info("jira_weekly_email outputs HTML only; proceeding with HTML output.")
 
+        if not config.has_section("jira"):
+            logger.error(
+                "jira_weekly_email: missing [jira] section in config. "
+                "Add jira-url/username/password to configs/local/config.ini or pass --config <path>."
+            )
+            return
+        jira_section = config["jira"]
+        missing_jira_keys = [
+            key for key in ("jira-url", "username", "password") if not _normalize_text(jira_section.get(key))
+        ]
+        if missing_jira_keys:
+            logger.error(
+                "jira_weekly_email: missing required [jira] keys: %s. "
+                "Fill them in configs/local/config.ini or pass --config <path>.",
+                ", ".join(missing_jira_keys),
+            )
+            return
+
         section = config["jira_weekly_email"] if config.has_section("jira_weekly_email") else {}
         project = _normalize_text(
             extra_params.get("project")
@@ -2307,9 +2350,21 @@ class JiraWeeklyEmailReport:
             or config.get("jira", "project", fallback="")
         )
         if not project:
-            raise ValueError("Project key is required for jira_weekly_email. Pass --params project=ABC.")
+            logger.error(
+                "jira_weekly_email: project key is required. "
+                "Pass --params project=ABC or set [jira_weekly_email].project in config."
+            )
+            return
 
-        week = resolve_week_window(extra_params)
+        try:
+            week = resolve_week_window(extra_params)
+        except Exception as exc:
+            logger.error(
+                "jira_weekly_email: failed to parse week parameters (%s). "
+                "Use one of: week_date=YYYY-MM-DD, week=WW (optional year=YYYY), or start/end as ISO dates.",
+                exc,
+            )
+            return
 
         labels_highlights = _parse_label_set(
             extra_params.get("labels_highlights") or section.get("labels_highlights"),
@@ -2334,9 +2389,27 @@ class JiraWeeklyEmailReport:
             ",".join(sorted(priority_high_values)),
         )
 
-        jira_source = JiraSource(config["jira"])
-        evidence = collect_weekly_comment_evidence(jira_source, project, week)
-        project_bug_stats = collect_project_bug_stats(jira_source, project)
+        try:
+            jira_source = JiraSource(jira_section)
+        except Exception as exc:
+            logger.error(
+                "jira_weekly_email: failed to initialize Jira client (%s). "
+                "Check [jira] jira-url/username/password and network access.",
+                exc,
+            )
+            return
+
+        try:
+            evidence = collect_weekly_comment_evidence(jira_source, project, week)
+            project_bug_stats = collect_project_bug_stats(jira_source, project)
+        except Exception as exc:
+            logger.error(
+                "jira_weekly_email: failed to fetch Jira data (%s). "
+                "Verify project key, Jira connectivity, and credentials.",
+                exc,
+            )
+            return
+
         payload = build_report_payload(
             evidence,
             week,
@@ -2363,13 +2436,23 @@ class JiraWeeklyEmailReport:
             vacation_days_value = (
                 _normalize_text(extra_params.get("vacation_horizon_days") or section.get("vacation_horizon_days")) or "60"
             )
-            vacation_horizon_days = int(vacation_days_value)
+            vacation_horizon_days = _parse_positive_int_with_fallback(
+                vacation_days_value,
+                60,
+                name="vacation_horizon_days",
+            )
             vacation_horizon_anchor = _normalize_key(
                 extra_params.get("vacation_horizon_anchor") or section.get("vacation_horizon_anchor") or "today"
             )
             if vacation_horizon_anchor in {"week", "week_start", "report_week_start"}:
                 vacation_horizon_start = week.start
+            elif vacation_horizon_anchor in {"today", ""}:
+                vacation_horizon_start = date.today()
             else:
+                logger.error(
+                    "Invalid vacation_horizon_anchor=%r. Allowed values: today, week_start. Using today.",
+                    vacation_horizon_anchor,
+                )
                 vacation_horizon_start = date.today()
             alternate_horizon_start = week.start if vacation_horizon_start != week.start else date.today()
             vacation_path = Path(vacation_file)
@@ -2377,46 +2460,69 @@ class JiraWeeklyEmailReport:
                 parent_candidate = (Path.cwd().parent / vacation_path).resolve()
                 cwd_candidate = (Path.cwd() / vacation_path).resolve()
                 vacation_path = parent_candidate if parent_candidate.exists() else cwd_candidate
-            try:
-                payload["vacations"] = parse_vacations_excel(
+            if not vacation_path.exists():
+                payload["vacations"] = []
+                logger.error(
+                    "Vacation file not found: %s. "
+                    "Set jira_weekly_email.vacation_file to an existing .xlsx path "
+                    "(recommended location: report_inputs/<file>.xlsx).",
                     vacation_path,
-                    sheet=vacation_sheet,
-                    markers=vacation_markers,
-                    horizon_start=vacation_horizon_start,
-                    horizon_days=vacation_horizon_days,
                 )
-                if not payload.get("vacations"):
-                    alternate_vacations = parse_vacations_excel(
+            else:
+                try:
+                    payload["vacations"] = parse_vacations_excel(
                         vacation_path,
                         sheet=vacation_sheet,
                         markers=vacation_markers,
-                        horizon_start=alternate_horizon_start,
+                        horizon_start=vacation_horizon_start,
                         horizon_days=vacation_horizon_days,
                     )
-                    if alternate_vacations:
-                        payload["vacations"] = alternate_vacations
-                        logger.info(
-                            "VACATION FALLBACK APPLIED: original_start=%s alternate_start=%s entries=%s",
-                            vacation_horizon_start.strftime("%Y-%m-%d"),
-                            alternate_horizon_start.strftime("%Y-%m-%d"),
-                            len(payload.get("vacations") or []),
+                    if not payload.get("vacations"):
+                        alternate_vacations = parse_vacations_excel(
+                            vacation_path,
+                            sheet=vacation_sheet,
+                            markers=vacation_markers,
+                            horizon_start=alternate_horizon_start,
+                            horizon_days=vacation_horizon_days,
                         )
-                logger.info(
-                    "VACATION RESULT: entries=%s file=%s anchor=%s horizon_start=%s",
-                    len(payload.get("vacations") or []),
-                    vacation_path,
-                    vacation_horizon_anchor,
-                    vacation_horizon_start.strftime("%Y-%m-%d"),
-                )
-            except Exception as exc:
-                payload["vacations"] = []
-                logger.error("Vacation data read failed: file=%s error=%s", vacation_path, exc)
+                        if alternate_vacations:
+                            payload["vacations"] = alternate_vacations
+                            logger.info(
+                                "VACATION FALLBACK APPLIED: original_start=%s alternate_start=%s entries=%s",
+                                vacation_horizon_start.strftime("%Y-%m-%d"),
+                                alternate_horizon_start.strftime("%Y-%m-%d"),
+                                len(payload.get("vacations") or []),
+                            )
+                    logger.info(
+                        "VACATION RESULT: entries=%s file=%s anchor=%s horizon_start=%s",
+                        len(payload.get("vacations") or []),
+                        vacation_path,
+                        vacation_horizon_anchor,
+                        vacation_horizon_start.strftime("%Y-%m-%d"),
+                    )
+                except Exception as exc:
+                    payload["vacations"] = []
+                    logger.error(
+                        "Vacation data read failed: file=%s error=%s. "
+                        "Check workbook path/sheet name and markers configuration.",
+                        vacation_path,
+                        exc,
+                    )
         else:
             logger.info("VACATION RESULT: skipped (vacation_file is empty).")
 
         output_dir = _normalize_text(extra_params.get("output_dir") or section.get("output_dir") or config.get("reporting", "output_dir", fallback="reports"))
         output_base = Path(output_dir)
-        output_base.mkdir(parents=True, exist_ok=True)
+        try:
+            output_base.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            logger.error(
+                "jira_weekly_email: failed to prepare output directory %s (%s). "
+                "Set writable output_dir in config or --params output_dir=<path>.",
+                output_base,
+                exc,
+            )
+            return
         snapshot_dir = _normalize_text(extra_params.get("snapshot_dir") or section.get("snapshot_dir")) or str(output_base)
         snapshot_base = Path(snapshot_dir).resolve()
         previous_week = _previous_week_window(week)
@@ -2448,10 +2554,28 @@ class JiraWeeklyEmailReport:
                 output_path = output_path.with_suffix(".html")
         else:
             output_path = output_base / f"jira_weekly_email_{project}_{week.key}.html"
-        output_path.write_text(html_text, encoding="utf-8")
+        try:
+            output_path.write_text(html_text, encoding="utf-8")
+        except Exception as exc:
+            logger.error(
+                "jira_weekly_email: failed to write HTML output %s (%s). "
+                "Check output path permissions and disk space.",
+                output_path,
+                exc,
+            )
+            return
 
         snapshot_path = snapshot_base / f"jira_weekly_email_{project}_{week.key}.json"
-        save_snapshot(snapshot_path, payload, week)
+        try:
+            save_snapshot(snapshot_path, payload, week)
+        except Exception as exc:
+            logger.error(
+                "jira_weekly_email: failed to write snapshot %s (%s). "
+                "Check snapshot_dir permissions.",
+                snapshot_path,
+                exc,
+            )
+            return
 
         diff_lines = compute_payload_diff(previous_payload, payload)
         diff_stats = _diff_stats(diff_lines)
