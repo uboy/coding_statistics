@@ -1053,6 +1053,69 @@ def test_jira_weekly_email_bugs_summary_uses_project_level_in_progress_and_open(
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_high_priority_has_comment_and_no_duplicate_in_results(mock_jira_source_cls, tmp_path: Path):
+    issues = [
+        _make_issue(
+            "ABC-74",
+            summary="High priority task",
+            issue_type="Task",
+            status="Done",
+            resolution="Done",
+            labels=["reportx"],
+            priority="High",
+            epic_link="EPIC-1",
+            comment_body="Done.",
+        )
+    ]
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_text = str(jql)
+        if "issuekey in (EPIC-1)" in jql_text:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "statusCategory = 'In Progress'" in jql_text:
+            return []
+        if "resolution = Unresolved" in jql_text:
+            return []
+        return issues
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "High priority items" in text
+    assert text.count("High priority task (ABC-74)") == 1
+    assert "Done." in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
 def test_jira_weekly_email_labels_report_all_includes_any_labels(mock_jira_source_cls, tmp_path: Path):
     issues = [
         _make_issue(
@@ -2082,6 +2145,8 @@ def test_jira_weekly_email_priority_high_values_respects_config_exactly(mock_jir
     text = html_path.read_text(encoding="utf-8")
     assert "High priority items" in text
     assert "High priority task (ABC-74)" in text
+    assert text.count("High priority task (ABC-74)") == 1
+    assert "Done." in text
     assert "Highest priority task (ABC-75)" not in text
 
 

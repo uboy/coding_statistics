@@ -667,7 +667,7 @@ def _build_item_text(entry: dict[str, Any], *, mode: str) -> str:
         return summary or issue_key or "Task"
 
     if mode == "high":
-        return summary or comment_hint or "High priority item"
+        return summary or issue_key or "High priority item"
 
     return comment_hint or summary
 
@@ -884,10 +884,15 @@ def build_report_payload(
                     plan_index[(epic_identifier, issue_key)] = parent_plan_item
 
         if _normalize_key(entry.get("Priority")) in priority_high_values:
+            high_status = "Finished" if entry.get("Finished") else (
+                _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution"))
+            )
             epic_bucket["high_priority_items"].append(
                 {
                     "issue_key": issue_key,
                     "text": _build_item_text(entry, mode="high"),
+                    "status": high_status,
+                    "comment": _comment_hints_joined(entry.get("Comments") or []),
                 }
             )
 
@@ -2123,13 +2128,21 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     for epic_idx, epic in enumerate(payload.get("epics") or []):
         epic_name = html.escape(_normalize_text(epic.get("epic_name")))
         epic_key = html.escape(_normalize_text(epic.get("epic_key")))
+        high_priority_issue_keys = {
+            _normalize_text(item.get("issue_key"))
+            for item in (epic.get("high_priority_items") or [])
+            if _normalize_text(item.get("issue_key"))
+        }
         rows.append("<ul class='lvl1'>")
         rows.append(f"<li><b>{epic_name} ({epic_key})</b></li>")
         rows.append("</ul>")
         rows.append("<ul class='lvl2'>")
         for item in (epic.get("report_items") or []) + (epic.get("completed_items") or []) + (epic.get("progress_items") or []):
+            item_issue_key = _normalize_text(item.get("issue_key"))
+            if item_issue_key and item_issue_key in high_priority_issue_keys:
+                continue
             text = html.escape(_normalize_text(item.get("text")))
-            issue_key = html.escape(_normalize_text(item.get("issue_key")))
+            issue_key = html.escape(item_issue_key)
             status = html.escape(_normalize_text(item.get("status")))
             comment = html.escape(_normalize_text(item.get("comment")))
             rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
@@ -2163,7 +2176,16 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
             for item in epic.get("high_priority_items") or []:
                 text = html.escape(_normalize_text(item.get("text")))
                 issue_key = html.escape(_normalize_text(item.get("issue_key")))
+                status = html.escape(_normalize_text(item.get("status")))
+                comment = html.escape(_normalize_text(item.get("comment")))
                 rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
+                if status or comment:
+                    rows.append("<ul class='lvl4'>")
+                    if status:
+                        rows.append(f"<li>{status}</li>")
+                    if comment:
+                        rows.append(f"<li>{comment}</li>")
+                    rows.append("</ul>")
             rows.append("</ul><ul class='lvl2'>")
         bugs = epic.get("bugs") or {}
         closed_bugs = int(bugs.get("closed", 0))
