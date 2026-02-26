@@ -79,6 +79,9 @@ python stats_main.py run \
 - `jira_comprehensive` включает лист `Worklog_Entries` (все логи времени за период).
 - `jira_comprehensive` включает лист `Comments_Period` (задачи с комментариями в период; колонки `Comments`, `Comments_In_Period`, `AI_Comments`). AI включается через `--params ai_comments_enabled=true`.
 - `Assistance_Provided` считается по метке `dev_assistance`.
+- Все отчёты выводят прогресс-бар и шаги выполнения.
+- AI-запросы при таймаутах повторяются до 3 раз.
+- Параллелизм тяжёлых операций управляется через `--params parallel_workers=4`.
 ```
 
 ## Jira Weekly Email Report Structure

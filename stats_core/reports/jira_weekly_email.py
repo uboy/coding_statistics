@@ -22,6 +22,8 @@ from openpyxl.utils.datetime import from_excel
 
 from ..sources.jira import JiraSource
 from . import registry
+from ..utils.ai_retry import retry_ai_call
+from ..utils.progress import NoopProgressManager
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,14 @@ def _bool_value(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _get_progress(extra_params: dict[str, Any], total_steps: int):
+    progress = extra_params.get("progress_manager")
+    if progress is None:
+        progress = NoopProgressManager()
+    progress.set_total(total_steps)
+    return progress
 
 
 def _split_csv(value: str | None, default: list[str]) -> list[str]:
@@ -1440,24 +1450,26 @@ def rewrite_payload_with_ollama(payload: dict[str, Any], config: ConfigParser, e
         target_map, prompt = _build_rewrite_prompt(batch, start_index=i + 1)
 
         try:
-            response = requests.post(
-                f"{ollama_url.rstrip('/')}/api/generate",
-                headers=headers,
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": float(
-                            _normalize_text(
-                                extra_params.get("ollama_temperature") or config.get("ollama", "temperature", fallback="0.2")
+            def _request():
+                return requests.post(
+                    f"{ollama_url.rstrip('/')}/api/generate",
+                    headers=headers,
+                    json={
+                        "model": model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": float(
+                                _normalize_text(
+                                    extra_params.get("ollama_temperature") or config.get("ollama", "temperature", fallback="0.2")
+                                )
+                                or "0.2"
                             )
-                            or "0.2"
-                        )
+                        },
                     },
-                },
-                timeout=timeout_seconds,
-            )
+                    timeout=timeout_seconds,
+                )
+            response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
             response_json = response.json()
             response_text = _normalize_text(response_json.get("response", ""))
@@ -1575,20 +1587,22 @@ def rewrite_payload_with_webui(payload: dict[str, Any], config: ConfigParser, ex
         target_map, prompt = _build_rewrite_prompt(batch, start_index=i + 1)
 
         try:
-            response = requests.post(
-                api_url,
-                headers=headers,
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "You are an AI assistant that rewrites raw text snippets into formal report entries, returning only a single, valid JSON object with the results."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "stream": False,
-                    "temperature": temperature,
-                },
-                timeout=(connect_timeout_seconds, timeout_seconds),
-            )
+            def _request():
+                return requests.post(
+                    api_url,
+                    headers=headers,
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": "You are an AI assistant that rewrites raw text snippets into formal report entries, returning only a single, valid JSON object with the results."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "stream": False,
+                        "temperature": temperature,
+                    },
+                    timeout=(connect_timeout_seconds, timeout_seconds),
+                )
+            response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
             response_json = response.json()
             
@@ -2337,6 +2351,7 @@ class JiraWeeklyEmailReport:
         extra_params: dict | None = None,
     ) -> None:
         extra_params = extra_params or {}
+        progress = _get_progress(extra_params, total_steps=4)
         if "html" not in output_formats:
             logger.info("jira_weekly_email outputs HTML only; proceeding with HTML output.")
 
@@ -2414,27 +2429,29 @@ class JiraWeeklyEmailReport:
             )
             return
 
-        try:
-            evidence = collect_weekly_comment_evidence(jira_source, project, week)
-            project_bug_stats = collect_project_bug_stats(jira_source, project)
-        except Exception as exc:
-            logger.error(
-                "jira_weekly_email: failed to fetch Jira data (%s). "
-                "Verify project key, Jira connectivity, and credentials.",
-                exc,
-            )
-            return
+        with progress.step("Fetch Jira data"):
+            try:
+                evidence = collect_weekly_comment_evidence(jira_source, project, week)
+                project_bug_stats = collect_project_bug_stats(jira_source, project)
+            except Exception as exc:
+                logger.error(
+                    "jira_weekly_email: failed to fetch Jira data (%s). "
+                    "Verify project key, Jira connectivity, and credentials.",
+                    exc,
+                )
+                return
 
-        payload = build_report_payload(
-            evidence,
-            week,
-            config,
-            project,
-            labels_highlights=labels_highlights,
-            labels_report=labels_report,
-            priority_high_values=priority_high_values,
-            project_bug_stats=project_bug_stats,
-        )
+        with progress.step("Build payload"):
+            payload = build_report_payload(
+                evidence,
+                week,
+                config,
+                project,
+                labels_highlights=labels_highlights,
+                labels_report=labels_report,
+                priority_high_values=priority_high_values,
+                project_bug_stats=project_bug_stats,
+            )
 
         vacation_file = _strip_wrapping_quotes(
             _normalize_text(extra_params.get("vacation_file") or section.get("vacation_file"))
@@ -2549,17 +2566,19 @@ class JiraWeeklyEmailReport:
             previous_week.key,
         )
 
-        previous_snapshot = load_previous_snapshot(snapshot_base, project, week)
-        previous_payload = previous_snapshot.get("payload") if previous_snapshot else None
-        previous_week_key = _normalize_text((previous_snapshot.get("meta") or {}).get("week_key")) if previous_snapshot else ""
-        if previous_snapshot:
-            logger.info("SNAPSHOT FOUND: previous_week=%s", previous_week_key or previous_week.key)
-        else:
-            logger.info("SNAPSHOT NOT FOUND: expected_previous_week=%s", previous_week.key)
-        payload = apply_previous_order(payload, previous_snapshot)
-        payload = rewrite_payload_with_ai(payload, config, extra_params)
+        with progress.step("Apply snapshot + AI"):
+            previous_snapshot = load_previous_snapshot(snapshot_base, project, week)
+            previous_payload = previous_snapshot.get("payload") if previous_snapshot else None
+            previous_week_key = _normalize_text((previous_snapshot.get("meta") or {}).get("week_key")) if previous_snapshot else ""
+            if previous_snapshot:
+                logger.info("SNAPSHOT FOUND: previous_week=%s", previous_week_key or previous_week.key)
+            else:
+                logger.info("SNAPSHOT NOT FOUND: expected_previous_week=%s", previous_week.key)
+            payload = apply_previous_order(payload, previous_snapshot)
+            payload = rewrite_payload_with_ai(payload, config, extra_params)
 
-        html_text = render_outlook_html(payload)
+        with progress.step("Export report"):
+            html_text = render_outlook_html(payload)
         output_name = _normalize_text(extra_params.get("output") or extra_params.get("output_file"))
         if output_name:
             output_path = Path(output_name)
@@ -2569,57 +2588,57 @@ class JiraWeeklyEmailReport:
                 output_path = output_path.with_suffix(".html")
         else:
             output_path = output_base / f"jira_weekly_email_{project}_{week.key}.html"
-        try:
-            output_path.write_text(html_text, encoding="utf-8")
-        except Exception as exc:
-            logger.error(
-                "jira_weekly_email: failed to write HTML output %s (%s). "
-                "Check output path permissions and disk space.",
+            try:
+                output_path.write_text(html_text, encoding="utf-8")
+            except Exception as exc:
+                logger.error(
+                    "jira_weekly_email: failed to write HTML output %s (%s). "
+                    "Check output path permissions and disk space.",
+                    output_path,
+                    exc,
+                )
+                return
+
+            snapshot_path = snapshot_base / f"jira_weekly_email_{project}_{week.key}.json"
+            try:
+                save_snapshot(snapshot_path, payload, week)
+            except Exception as exc:
+                logger.error(
+                    "jira_weekly_email: failed to write snapshot %s (%s). "
+                    "Check snapshot_dir permissions.",
+                    snapshot_path,
+                    exc,
+                )
+                return
+
+            diff_lines = compute_payload_diff(previous_payload, payload)
+            diff_stats = _diff_stats(diff_lines)
+            logger.info(
+                "DIFF SUMMARY: previous_week=%s added=%s removed=%s unchanged=%s",
+                previous_week_key or "none",
+                diff_stats["added"],
+                diff_stats["removed"],
+                diff_stats["unchanged"],
+            )
+            if diff_lines and previous_week_key:
+                render_console_diff(
+                    diff_lines,
+                    project=project,
+                    current_week_key=week.key,
+                    previous_week_key=previous_week_key,
+                    use_color=True,
+                )
+            elif not previous_week_key:
+                logger.info("DIFF SKIPPED: previous week snapshot is missing for week=%s", previous_week.key)
+
+            logger.info(
+                "REPORT SUMMARY: project=%s week=%s issues=%s highlights=%s epics=%s plans=%s vacations=%s output=%s",
+                project,
+                week.key,
+                len(evidence),
+                len(payload.get("highlights") or []),
+                len(payload.get("epics") or []),
+                sum(len(item.get("items") or []) for item in (payload.get("next_week_plans") or [])),
+                len(payload.get("vacations") or []),
                 output_path,
-                exc,
             )
-            return
-
-        snapshot_path = snapshot_base / f"jira_weekly_email_{project}_{week.key}.json"
-        try:
-            save_snapshot(snapshot_path, payload, week)
-        except Exception as exc:
-            logger.error(
-                "jira_weekly_email: failed to write snapshot %s (%s). "
-                "Check snapshot_dir permissions.",
-                snapshot_path,
-                exc,
-            )
-            return
-
-        diff_lines = compute_payload_diff(previous_payload, payload)
-        diff_stats = _diff_stats(diff_lines)
-        logger.info(
-            "DIFF SUMMARY: previous_week=%s added=%s removed=%s unchanged=%s",
-            previous_week_key or "none",
-            diff_stats["added"],
-            diff_stats["removed"],
-            diff_stats["unchanged"],
-        )
-        if diff_lines and previous_week_key:
-            render_console_diff(
-                diff_lines,
-                project=project,
-                current_week_key=week.key,
-                previous_week_key=previous_week_key,
-                use_color=True,
-            )
-        elif not previous_week_key:
-            logger.info("DIFF SKIPPED: previous week snapshot is missing for week=%s", previous_week.key)
-
-        logger.info(
-            "REPORT SUMMARY: project=%s week=%s issues=%s highlights=%s epics=%s plans=%s vacations=%s output=%s",
-            project,
-            week.key,
-            len(evidence),
-            len(payload.get("highlights") or []),
-            len(payload.get("epics") or []),
-            sum(len(item.get("items") or []) for item in (payload.get("next_week_plans") or [])),
-            len(payload.get("vacations") or []),
-            output_path,
-        )

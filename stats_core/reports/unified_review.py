@@ -14,10 +14,21 @@ from pathlib import Path
 
 from ..export import excel as excel_export, csv_export, word as word_export
 from ..pathing import resolve_links_file_path
+from ..utils.parallel import parallel_map
+from ..utils.progress import NoopProgressManager
 from . import registry
 from .unified_review_utils import HEADERS, parse_links, process_link
 
 logger = logging.getLogger(__name__)
+
+
+def _parallel_workers(extra_params: dict[str, str], default: int = 4) -> int:
+    raw = extra_params.get("parallel_workers")
+    try:
+        value = int(str(raw))
+        return max(value, 1)
+    except Exception:
+        return default
 
 
 @registry.register
@@ -87,6 +98,8 @@ class UnifiedReviewReport:
             logger.debug("No proxy configuration found")
 
         extra_params = extra_params or {}
+        progress = extra_params.get("progress_manager") or NoopProgressManager()
+        progress.set_total(2)
         raw_links_file = extra_params.get("links_file") or _get_reporting_value(config, "links_file", None)
         links_file = str(resolve_links_file_path(raw_links_file))
         output_dir = extra_params.get("output_dir") or _get_reporting_value(config, "output_dir", "reports")
@@ -99,12 +112,15 @@ class UnifiedReviewReport:
             return
 
         try:
-            rows = self._rows_from_links(
-                links_file=links_file,
-                config=config,
-                start_str=extra_params.get("start"),
-                end_str=extra_params.get("end"),
-            )
+            with progress.step("Process links"):
+                rows = self._rows_from_links(
+                    links_file=links_file,
+                    config=config,
+                    start_str=extra_params.get("start"),
+                    end_str=extra_params.get("end"),
+                    progress=progress,
+                    extra_params=extra_params,
+                )
         finally:
             # Always save cache, even if processing fails
             cache_manager.save()
@@ -115,31 +131,33 @@ class UnifiedReviewReport:
 
         if not rows:
             logger.warning("No review data collected, skipping export.")
+            progress.advance(1)
             return
 
-        if "excel" in output_formats:
-            excel_export.export_sheet(output_base / f"{output_name}.xlsx", "Review Summary", HEADERS, rows)
-        if "csv" in output_formats:
-            csv_export.export_csv(output_base / f"{output_name}.csv", HEADERS, rows)
-        if "word" in output_formats:
-            word_template = extra_params.get("word_template") or _get_reporting_value(
-                config, "review_word_template", ""
-            )
-            template_path = Path(word_template) if word_template else None
-            if template_path and not template_path.exists():
-                logger.warning("Word template %s not found. Using default layout.", template_path)
-                template_path = None
-            sections = [
-                {
-                    "title": extra_params.get("word_title", "Review Summary"),
-                    "headers": HEADERS,
-                    "rows": rows,
-                    "font_name": extra_params.get("word_font", "Calibri (Body)"),
-                    "font_size": int(extra_params.get("word_font_size", 8)),
-                    "table_style": extra_params.get("word_table_style", "Table Grid"),
-                }
-            ]
-            word_export.export_report(output_base / f"{output_name}.docx", sections, template=template_path)
+        with progress.step("Export report"):
+            if "excel" in output_formats:
+                excel_export.export_sheet(output_base / f"{output_name}.xlsx", "Review Summary", HEADERS, rows)
+            if "csv" in output_formats:
+                csv_export.export_csv(output_base / f"{output_name}.csv", HEADERS, rows)
+            if "word" in output_formats:
+                word_template = extra_params.get("word_template") or _get_reporting_value(
+                    config, "review_word_template", ""
+                )
+                template_path = Path(word_template) if word_template else None
+                if template_path and not template_path.exists():
+                    logger.warning("Word template %s not found. Using default layout.", template_path)
+                    template_path = None
+                sections = [
+                    {
+                        "title": extra_params.get("word_title", "Review Summary"),
+                        "headers": HEADERS,
+                        "rows": rows,
+                        "font_name": extra_params.get("word_font", "Calibri (Body)"),
+                        "font_size": int(extra_params.get("word_font_size", 8)),
+                        "table_style": extra_params.get("word_table_style", "Table Grid"),
+                    }
+                ]
+                word_export.export_report(output_base / f"{output_name}.docx", sections, template=template_path)
 
     # Helpers -----------------------------------------------------------------
 
@@ -149,6 +167,8 @@ class UnifiedReviewReport:
         config: ConfigParser,
         start_str: str | None,
         end_str: str | None,
+        progress,
+        extra_params: dict[str, str],
     ) -> list[list[str]]:
         try:
             links = parse_links(links_file)
@@ -157,17 +177,30 @@ class UnifiedReviewReport:
             return []
 
         logger.info("Processing %s links from %s", len(links), links_file)
+        progress.set_total(len(links) + 2)
         start_dt = self._parse_cli_dt(start_str)
         end_dt = self._parse_cli_dt(end_str)
 
         rows: list[list[str]] = []
-        for link in links:
-            row = process_link(link, config)
-            if not row:
-                logger.warning("Failed to process %s", link)
-                continue
-            if self._within_range(self._row_timestamp(row), start_dt, end_dt):
-                rows.append(row)
+        max_workers = _parallel_workers(extra_params)
+        if max_workers > 1:
+            results = parallel_map(lambda link: process_link(link, config), links, max_workers=max_workers)
+            progress.advance(len(links))
+            for link, row in zip(links, results):
+                if not row:
+                    logger.warning("Failed to process %s", link)
+                    continue
+                if self._within_range(self._row_timestamp(row), start_dt, end_dt):
+                    rows.append(row)
+        else:
+            for link in links:
+                row = process_link(link, config)
+                if not row:
+                    logger.warning("Failed to process %s", link)
+                    continue
+                if self._within_range(self._row_timestamp(row), start_dt, end_dt):
+                    rows.append(row)
+                progress.advance(1)
         return rows
 
     @staticmethod

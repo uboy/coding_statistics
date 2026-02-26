@@ -5,6 +5,7 @@ Helpers for collecting merged code statistics across Git services.
 from __future__ import annotations
 
 import json
+import threading
 import logging
 import os
 import re
@@ -658,6 +659,7 @@ def process_github(url: str, config: ConfigParser) -> Optional[List]:
 
 # Global cache manager instance (set by report)
 _cache_manager: Optional[Any] = None
+_cache_lock = threading.Lock()
 # Global proxy configuration (set by report)
 _proxy_config: Optional[dict] = None
 # Global SSL configuration (set by report)
@@ -685,7 +687,8 @@ def set_ssl_config(ssl_config: Optional[dict]) -> None:
 def process_link(url: str, config: ConfigParser) -> Optional[List]:
     # Check cache first
     if _cache_manager:
-        cached = _cache_manager.get_link_result(url)
+        with _cache_lock:
+            cached = _cache_manager.get_link_result(url)
         if cached is not None:
             return cached
 
@@ -714,7 +717,8 @@ def process_link(url: str, config: ConfigParser) -> Optional[List]:
 
     # Cache result if successful
     if result and _cache_manager:
-        _cache_manager.set_link_result(url, result)
+        with _cache_lock:
+            _cache_manager.set_link_result(url, result)
 
     return result
 

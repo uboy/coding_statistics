@@ -8,6 +8,8 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
 ### CLI
 - **setup**: Generates `configs/local/config.ini` from `configs/config.ini_template` if missing and guides token/credential onboarding.
 - **run**: Executes a report by name, with date range, sources, output formats, and extra params.
+  - Default behavior includes progress bar and step logging.
+  - Parallelism for heavy steps can be tuned via `parallel_workers`.
 
 ### Data Collection
 - **Collector** (`stats_core/stats/collector.py`): Pulls PRs/commits from configured sources, filters by date range, and returns a unified dataset.

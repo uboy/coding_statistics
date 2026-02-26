@@ -63,6 +63,7 @@ sources -> stats.collector -> reports -> export
 - Passing params:
   - `--params key=value key2=value2`
   - For boolean: `true/false` or `1/0`
+  - Parallelism: `parallel_workers=4`
 
 ## Config Essentials
 Default config path: `configs/local/config.ini` (copied from template on `setup`).
@@ -93,6 +94,7 @@ Cache file default: `data/cache/cache.json`.
 - Missing `report_inputs/members.xlsx` can break engineer/PM performance sheets.
 - Empty reports often come from wrong period, project key, or missing config.
 - Make sure `report_inputs/input.txt` exists for `unified_review` default flow.
+- Progress bar is enabled by default; verbose logs will appear above it.
 
 ## Operational Constraints
 - No secrets/tokens/credentials in repo or logs.

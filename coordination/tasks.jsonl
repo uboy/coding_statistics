@@ -9,3 +9,9 @@
 {"id":"jc-comments-impl","title":"Implement Comments_Period sheet and AI_Comments","status":"done"}
 {"id":"jc-comments-tests-green","title":"Run tests (GREEN)","status":"done"}
 {"id":"jc-comments-review","title":"Reviewer handoff and verdict","status":"done"}
+{"id":"progress-spec","title":"Approved spec: progress logging, AI retry, parallelization","status":"done"}
+{"id":"progress-plan","title":"Plan implementation for progress/logging/retry/parallel","status":"done"}
+{"id":"progress-tests-red","title":"Add tests for progress/retry/parallel (RED)","status":"done"}
+{"id":"progress-impl","title":"Implement progress/logging/retry/parallel and wire reports","status":"done"}
+{"id":"progress-tests-green","title":"Run tests (GREEN)","status":"done"}
+{"id":"progress-review","title":"Reviewer handoff and verdict","status":"done"}

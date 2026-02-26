@@ -27,6 +27,9 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from ..pathing import resolve_member_list_path
 from ..sources.jira import JiraSource
+from ..utils.ai_retry import retry_ai_call
+from ..utils.parallel import parallel_map
+from ..utils.progress import NoopProgressManager
 from . import registry
 
 logger = logging.getLogger(__name__)
@@ -284,6 +287,24 @@ def _parse_jira_date(value: Any) -> date | None:
         return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
     except Exception:
         return None
+
+
+def _parallel_workers(extra_params: dict[str, Any], default: int = 4) -> int:
+    raw = extra_params.get("parallel_workers")
+    try:
+        value = int(str(raw))
+        return max(value, 1)
+    except Exception:
+        return default
+
+
+def _get_progress(extra_params: dict[str, Any], report_name: str, total_steps: int):
+    progress = extra_params.get("progress_manager")
+    if progress is None:
+        progress = NoopProgressManager()
+    progress.set_total(total_steps)
+    progress.logger.info("Progress initialized: %s steps", total_steps)
+    return progress
 
 
 def _summary_period(extra_params: dict[str, Any]) -> tuple[date | None, date | None]:
@@ -1276,11 +1297,15 @@ def _rewrite_summary_items_with_ollama(
 
     rewritten: dict[str, str] = {}
     batch_size = 8
-    for i in range(0, len(items), batch_size):
-        batch = items[i : i + batch_size]
-        target_map, prompt = _build_summary_prompt(batch, start_index=i + 1)
-        try:
-            response = requests.post(
+    batches = [(i, items[i : i + batch_size]) for i in range(0, len(items), batch_size)]
+    max_workers = _parallel_workers(extra_params)
+
+    def _run_batch(batch_info: tuple[int, list[dict[str, str]]]) -> dict[str, str]:
+        start_index, batch = batch_info
+        target_map, prompt = _build_summary_prompt(batch, start_index=start_index + 1)
+
+        def _request():
+            return requests.post(
                 f"{ollama_url.rstrip('/')}/api/generate",
                 headers=headers,
                 json={
@@ -1291,16 +1316,26 @@ def _rewrite_summary_items_with_ollama(
                 },
                 timeout=timeout_seconds,
             )
+
+        try:
+            response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
             response_json = response.json()
             response_text = str(response_json.get("response", "") or "")
             rewrite_map = _extract_json_object(response_text) or {}
+            batch_result: dict[str, str] = {}
             for target_id, issue_id in target_map.items():
                 candidate = _sanitize_summary_ai_text(rewrite_map.get(target_id))
                 if candidate:
-                    rewritten[issue_id] = candidate
+                    batch_result[issue_id] = candidate
+            return batch_result
         except Exception as exc:
-            logger.warning("Summary AI (Ollama) batch %s failed: %s", i // batch_size + 1, exc)
+            logger.warning("Summary AI (Ollama) batch %s failed: %s", start_index // batch_size + 1, exc)
+            return {}
+
+    for batch_result in parallel_map(_run_batch, batches, max_workers=max_workers):
+        rewritten.update(batch_result)
+
     return rewritten
 
 
@@ -1378,11 +1413,15 @@ def _rewrite_summary_items_with_webui(
 
     rewritten: dict[str, str] = {}
     batch_size = 8
-    for i in range(0, len(items), batch_size):
-        batch = items[i : i + batch_size]
-        target_map, prompt = _build_summary_prompt(batch, start_index=i + 1)
-        try:
-            response = requests.post(
+    batches = [(i, items[i : i + batch_size]) for i in range(0, len(items), batch_size)]
+    max_workers = _parallel_workers(extra_params)
+
+    def _run_batch(batch_info: tuple[int, list[dict[str, str]]]) -> dict[str, str]:
+        start_index, batch = batch_info
+        target_map, prompt = _build_summary_prompt(batch, start_index=start_index + 1)
+
+        def _request():
+            return requests.post(
                 api_url,
                 headers=headers,
                 json={
@@ -1402,6 +1441,9 @@ def _rewrite_summary_items_with_webui(
                 },
                 timeout=(connect_timeout_seconds, timeout_seconds),
             )
+
+        try:
+            response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
             response_json = response.json()
             response_text = ""
@@ -1413,12 +1455,19 @@ def _rewrite_summary_items_with_webui(
             if not response_text:
                 response_text = str(response_json.get("response", "") or "")
             rewrite_map = _extract_json_object(response_text) or {}
+            batch_result: dict[str, str] = {}
             for target_id, issue_id in target_map.items():
                 candidate = _sanitize_summary_ai_text(rewrite_map.get(target_id))
                 if candidate:
-                    rewritten[issue_id] = candidate
+                    batch_result[issue_id] = candidate
+            return batch_result
         except Exception as exc:
-            logger.warning("Summary AI (WebUI) batch %s failed: %s", i // batch_size + 1, exc)
+            logger.warning("Summary AI (WebUI) batch %s failed: %s", start_index // batch_size + 1, exc)
+            return {}
+
+    for batch_result in parallel_map(_run_batch, batches, max_workers=max_workers):
+        rewritten.update(batch_result)
+
     return rewritten
 
 
@@ -1481,11 +1530,15 @@ def _rewrite_comment_items_with_ollama(
 
     rewritten: dict[str, dict[str, Any]] = {}
     batch_size = 8
-    for i in range(0, len(items), batch_size):
-        batch = items[i : i + batch_size]
-        target_map, prompt = _build_comment_summary_prompt(batch, start_index=i + 1)
-        try:
-            response = requests.post(
+    batches = [(i, items[i : i + batch_size]) for i in range(0, len(items), batch_size)]
+    max_workers = _parallel_workers(extra_params)
+
+    def _run_batch(batch_info: tuple[int, list[dict[str, str]]]) -> dict[str, dict[str, Any]]:
+        start_index, batch = batch_info
+        target_map, prompt = _build_comment_summary_prompt(batch, start_index=start_index + 1)
+
+        def _request():
+            return requests.post(
                 f"{ollama_url.rstrip('/')}/api/generate",
                 headers=headers,
                 json={
@@ -1496,16 +1549,26 @@ def _rewrite_comment_items_with_ollama(
                 },
                 timeout=timeout_seconds,
             )
+
+        try:
+            response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
             response_json = response.json()
             response_text = str(response_json.get("response", "") or "")
             rewrite_map = _extract_json_object(response_text) or {}
+            batch_result: dict[str, dict[str, Any]] = {}
             for target_id, issue_id in target_map.items():
                 candidate = rewrite_map.get(target_id)
                 if isinstance(candidate, dict):
-                    rewritten[issue_id] = candidate
+                    batch_result[issue_id] = candidate
+            return batch_result
         except Exception as exc:
-            logger.warning("Comments AI (Ollama) batch %s failed: %s", i // batch_size + 1, exc)
+            logger.warning("Comments AI (Ollama) batch %s failed: %s", start_index // batch_size + 1, exc)
+            return {}
+
+    for batch_result in parallel_map(_run_batch, batches, max_workers=max_workers):
+        rewritten.update(batch_result)
+
     return rewritten
 
 
@@ -1583,11 +1646,15 @@ def _rewrite_comment_items_with_webui(
 
     rewritten: dict[str, dict[str, Any]] = {}
     batch_size = 8
-    for i in range(0, len(items), batch_size):
-        batch = items[i : i + batch_size]
-        target_map, prompt = _build_comment_summary_prompt(batch, start_index=i + 1)
-        try:
-            response = requests.post(
+    batches = [(i, items[i : i + batch_size]) for i in range(0, len(items), batch_size)]
+    max_workers = _parallel_workers(extra_params)
+
+    def _run_batch(batch_info: tuple[int, list[dict[str, str]]]) -> dict[str, dict[str, Any]]:
+        start_index, batch = batch_info
+        target_map, prompt = _build_comment_summary_prompt(batch, start_index=start_index + 1)
+
+        def _request():
+            return requests.post(
                 api_url,
                 headers=headers,
                 json={
@@ -1607,6 +1674,9 @@ def _rewrite_comment_items_with_webui(
                 },
                 timeout=(connect_timeout_seconds, timeout_seconds),
             )
+
+        try:
+            response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
             response_json = response.json()
             response_text = ""
@@ -1618,12 +1688,19 @@ def _rewrite_comment_items_with_webui(
             if not response_text:
                 response_text = str(response_json.get("response", "") or "")
             rewrite_map = _extract_json_object(response_text) or {}
+            batch_result: dict[str, dict[str, Any]] = {}
             for target_id, issue_id in target_map.items():
                 candidate = rewrite_map.get(target_id)
                 if isinstance(candidate, dict):
-                    rewritten[issue_id] = candidate
+                    batch_result[issue_id] = candidate
+            return batch_result
         except Exception as exc:
-            logger.warning("Comments AI (WebUI) batch %s failed: %s", i // batch_size + 1, exc)
+            logger.warning("Comments AI (WebUI) batch %s failed: %s", start_index // batch_size + 1, exc)
+            return {}
+
+    for batch_result in parallel_map(_run_batch, batches, max_workers=max_workers):
+        rewritten.update(batch_result)
+
     return rewritten
 
 
@@ -2372,6 +2449,7 @@ class JiraComprehensiveReport:
         extra_params: dict | None = None,
     ) -> None:
         extra_params = extra_params or {}
+        progress = _get_progress(extra_params, self.name, total_steps=5)
 
         if "excel" not in output_formats:
             logger.warning("jira_comprehensive supports only Excel output. Skipping.")
@@ -2398,32 +2476,59 @@ class JiraComprehensiveReport:
         jira_source = JiraSource(config["jira"])
         jira = jira_source.jira
 
-        issues_df, links_df, results_df = fetch_jira_data(jira, jql_query)
+        with progress.step("Fetch issues"):
+            issues_df, links_df, results_df = fetch_jira_data(jira, jql_query)
         if issues_df.empty:
             logger.warning("No issues found matching the query.")
             return
-        summary_df = build_monthly_summary_df(issues_df, config, extra_params)
-        comments_period_df = build_comments_period_df(
-            jira,
-            comments_jql,
-            params.get("start_date"),
-            params.get("end_date"),
-            config,
-            extra_params,
-        )
+        with progress.step("Build summaries"):
+            summary_df = build_monthly_summary_df(issues_df, config, extra_params)
+            comments_period_df = build_comments_period_df(
+                jira,
+                comments_jql,
+                params.get("start_date"),
+                params.get("end_date"),
+                config,
+                extra_params,
+            )
 
-        worklog_activity_df = fetch_worklog_activity(
-            jira_source,
-            issues_df,
-            params.get("start_date"),
-            params.get("end_date"),
-        )
-        worklog_entries_df = fetch_worklog_entries(
-            jira_source,
-            issues_df,
-            params.get("start_date"),
-            params.get("end_date"),
-        )
+        with progress.step("Fetch worklogs"):
+            max_workers = _parallel_workers(extra_params)
+            if max_workers > 1:
+                def _activity():
+                    return fetch_worklog_activity(
+                        jira_source,
+                        issues_df,
+                        params.get("start_date"),
+                        params.get("end_date"),
+                    )
+
+                def _entries():
+                    return fetch_worklog_entries(
+                        jira_source,
+                        issues_df,
+                        params.get("start_date"),
+                        params.get("end_date"),
+                    )
+
+                worklog_activity_df, worklog_entries_df = parallel_map(
+                    lambda fn: fn(),
+                    [_activity, _entries],
+                    max_workers=min(max_workers, 2),
+                )
+            else:
+                worklog_activity_df = fetch_worklog_activity(
+                    jira_source,
+                    issues_df,
+                    params.get("start_date"),
+                    params.get("end_date"),
+                )
+                worklog_entries_df = fetch_worklog_entries(
+                    jira_source,
+                    issues_df,
+                    params.get("start_date"),
+                    params.get("end_date"),
+                )
 
         members_df = read_member_list(params["member_list_file"])
         code_volume_df = read_code_volume(params["code_volume_file"])
@@ -2432,17 +2537,18 @@ class JiraComprehensiveReport:
         qa_metrics = pd.DataFrame()
         pm_metrics = pd.DataFrame()
 
-        if not members_df.empty:
-            engineer_metrics = calculate_engineer_metrics(
-                issues_df,
-                members_df,
-                code_volume_df,
-                worklog_entries_df,
-            )
-            qa_metrics = calculate_qa_metrics(issues_df, members_df)
-            pm_metrics = calculate_pm_metrics(issues_df, members_df, jira, jql_query)
-        else:
-            logger.warning("No member list found, skipping team performance calculations.")
+        with progress.step("Compute metrics"):
+            if not members_df.empty:
+                engineer_metrics = calculate_engineer_metrics(
+                    issues_df,
+                    members_df,
+                    code_volume_df,
+                    worklog_entries_df,
+                )
+                qa_metrics = calculate_qa_metrics(issues_df, members_df)
+                pm_metrics = calculate_pm_metrics(issues_df, members_df, jira, jql_query)
+            else:
+                logger.warning("No member list found, skipping team performance calculations.")
 
         output_dir = _extra_param(extra_params, "output_dir") or config.get(
             "reporting", "output_dir", fallback="reports"
@@ -2461,19 +2567,20 @@ class JiraComprehensiveReport:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_path = output_base / f"jira_comprehensive_report_{timestamp}.xlsx"
 
-        export_to_excel(
-            issues_df,
-            links_df,
-            results_df,
-            summary_df,
-            comments_period_df,
-            engineer_metrics,
-            qa_metrics,
-            pm_metrics,
-            worklog_activity_df,
-            worklog_entries_df,
-            output_path,
-        )
+        with progress.step("Export Excel"):
+            export_to_excel(
+                issues_df,
+                links_df,
+                results_df,
+                summary_df,
+                comments_period_df,
+                engineer_metrics,
+                qa_metrics,
+                pm_metrics,
+                worklog_activity_df,
+                worklog_entries_df,
+                output_path,
+            )
 
         resolution_value = issues_df.get("Resolution")
         if resolution_value is not None:

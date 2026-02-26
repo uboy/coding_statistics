@@ -36,6 +36,8 @@ from .jira_epic_report import (
 from ..sources.jira import JiraSource
 from ..export import excel as excel_export
 from ..utils.members import read_member_list
+from ..utils.parallel import parallel_map
+from ..utils.progress import NoopProgressManager
 
 
 def _parse_bool(value: str | bool | None, default: bool) -> bool:
@@ -51,6 +53,23 @@ def generate_file_suffix() -> str:
     """Generate a timestamp-based suffix for file names to ensure uniqueness."""
     now = datetime.now()
     return now.strftime("_%Y%m%d_%H%M")
+
+
+def _get_progress(extra_params: dict[str, Any], total_steps: int):
+    progress = extra_params.get("progress_manager")
+    if progress is None:
+        progress = NoopProgressManager()
+    progress.set_total(total_steps)
+    return progress
+
+
+def _parallel_workers(extra_params: dict[str, Any], default: int = 4) -> int:
+    raw = extra_params.get("parallel_workers")
+    try:
+        value = int(str(raw))
+        return max(value, 1)
+    except Exception:
+        return default
 
 
 def generate_excel_report(
@@ -190,6 +209,10 @@ class JiraWeeklyReport:
         extra_params: dict | None = None,
     ) -> None:
         extra_params = extra_params or {}
+        output_excel = "excel" in output_formats
+        output_word = "word" in output_formats
+        total_steps = 2 + (1 if output_excel else 0) + (1 if output_word else 0)
+        progress = _get_progress(extra_params, total_steps)
 
         project = extra_params.get("project") or config.get("jira", "project", fallback=None)
         if not project:
@@ -207,10 +230,29 @@ class JiraWeeklyReport:
         jira_source = JiraSource(config["jira"])
         jira_url = jira_source.jira_url
 
-        # Fetch data
-        data = fetch_jira_data(jira_source, project, start_date, end_date)
-        worklogs_df, comments_df = fetch_jira_activity_data(jira_source, project, start_date, end_date)
-        resolved_issues_df = build_resolved_issues_snapshot(jira_source, project, start_date, end_date)
+        with progress.step("Fetch Jira data"):
+            max_workers = _parallel_workers(extra_params)
+            if max_workers > 1:
+                def _fetch_main():
+                    return fetch_jira_data(jira_source, project, start_date, end_date)
+
+                def _fetch_activity():
+                    return fetch_jira_activity_data(jira_source, project, start_date, end_date)
+
+                def _fetch_resolved():
+                    return build_resolved_issues_snapshot(jira_source, project, start_date, end_date)
+
+                main_df, activity_pair, resolved_issues_df = parallel_map(
+                    lambda fn: fn(),
+                    [_fetch_main, _fetch_activity, _fetch_resolved],
+                    max_workers=min(max_workers, 3),
+                )
+                data = main_df
+                worklogs_df, comments_df = activity_pair
+            else:
+                data = fetch_jira_data(jira_source, project, start_date, end_date)
+                worklogs_df, comments_df = fetch_jira_activity_data(jira_source, project, start_date, end_date)
+                resolved_issues_df = build_resolved_issues_snapshot(jira_source, project, start_date, end_date)
 
         # If there is no JIRA data at all, create an empty frame with expected columns
         # so that downstream utilities (fill_missing_weeks, epic reports) work safely.
@@ -233,10 +275,10 @@ class JiraWeeklyReport:
                 ]
             )
 
-        # Process data
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
-        valid_weeks = get_valid_weeks(start_date, end_date)
+        with progress.step("Process data"):
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+            valid_weeks = get_valid_weeks(start_date, end_date)
 
         # Update the data to include only valid weeks
         if not data.empty:
@@ -268,42 +310,44 @@ class JiraWeeklyReport:
         output_file = output_base / f"jira_report_{project}_{start_date}-{end_date}{file_suffix}"
 
         # Generate Excel report if requested
-        if "excel" in output_formats:
-            generate_excel_report(data, start_date, end_date, project, headers, output_file)
+        if output_excel:
+            with progress.step("Export Excel"):
+                generate_excel_report(data, start_date, end_date, project, headers, output_file)
 
         # Generate Word report if requested
-        if "word" in output_formats:
-            document = Document()
-            document.add_heading(f"JIRA Report: {project} - {start_date}-{end_date}", level=1)
+        if output_word:
+            with progress.step("Export Word"):
+                document = Document()
+                document.add_heading(f"JIRA Report: {project} - {start_date}-{end_date}", level=1)
 
-            # Add Table View
-            add_table_view_to_document(document, data, jira_url, member_list_file)
+                # Add Table View
+                add_table_view_to_document(document, data, jira_url, member_list_file)
 
-            # Add List View
-            add_list_view_to_document(document, data, start_date, end_date, jira_url, member_list_file)
+                # Add List View
+                add_list_view_to_document(document, data, start_date, end_date, jira_url, member_list_file)
 
-            # Add Engineer Weekly Activity
-            add_engineer_weekly_activity_to_document(
-                document,
-                worklogs_df,
-                comments_df,
-                start_date,
-                end_date,
-                jira_url,
-                member_list_file,
-                include_empty=include_empty,
-            )
+                # Add Engineer Weekly Activity
+                add_engineer_weekly_activity_to_document(
+                    document,
+                    worklogs_df,
+                    comments_df,
+                    start_date,
+                    end_date,
+                    jira_url,
+                    member_list_file,
+                    include_empty=include_empty,
+                )
 
-            # Add Epic Progress
-            add_epic_progress_to_document(document, epic_summary, jira_url, epic_progress_summary)
+                # Add Epic Progress
+                add_epic_progress_to_document(document, epic_summary, jira_url, epic_progress_summary)
 
-            # Add Summary section
-            add_summary_section_to_document(document, weekly_summary_df)
+                # Add Summary section
+                add_summary_section_to_document(document, weekly_summary_df)
 
-            # Add Resolved Tasks section
-            add_resolved_tasks_section(document, resolved_issues_df)
+                # Add Resolved Tasks section
+                add_resolved_tasks_section(document, resolved_issues_df)
 
-            # Save document
-            word_path = Path(f"{output_file}.docx")
-            document.save(word_path)
-            print(f"Word report successfully created: {word_path}")
+                # Save document
+                word_path = Path(f"{output_file}.docx")
+                document.save(word_path)
+                print(f"Word report successfully created: {word_path}")
