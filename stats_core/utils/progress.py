@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from contextlib import AbstractContextManager
 
@@ -13,9 +14,36 @@ class TqdmLoggingHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
-            tqdm.write(msg, file=sys.stderr)
+            if hasattr(sys.stderr, "isatty") and sys.stderr.isatty():
+                tqdm.write(msg, file=sys.stderr)
+            else:
+                print(msg, file=sys.stderr)
+            self.flush()
         except Exception:
             self.handleError(record)
+
+
+@contextmanager
+def tqdm_console_logging(root_logger: logging.Logger, formatter: logging.Formatter):
+    tqdm_handler = TqdmLoggingHandler()
+    tqdm_handler.setFormatter(formatter)
+
+    console_handlers = [
+        handler
+        for handler in list(root_logger.handlers)
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
+    ]
+    for handler in console_handlers:
+        root_logger.removeHandler(handler)
+    root_logger.addHandler(tqdm_handler)
+
+    try:
+        yield
+    finally:
+        root_logger.removeHandler(tqdm_handler)
+        for handler in console_handlers:
+            if handler not in root_logger.handlers:
+                root_logger.addHandler(handler)
 
 
 class ProgressStep(AbstractContextManager["ProgressStep"]):

@@ -61,3 +61,7 @@
   - pytest run: 104 passed, 1 warning (openpyxl CF).
   - Added agent-memory entry for tqdm progress/logging stability under .agent-memory.
   - git status checked; pending changes in progress/progress-bar docs and reports.
+  - Updated tqdm logging handler to fallback to stderr print when not TTY and added tqdm_console_logging context; CLI uses context.
+  - Updated progress tests for isatty guard.
+  - Updated agent-memory entry with tqdm console-logging context guidance.
+  - pytest run: 104 passed, 1 warning (openpyxl CF).

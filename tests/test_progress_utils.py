@@ -13,9 +13,10 @@ def test_tqdm_logging_handler_uses_tqdm_write():
     handler = TqdmLoggingHandler()
     logger.addHandler(handler)
     try:
-        with patch("stats_core.utils.progress.tqdm.write") as mock_write:
-            logger.info("hello")
-            assert mock_write.called
+        with patch.object(sys.stderr, "isatty", return_value=True):
+            with patch("stats_core.utils.progress.tqdm.write") as mock_write:
+                logger.info("hello")
+                assert mock_write.called
     finally:
         logger.removeHandler(handler)
 

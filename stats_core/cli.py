@@ -18,7 +18,7 @@ from . import config as config_utils
 from .pathing import resolve_config_template_path, resolve_links_file_path
 from .stats.collector import collect_stats, CollectorParams, SOURCE_BUILDERS
 from .reports import registry as report_registry
-from .utils.progress import ProgressManager, TqdmLoggingHandler
+from .utils.progress import ProgressManager, tqdm_console_logging
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -91,21 +91,15 @@ def cmd_setup(config_path: pathlib.Path | str) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    # Configure logging level with tqdm-safe handler
+    # Configure logging level with tqdm-safe console handler
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     root_logger = logging.getLogger()
-    for handler in list(root_logger.handlers):
-        root_logger.removeHandler(handler)
-    tqdm_handler = TqdmLoggingHandler()
-    tqdm_handler.setFormatter(
-        logging.Formatter(
-            fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-    )
-    root_logger.addHandler(tqdm_handler)
     root_logger.setLevel(log_level)
-    
+    formatter = logging.Formatter(
+        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     config = config_utils.load_config(args.config)
     extra_params = parse_key_value_pairs(args.params)
     report_name = args.report
@@ -166,18 +160,19 @@ def cmd_run(args: argparse.Namespace) -> None:
         dataset = collect_stats(config, collector_params)
 
     report = report_registry.get(report_name)
-    progress = ProgressManager(total_steps=1, report_name=report_name, logger=logging.getLogger("report.progress"))
-    extra_params["progress_manager"] = progress
-    logging.getLogger(__name__).info("Report started: %s", report_name)
-    try:
-        report.run(
-            dataset=dataset,
-            config=config,
-            output_formats=args.output_formats,
-            extra_params=extra_params,
-        )
-    finally:
-        progress.close()
+    with tqdm_console_logging(root_logger, formatter):
+        progress = ProgressManager(total_steps=1, report_name=report_name, logger=logging.getLogger("report.progress"))
+        extra_params["progress_manager"] = progress
+        logging.getLogger(__name__).info("Report started: %s", report_name)
+        try:
+            report.run(
+                dataset=dataset,
+                config=config,
+                output_formats=args.output_formats,
+                extra_params=extra_params,
+            )
+        finally:
+            progress.close()
 
 
 def main(argv: Sequence[str] | None = None) -> None:
