@@ -15,6 +15,7 @@
   - Added design spec for jira_comprehensive Comments_Period sheet.
   - Created plan docs/plans/report-progress-logging-parallel-ai-retry-v1.md.
   - Implemented progress/logging/retry/parallel updates and tests.
+  - Added AI comments quality spec and plan.
 - Pending:
   - None.
 - Process notes:
@@ -44,6 +45,9 @@
   - GREEN pytest run passed (101 passed).
   - Adjusted logging to reduce noise and use tqdm.write for diff output; pytest passed (101).
   - Several edits applied without pre-action explanations; address process.
+  - New AI comments quality tasks added to tasks.jsonl.
+  - AI comments quality changes implemented; pytest passed (103).
+  - Enforced English-only output by filtering Cyrillic; pytest passed (103).
   - Multiple edits still done without pre-action explanation; fix process.
   - Updated README/spec/knowledge-base with progress and parallel params.
   - Reviewer stage completed (PASS).

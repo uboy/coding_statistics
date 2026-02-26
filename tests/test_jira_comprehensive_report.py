@@ -22,6 +22,8 @@ from stats_core.reports.jira_comprehensive import (
     fetch_jira_data,
     _build_comment_summary_prompt,
     rewrite_comment_items_with_ai,
+    _extract_results_hint,
+    _format_ai_comment_summary,
 )
 
 
@@ -592,7 +594,18 @@ def test_build_comment_summary_prompt_has_required_fields():
     assert "risks" in prompt
     assert "dependencies" in prompt
     assert "notes" in prompt
-    assert "Недостаточно данных" in prompt
+    assert "Insufficient data" in prompt
+
+
+def test_extract_results_hint_from_link_only():
+    hint = _extract_results_hint("results: https://example.com/result")
+    assert hint == "Results provided (link removed)."
+
+
+def test_format_ai_comment_summary_uses_results_hint():
+    comments = "Results: https://example.com/result"
+    summary = _format_ai_comment_summary({}, _extract_results_hint(comments))
+    assert summary == "Results provided (link removed)."
 
 
 def test_rewrite_comment_items_with_ai_respects_flag():

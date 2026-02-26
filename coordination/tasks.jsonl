@@ -15,3 +15,9 @@
 {"id":"progress-impl","title":"Implement progress/logging/retry/parallel and wire reports","status":"done"}
 {"id":"progress-tests-green","title":"Run tests (GREEN)","status":"done"}
 {"id":"progress-review","title":"Reviewer handoff and verdict","status":"done"}
+{"id":"ai-comments-spec","title":"Approved spec: AI comments quality and English output","status":"done"}
+{"id":"ai-comments-plan","title":"Plan implementation for AI comments quality","status":"done"}
+{"id":"ai-comments-tests-red","title":"Add tests for AI comments quality (RED)","status":"done"}
+{"id":"ai-comments-impl","title":"Implement AI comments prompt/fallback changes","status":"done"}
+{"id":"ai-comments-tests-green","title":"Run tests (GREEN)","status":"done"}
+{"id":"ai-comments-review","title":"Reviewer handoff and verdict","status":"done"}

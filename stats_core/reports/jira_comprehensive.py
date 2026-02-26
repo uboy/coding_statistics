@@ -209,24 +209,29 @@ def _strip_links_and_markup(text: str) -> str:
     return cleaned
 
 
+def _contains_cyrillic(text: str) -> bool:
+    return bool(re.search(r"[А-Яа-яЁё]", text))
+
+
 def _build_comment_summary_prompt(
     items: list[dict[str, str]],
     *,
     start_index: int = 1,
 ) -> tuple[dict[str, str], str]:
     prompt_lines = [
-        "Ты анализируешь комментарии по задачам Jira за период.",
-        "Цель: составить краткую и структурированную сводку прогресса по задаче.",
-        "Используй ТОЛЬКО текст комментариев за период, не выдумывай факты.",
-        "Удали ссылки, URL, упоминания PR/MR/репозиториев, ключи Jira и разметку.",
-        "Ответ должен быть строго в JSON, без пояснений, без кода.",
-        "Формат JSON: {\"t1\": {\"done\":\"...\", \"planned\":\"...\", \"risks\":\"...\", \"dependencies\":\"...\", \"notes\":\"...\"}}",
-        "Если данных недостаточно, заполни notes='Недостаточно данных', остальные поля оставь пустыми.",
-        "Если фрагмент неочевиден или двусмысленен, перенеси его в notes.",
-        "Извлекай факты: done=сделано, planned=планируется, risks=риски/проблемы, dependencies=зависимости.",
-        "Вывод на русском языке. Поля всегда строки.",
-        "Пример: {\"t1\": {\"done\":\"Исправлен дефект X.\", \"planned\":\"Доработать тесты.\", "
-        "\"risks\":\"Нет данных.\", \"dependencies\":\"Нет данных.\", \"notes\":\"\"}}",
+        "You analyze Jira issue comments within the selected period.",
+        "Goal: produce a concise and structured progress summary for each issue.",
+        "Use ONLY the provided period comments. Do not invent facts.",
+        "Remove links/URLs, PR/MR mentions, repository references, Jira keys, and formatting.",
+        "Output must be strict JSON only. No extra text.",
+        "JSON format: {\"t1\": {\"done\":\"...\", \"planned\":\"...\", \"risks\":\"...\", \"dependencies\":\"...\", \"notes\":\"...\"}}",
+        "If data is insufficient, set notes='Insufficient data' and leave other fields empty.",
+        "If a fragment is ambiguous, put it into notes.",
+        "Extract facts as: done=completed work, planned=next steps, risks=problems/risks, dependencies=dependencies.",
+        "If comments contain 'result:' or 'results:' with a link only, state 'Results provided (link removed)'.",
+        "Output must be in English. All fields are strings.",
+        "Example: {\"t1\": {\"done\":\"Fixed defect X.\", \"planned\":\"Add tests.\", "
+        "\"risks\":\"No data.\", \"dependencies\":\"No data.\", \"notes\":\"\"}}",
         "---",
         "Input items:",
     ]
@@ -238,28 +243,46 @@ def _build_comment_summary_prompt(
     return target_map, "\n".join(prompt_lines)
 
 
-def _format_ai_comment_summary(value: dict[str, Any] | None) -> str:
+def _extract_results_hint(text: str) -> str | None:
+    if not text:
+        return None
+    text_norm = str(text)
+    if not re.search(r"\bresults?\b", text_norm, flags=re.IGNORECASE):
+        if re.search(r"(?:https?://|www\\.)\\S+", text_norm, flags=re.IGNORECASE):
+            return "Results provided (link removed)."
+        return None
+    match = re.search(r"\bresults?\b\s*[:\-]?\s*(.*)", text_norm, flags=re.IGNORECASE)
+    tail = match.group(1) if match else ""
+    cleaned = _strip_links_and_markup(tail)
+    if cleaned:
+        return f"Results: {cleaned}"
+    return "Results provided (link removed)."
+
+
+def _format_ai_comment_summary(value: dict[str, Any] | None, comments_hint: str | None = None) -> str:
     if not isinstance(value, dict):
-        return "Недостаточно данных."
+        return comments_hint or "Insufficient data."
 
     labels = {
-        "done": "Сделано",
-        "planned": "Планы",
-        "risks": "Риски",
-        "dependencies": "Зависимости",
-        "notes": "Примечания",
+        "done": "Done",
+        "planned": "Planned",
+        "risks": "Risks",
+        "dependencies": "Dependencies",
+        "notes": "Notes",
     }
     parts: list[str] = []
     empty_fields = 0
     for key, label in labels.items():
         raw = value.get(key, "")
         cleaned = _strip_links_and_markup(raw)
-        if not cleaned:
+        if cleaned and _contains_cyrillic(cleaned):
+            cleaned = ""
+        if not cleaned or cleaned.casefold() in {"insufficient data", "no data", "нет данных"}:
             empty_fields += 1
-            cleaned = "нет данных"
+            cleaned = "no data"
         parts.append(f"{label}: {cleaned}")
     if empty_fields == len(labels):
-        return "Недостаточно данных."
+        return comments_hint or "Insufficient data."
     return ". ".join(parts).strip()
 
 
@@ -1232,6 +1255,7 @@ def build_comments_period_df(
 
         all_comments_text = "\n---\n".join(comments)
         comments_in_period_text = "\n---\n".join(comments_in_period)
+        results_hint = _extract_results_hint(comments_in_period_text)
         rows.append(
             {
                 "Issue_Key": key,
@@ -1250,11 +1274,13 @@ def build_comments_period_df(
             }
         )
         ai_inputs.append({"id": key, "comments": comments_in_period_text})
+        rows[-1]["_results_hint"] = results_hint
 
     ai_map = rewrite_comment_items_with_ai(ai_inputs, config, extra_params) if ai_inputs else {}
     for row in rows:
         ai_value = ai_map.get(row["Issue_Key"])
-        row["AI_Comments"] = _format_ai_comment_summary(ai_value)
+        hint = row.pop("_results_hint", None)
+        row["AI_Comments"] = _format_ai_comment_summary(ai_value, hint)
 
     return pd.DataFrame(rows)
 
