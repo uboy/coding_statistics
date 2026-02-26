@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import sys
+import threading
+from dataclasses import dataclass
 from contextlib import AbstractContextManager
 
 from tqdm import tqdm
@@ -10,7 +13,7 @@ class TqdmLoggingHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
-            tqdm.write(msg)
+            tqdm.write(msg, file=sys.stderr)
         except Exception:
             self.handleError(record)
 
@@ -46,12 +49,18 @@ class ProgressManager:
         self._enabled = enabled
         self._total = max(int(total_steps or 0), 1)
         self.current = 0
+        self._children: list[ChildProgress] = []
+        self._child_base_position = 1
+        self._tty = bool(sys.stderr.isatty()) if enabled else False
         if self._enabled:
+            tqdm.set_lock(threading.RLock())
             self._bar = tqdm(
                 total=self._total,
                 desc=report_name,
+                position=0,
                 dynamic_ncols=True,
                 leave=True,
+                file=sys.stderr,
             )
         else:
             self._bar = None
@@ -71,8 +80,29 @@ class ProgressManager:
             self._bar.update(n)
 
     def close(self) -> None:
+        for child in self._children:
+            child.close()
+        self._children = []
         if self._bar is not None:
             self._bar.close()
+
+    def create_children(self, *, count: int, total: int | None, label: str) -> list["ChildProgress"]:
+        if not self._enabled or not self._tty or count <= 0:
+            return []
+        per_total = None if total is None else max(int(total), 1)
+        children: list[ChildProgress] = []
+        for idx in range(count):
+            bar = tqdm(
+                total=per_total,
+                desc=f"{label} {idx + 1}",
+                position=self._child_base_position + idx,
+                dynamic_ncols=True,
+                leave=False,
+                file=sys.stderr,
+            )
+            children.append(ChildProgress(bar=bar))
+        self._children.extend(children)
+        return children
 
 
 class NoopProgressManager(ProgressManager):
@@ -84,3 +114,14 @@ class NoopProgressManager(ProgressManager):
 
     def advance(self, n: int = 1) -> None:
         self.current += n
+
+
+@dataclass
+class ChildProgress:
+    bar: tqdm
+
+    def advance(self, n: int = 1) -> None:
+        self.bar.update(n)
+
+    def close(self) -> None:
+        self.bar.close()

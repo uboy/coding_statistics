@@ -1324,6 +1324,7 @@ def _rewrite_summary_items_with_ollama(
     batch_size = 8
     batches = [(i, items[i : i + batch_size]) for i in range(0, len(items), batch_size)]
     max_workers = _parallel_workers(extra_params)
+    progress = extra_params.get("progress_manager")
 
     def _run_batch(batch_info: tuple[int, list[dict[str, str]]]) -> dict[str, str]:
         start_index, batch = batch_info
@@ -1358,7 +1359,13 @@ def _rewrite_summary_items_with_ollama(
             logger.warning("Summary AI (Ollama) batch %s failed: %s", start_index // batch_size + 1, exc)
             return {}
 
-    for batch_result in parallel_map(_run_batch, batches, max_workers=max_workers):
+    for batch_result in parallel_map(
+        _run_batch,
+        batches,
+        max_workers=max_workers,
+        progress_manager=progress,
+        child_label="AI Summary",
+    ):
         rewritten.update(batch_result)
 
     return rewritten
@@ -1440,6 +1447,7 @@ def _rewrite_summary_items_with_webui(
     batch_size = 8
     batches = [(i, items[i : i + batch_size]) for i in range(0, len(items), batch_size)]
     max_workers = _parallel_workers(extra_params)
+    progress = extra_params.get("progress_manager")
 
     def _run_batch(batch_info: tuple[int, list[dict[str, str]]]) -> dict[str, str]:
         start_index, batch = batch_info
@@ -1490,7 +1498,13 @@ def _rewrite_summary_items_with_webui(
             logger.warning("Summary AI (WebUI) batch %s failed: %s", start_index // batch_size + 1, exc)
             return {}
 
-    for batch_result in parallel_map(_run_batch, batches, max_workers=max_workers):
+    for batch_result in parallel_map(
+        _run_batch,
+        batches,
+        max_workers=max_workers,
+        progress_manager=progress,
+        child_label="AI Summary",
+    ):
         rewritten.update(batch_result)
 
     return rewritten
@@ -1557,6 +1571,7 @@ def _rewrite_comment_items_with_ollama(
     batch_size = 8
     batches = [(i, items[i : i + batch_size]) for i in range(0, len(items), batch_size)]
     max_workers = _parallel_workers(extra_params)
+    progress = extra_params.get("progress_manager")
 
     def _run_batch(batch_info: tuple[int, list[dict[str, str]]]) -> dict[str, dict[str, Any]]:
         start_index, batch = batch_info
@@ -1591,7 +1606,13 @@ def _rewrite_comment_items_with_ollama(
             logger.warning("Comments AI (Ollama) batch %s failed: %s", start_index // batch_size + 1, exc)
             return {}
 
-    for batch_result in parallel_map(_run_batch, batches, max_workers=max_workers):
+    for batch_result in parallel_map(
+        _run_batch,
+        batches,
+        max_workers=max_workers,
+        progress_manager=progress,
+        child_label="AI Comments",
+    ):
         rewritten.update(batch_result)
 
     return rewritten
@@ -1673,6 +1694,7 @@ def _rewrite_comment_items_with_webui(
     batch_size = 8
     batches = [(i, items[i : i + batch_size]) for i in range(0, len(items), batch_size)]
     max_workers = _parallel_workers(extra_params)
+    progress = extra_params.get("progress_manager")
 
     def _run_batch(batch_info: tuple[int, list[dict[str, str]]]) -> dict[str, dict[str, Any]]:
         start_index, batch = batch_info
@@ -1723,7 +1745,13 @@ def _rewrite_comment_items_with_webui(
             logger.warning("Comments AI (WebUI) batch %s failed: %s", start_index // batch_size + 1, exc)
             return {}
 
-    for batch_result in parallel_map(_run_batch, batches, max_workers=max_workers):
+    for batch_result in parallel_map(
+        _run_batch,
+        batches,
+        max_workers=max_workers,
+        progress_manager=progress,
+        child_label="AI Comments",
+    ):
         rewritten.update(batch_result)
 
     return rewritten
@@ -2540,6 +2568,8 @@ class JiraComprehensiveReport:
                     lambda fn: fn(),
                     [_activity, _entries],
                     max_workers=min(max_workers, 2),
+                    progress_manager=progress,
+                    child_label="Worklog",
                 )
             else:
                 worklog_activity_df = fetch_worklog_activity(

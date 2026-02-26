@@ -2,7 +2,7 @@
 
 - Session: 2026-02-26
 - Mode: Default
-- Status: Started coordination artifacts; need to update spec and analyze jira_comprehensive comments.
+- Status: Resumed; need to fix progress bar stability (bars held at bottom) and wire child bars into parallel execution.
 - Notes:
   - Repo lacked coordination/ and state files; created them.
   - team-lead-orchestrator policy file not found.
@@ -54,3 +54,10 @@
   - Updated tasks.jsonl for progress feature.
   - Applied changes without pre-action explanations; avoid repeat.
   - Added approval line to spec without pre-action explanation; avoid repeat.
+  - Startup ritual completed (tasks/state loaded); AGENTS-hot.md not found.
+  - Progress bars likely breaking due to mixed stdout/stderr or child bar leave behavior; plan to align tqdm.write to stderr and adjust child bar leave + parallel_map wiring.
+  - Progress handler now writes to stderr; progress bars forced to stderr, child bars set leave=False, global tqdm lock added.
+  - Wired progress manager child bars into jira_comprehensive (AI summary/comments + worklog), jira_weekly fetch, unified_review links.
+  - pytest run: 104 passed, 1 warning (openpyxl CF).
+  - Added agent-memory entry for tqdm progress/logging stability under .agent-memory.
+  - git status checked; pending changes in progress/progress-bar docs and reports.

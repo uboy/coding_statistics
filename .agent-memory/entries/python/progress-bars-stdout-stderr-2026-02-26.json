@@ -1,0 +1,17 @@
+{
+  "id": "progress-bars-stdout-stderr-2026-02-26",
+  "technology": "python",
+  "skills": ["developer"],
+  "applies_to_systems": ["codex"],
+  "summary": "Stabilize tqdm progress bars with multi-thread logging by aligning output streams and using a shared lock; keep child bars non-leaving.",
+  "source_links": ["user-report: comprehensive report progress bars broke due to logs/threads"],
+  "recorded_on": "2026-02-26",
+  "last_verified_on": "2026-02-26",
+  "verify_after_days": 60,
+  "status": "active",
+  "details": [
+    "Use tqdm.write(..., file=sys.stderr) for logging to the same stream as progress bars.",
+    "Set tqdm bars with file=sys.stderr and a global tqdm.set_lock(threading.RLock()) to avoid multi-thread output collisions.",
+    "Use leave=False for per-thread child bars so repeated parallel batches don't stack and destabilize the console."
+  ]
+}

@@ -248,6 +248,8 @@ class JiraWeeklyReport:
                     lambda fn: fn(),
                     [_fetch_main, _fetch_activity, _fetch_resolved],
                     max_workers=min(max_workers, 3),
+                    progress_manager=progress,
+                    child_label="Jira fetch",
                 )
                 data = main_df
                 worklogs_df, comments_df = activity_pair

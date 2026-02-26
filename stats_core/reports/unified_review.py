@@ -184,7 +184,13 @@ class UnifiedReviewReport:
         rows: list[list[str]] = []
         max_workers = _parallel_workers(extra_params)
         if max_workers > 1:
-            results = parallel_map(lambda link: process_link(link, config), links, max_workers=max_workers)
+            results = parallel_map(
+                lambda link: process_link(link, config),
+                links,
+                max_workers=max_workers,
+                progress_manager=progress,
+                child_label="Links",
+            )
             progress.advance(len(links))
             for link, row in zip(links, results):
                 if not row:
