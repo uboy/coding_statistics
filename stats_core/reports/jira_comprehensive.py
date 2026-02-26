@@ -303,7 +303,6 @@ def _get_progress(extra_params: dict[str, Any], report_name: str, total_steps: i
     if progress is None:
         progress = NoopProgressManager()
     progress.set_total(total_steps)
-    progress.logger.info("Progress initialized: %s steps", total_steps)
     return progress
 
 

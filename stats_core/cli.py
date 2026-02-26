@@ -170,13 +170,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     extra_params["progress_manager"] = progress
     logging.getLogger(__name__).info("Report started: %s", report_name)
     try:
-        with progress.step("Run report"):
-            report.run(
-                dataset=dataset,
-                config=config,
-                output_formats=args.output_formats,
-                extra_params=extra_params,
-            )
+        report.run(
+            dataset=dataset,
+            config=config,
+            output_formats=args.output_formats,
+            extra_params=extra_params,
+        )
     finally:
         progress.close()
 

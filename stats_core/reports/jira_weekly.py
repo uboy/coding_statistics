@@ -5,6 +5,7 @@ Jira weekly report - coordinates List View, Table View, Epic Progress, and Excel
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 from pathlib import Path
 from configparser import ConfigParser
 from typing import Any
@@ -39,6 +40,7 @@ from ..utils.members import read_member_list
 from ..utils.parallel import parallel_map
 from ..utils.progress import NoopProgressManager
 
+logger = logging.getLogger(__name__)
 
 def _parse_bool(value: str | bool | None, default: bool) -> bool:
     """Parse boolean value from string or return default."""
@@ -104,7 +106,7 @@ def generate_excel_report(
 
     excel_path = Path(f"{output_file}.xlsx")
     grouped_data.to_excel(excel_path)
-    print(f"Excel report successfully created: {excel_path}")
+    logger.info("Excel report successfully created: %s", excel_path)
 
 
 def _to_weekly_summary_source_df(resolved_issues_df: pd.DataFrame) -> pd.DataFrame:
@@ -350,4 +352,4 @@ class JiraWeeklyReport:
                 # Save document
                 word_path = Path(f"{output_file}.docx")
                 document.save(word_path)
-                print(f"Word report successfully created: {word_path}")
+                logger.info("Word report successfully created: %s", word_path)

@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
+from tqdm import tqdm
 from openpyxl import load_workbook
 from openpyxl.utils.datetime import from_excel
 
@@ -1880,7 +1881,7 @@ def render_console_diff(
     if not diff_lines:
         return
 
-    print(f"[DIFF] {project} {current_week_key} vs {previous_week_key}")
+    tqdm.write(f"[DIFF] {project} {current_week_key} vs {previous_week_key}")
     for line in diff_lines:
         if line.startswith("? "):
             continue
@@ -1888,19 +1889,19 @@ def render_console_diff(
         if line.startswith("- "):
             old_text = _strikethrough(payload)
             if use_color:
-                print(f"  - \x1b[31m{old_text}\x1b[0m")
+                tqdm.write(f"  - \x1b[31m{old_text}\x1b[0m")
             else:
-                print(f"  - {old_text}")
+                tqdm.write(f"  - {old_text}")
         elif line.startswith("+ "):
             if use_color:
-                print(f"  + \x1b[32m{payload}\x1b[0m")
+                tqdm.write(f"  + \x1b[32m{payload}\x1b[0m")
             else:
-                print(f"  + {payload}")
+                tqdm.write(f"  + {payload}")
         else:
             if use_color:
-                print(f"    \x1b[37m{payload}\x1b[0m")
+                tqdm.write(f"    \x1b[37m{payload}\x1b[0m")
             else:
-                print(f"    {payload}")
+                tqdm.write(f"    {payload}")
 
 
 def parse_vacations_excel(
