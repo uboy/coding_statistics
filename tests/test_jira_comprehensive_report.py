@@ -604,8 +604,13 @@ def test_extract_results_hint_from_link_only():
 
 def test_format_ai_comment_summary_uses_results_hint():
     comments = "Results: https://example.com/result"
-    summary = _format_ai_comment_summary({}, _extract_results_hint(comments))
+    summary = _format_ai_comment_summary({}, _extract_results_hint(comments), comments)
     assert summary == "Results provided (link removed)."
+
+
+def test_format_ai_comment_summary_handles_timeout_error():
+    summary = _format_ai_comment_summary({"__error__": "timeout"}, None, "some comment")
+    assert summary == "AI request timeout."
 
 
 def test_rewrite_comment_items_with_ai_respects_flag():
@@ -615,7 +620,7 @@ def test_rewrite_comment_items_with_ai_respects_flag():
         config,
         {"ai_comments_enabled": "false"},
     )
-    assert result == {}
+    assert result == {"ABC-1": {"__error__": "AI comments disabled"}}
 
 
 def test_fetch_jira_data_results_convert_attachment_markers_to_links():

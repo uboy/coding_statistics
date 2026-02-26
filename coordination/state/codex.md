@@ -65,3 +65,7 @@
   - Updated progress tests for isatty guard.
   - Updated agent-memory entry with tqdm console-logging context guidance.
   - pytest run: 104 passed, 1 warning (openpyxl CF).
+  - Added AI comments failure reasons (timeout/disabled/model missing/response missing) and richer insufficient-data messages.
+  - pytest failed: test_rewrite_comment_items_with_ai_respects_flag expected empty map; updated test for new error marker.
+  - pytest run: 105 passed, 1 warning (openpyxl CF).
+  - Added agent-memory entry for AI comments insufficient-data reasons.

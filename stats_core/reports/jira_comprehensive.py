@@ -259,9 +259,29 @@ def _extract_results_hint(text: str) -> str | None:
     return "Results provided (link removed)."
 
 
-def _format_ai_comment_summary(value: dict[str, Any] | None, comments_hint: str | None = None) -> str:
+def _format_ai_comment_summary(
+    value: dict[str, Any] | None,
+    comments_hint: str | None = None,
+    source_text: str | None = None,
+) -> str:
+    source_text = _compact_text(source_text)
+    if isinstance(value, dict) and "__error__" in value:
+        reason = _compact_text(value.get("__error__"))
+        if reason:
+            if reason.casefold() == "timeout":
+                return "AI request timeout."
+            if reason.casefold() == "ai comments disabled":
+                return "AI comments disabled."
+            if reason.casefold() == "ai model not configured":
+                return "AI model not configured."
+            return f"AI request failed: {reason}."
+        return "AI request failed."
     if not isinstance(value, dict):
-        return comments_hint or "Insufficient data."
+        if comments_hint:
+            return comments_hint
+        if not source_text:
+            return "Insufficient data: no comments in period."
+        return "Insufficient data: not enough information in comments."
 
     labels = {
         "done": "Done",
@@ -282,7 +302,11 @@ def _format_ai_comment_summary(value: dict[str, Any] | None, comments_hint: str 
             cleaned = "no data"
         parts.append(f"{label}: {cleaned}")
     if empty_fields == len(labels):
-        return comments_hint or "Insufficient data."
+        if comments_hint:
+            return comments_hint
+        if not source_text:
+            return "Insufficient data: no comments in period."
+        return "Insufficient data: not enough information in comments."
     return ". ".join(parts).strip()
 
 
@@ -1280,7 +1304,11 @@ def build_comments_period_df(
     for row in rows:
         ai_value = ai_map.get(row["Issue_Key"])
         hint = row.pop("_results_hint", None)
-        row["AI_Comments"] = _format_ai_comment_summary(ai_value, hint)
+        row["AI_Comments"] = _format_ai_comment_summary(
+            ai_value,
+            hint,
+            row.get("Comments_In_Period"),
+        )
 
     return pd.DataFrame(rows)
 
@@ -1542,11 +1570,11 @@ def _rewrite_comment_items_with_ollama(
         True,
     )
     if not ollama_enabled:
-        return {}
+        return {item["id"]: {"__error__": "AI comments disabled"} for item in items}
     model = _compact_text(extra_params.get("ollama_model") or config.get("ollama", "model", fallback=""))
     if not model:
         logger.warning("Comments AI: Ollama model is not configured; using empty summaries.")
-        return {}
+        return {item["id"]: {"__error__": "AI model not configured"} for item in items}
     if not items:
         return {}
 
@@ -1601,10 +1629,15 @@ def _rewrite_comment_items_with_ollama(
                 candidate = rewrite_map.get(target_id)
                 if isinstance(candidate, dict):
                     batch_result[issue_id] = candidate
+                else:
+                    batch_result[issue_id] = {"__error__": "AI response missing"}
             return batch_result
         except Exception as exc:
             logger.warning("Comments AI (Ollama) batch %s failed: %s", start_index // batch_size + 1, exc)
-            return {}
+            error_reason = "timeout" if isinstance(
+                exc, (requests.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout)
+            ) else "request failed"
+            return {issue_id: {"__error__": error_reason} for issue_id in target_map.values()}
 
     for batch_result in parallel_map(
         _run_batch,
@@ -1631,7 +1664,7 @@ def _rewrite_comment_items_with_webui(
         False,
     )
     if not webui_enabled:
-        return {}
+        return {item["id"]: {"__error__": "AI comments disabled"} for item in items}
     model = _compact_text(
         extra_params.get("webui_model")
         or webui_section.get("model")
@@ -1639,7 +1672,7 @@ def _rewrite_comment_items_with_webui(
     )
     if not model:
         logger.warning("Comments AI: WebUI model is not configured; using empty summaries.")
-        return {}
+        return {item["id"]: {"__error__": "AI model not configured"} for item in items}
     if not items:
         return {}
 
@@ -1740,10 +1773,15 @@ def _rewrite_comment_items_with_webui(
                 candidate = rewrite_map.get(target_id)
                 if isinstance(candidate, dict):
                     batch_result[issue_id] = candidate
+                else:
+                    batch_result[issue_id] = {"__error__": "AI response missing"}
             return batch_result
         except Exception as exc:
             logger.warning("Comments AI (WebUI) batch %s failed: %s", start_index // batch_size + 1, exc)
-            return {}
+            error_reason = "timeout" if isinstance(
+                exc, (requests.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout)
+            ) else "request failed"
+            return {issue_id: {"__error__": error_reason} for issue_id in target_map.values()}
 
     for batch_result in parallel_map(
         _run_batch,
@@ -1763,7 +1801,7 @@ def rewrite_comment_items_with_ai(
     extra_params: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
     if not _bool_value(extra_params.get("ai_comments_enabled"), False):
-        return {}
+        return {item["id"]: {"__error__": "AI comments disabled"} for item in items}
     section = config["jira_comprehensive"] if config.has_section("jira_comprehensive") else {}
     provider_raw = _compact_text(extra_params.get("ai_provider") or section.get("ai_provider"))
     if provider_raw:
