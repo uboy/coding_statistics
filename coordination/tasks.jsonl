@@ -1,0 +1,11 @@
+{"id":"kb-expand","title":"Expand agent knowledge base spec and plan KB contents","status":"done"}
+{"id":"jira-comp-analysis","title":"Analyze jira_comprehensive comments coverage vs requirement","status":"done"}
+{"id":"cleanup-spec","title":"Remove unused jira-comments-period spec","status":"done"}
+{"id":"verify","title":"Verify doc changes and report status","status":"done"}
+{"id":"kb-implement","title":"Implement docs/agents/knowledge-base.md from approved plan","status":"done"}
+{"id":"jc-comments-spec","title":"Approved spec: add Comments_Period sheet with AI_Comments","status":"done"}
+{"id":"jc-comments-plan","title":"Plan implementation for Comments_Period sheet","status":"done"}
+{"id":"jc-comments-tests-red","title":"Add tests for comments-in-period filtering (RED)","status":"blocked"}
+{"id":"jc-comments-impl","title":"Implement Comments_Period sheet and AI_Comments","status":"done"}
+{"id":"jc-comments-tests-green","title":"Run tests (GREEN)","status":"done"}
+{"id":"jc-comments-review","title":"Reviewer handoff and verdict","status":"done"}

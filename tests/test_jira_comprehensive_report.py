@@ -15,10 +15,13 @@ from openpyxl import load_workbook
 
 from stats_core.reports.jira_comprehensive import (
     JiraComprehensiveReport,
+    build_comments_period_df,
     build_jql_query,
     build_monthly_summary_df,
     calculate_engineer_metrics,
     fetch_jira_data,
+    _build_comment_summary_prompt,
+    rewrite_comment_items_with_ai,
 )
 
 
@@ -89,8 +92,16 @@ def _make_issue(
     return SimpleNamespace(key=key, fields=fields)
 
 
+@patch("stats_core.reports.jira_comprehensive.rewrite_comment_items_with_ai")
 @patch("stats_core.reports.jira_comprehensive.JiraSource")
-def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_path: Path):
+def test_jira_comprehensive_report_run_writes_excel(
+    mock_jira_source_cls,
+    mock_rewrite_comments,
+    tmp_path: Path,
+):
+    mock_rewrite_comments.return_value = {
+        "ABC-1": "Сделано: фиксы. Планы: нет данных. Риски: нет данных. Зависимости: нет данных. Примечания: нет данных.",
+    }
     issues = [
         _make_issue(
             "ABC-1",
@@ -291,6 +302,10 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
         "project = ABC AND resolved >= '2025-01-01' AND resolved < '2025-02-01' ORDER BY created DESC"
     )
     assert any(call.args[0] == expected_jql for call in fake_jira.search_issues.call_args_list)
+    expected_comments_jql = (
+        "project = ABC AND updated >= '2025-01-01' AND updated < '2025-02-01' ORDER BY created DESC"
+    )
+    assert any(call.args[0] == expected_comments_jql for call in fake_jira.search_issues.call_args_list)
 
     out_path = tmp_path / "out.xlsx"
     assert out_path.exists()
@@ -303,6 +318,26 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     assert "Engineer_Performance" in wb.sheetnames
     assert "QA_Performance" in wb.sheetnames
     assert "PM_Performance" in wb.sheetnames
+    assert "Comments_Period" in wb.sheetnames
+
+    comments_sheet = wb["Comments_Period"]
+    comments_headers = [cell.value for cell in comments_sheet[1]]
+    for header in (
+        "Issue_Key",
+        "Summary",
+        "Type",
+        "Status",
+        "Priority",
+        "Assignee",
+        "Created",
+        "Epic_Name",
+        "Parent",
+        "Description",
+        "Comments",
+        "AI_Comments",
+        "Comments_In_Period",
+    ):
+        assert header in comments_headers
 
     issues_sheet = wb["Issues"]
     headers = [cell.value for cell in issues_sheet[1]]
@@ -436,6 +471,138 @@ def test_jira_comprehensive_report_run_writes_excel(mock_jira_source_cls, tmp_pa
     assert qa_row["TT_tested_perf"] == 1
     assert qa_row["TT_tdev_perf"] == 4
     assert qa_row["Total_Resolved_Issues"] == 1
+
+
+def _make_comment(
+    body: str,
+    *,
+    created: str,
+    updated: str | None = None,
+    author: str = "Commenter",
+):
+    return SimpleNamespace(
+        body=body,
+        author=SimpleNamespace(displayName=author),
+        created=created,
+        updated=updated or created,
+        id="1",
+    )
+
+
+def _make_issue_with_comments(key: str, comments: list[SimpleNamespace]):
+    comment = SimpleNamespace(comments=comments)
+    fields = SimpleNamespace(
+        summary="Test task",
+        assignee=SimpleNamespace(displayName="Alice", name="alice"),
+        created="2025-01-01T10:00:00.000+0000",
+        description="Description",
+        comment=comment,
+        priority=SimpleNamespace(name="P1"),
+        status=SimpleNamespace(name="In Progress"),
+        issuetype=SimpleNamespace(name="Task"),
+        customfield_10000=None,
+        parent=None,
+    )
+    return SimpleNamespace(key=key, fields=fields)
+
+
+def test_build_comments_period_df_filters_created_and_updated():
+    issues = [
+        _make_issue_with_comments(
+            "ABC-1",
+            [
+                _make_comment(
+                    "created in period",
+                    created="2025-01-10T10:00:00.000+0000",
+                ),
+                _make_comment(
+                    "updated in period",
+                    created="2024-12-10T10:00:00.000+0000",
+                    updated="2025-01-15T10:00:00.000+0000",
+                ),
+            ],
+        )
+    ]
+    fake_jira = SimpleNamespace(
+        _options={"server": "https://jira.example.com"},
+        search_issues=Mock(side_effect=[issues]),
+    )
+    config = ConfigParser()
+    with patch(
+        "stats_core.reports.jira_comprehensive.rewrite_comment_items_with_ai",
+        return_value={},
+    ):
+        df = build_comments_period_df(
+            fake_jira,
+            "project = ABC AND updated >= '2025-01-01' AND updated < '2025-02-01'",
+            "2025-01-01",
+            "2025-01-31",
+            config,
+            {},
+        )
+    assert not df.empty
+    row = df.iloc[0]
+    assert "created in period" in str(row["Comments_In_Period"])
+    assert "updated in period" in str(row["Comments_In_Period"])
+
+
+def test_build_comments_period_df_without_dates_includes_all_comments():
+    issues = [
+        _make_issue_with_comments(
+            "ABC-1",
+            [
+                _make_comment(
+                    "first",
+                    created="2024-12-01T10:00:00.000+0000",
+                ),
+                _make_comment(
+                    "second",
+                    created="2025-02-01T10:00:00.000+0000",
+                ),
+            ],
+        )
+    ]
+    fake_jira = SimpleNamespace(
+        _options={"server": "https://jira.example.com"},
+        search_issues=Mock(side_effect=[issues]),
+    )
+    config = ConfigParser()
+    with patch(
+        "stats_core.reports.jira_comprehensive.rewrite_comment_items_with_ai",
+        return_value={},
+    ):
+        df = build_comments_period_df(
+            fake_jira,
+            "project = ABC ORDER BY created DESC",
+            None,
+            None,
+            config,
+            {},
+        )
+    row = df.iloc[0]
+    assert "first" in str(row["Comments_In_Period"])
+    assert "second" in str(row["Comments_In_Period"])
+
+
+def test_build_comment_summary_prompt_has_required_fields():
+    _, prompt = _build_comment_summary_prompt([{"id": "ABC-1", "comments": "text"}])
+    assert "JSON" in prompt
+    assert "done" in prompt
+    assert "planned" in prompt
+    assert "risks" in prompt
+    assert "dependencies" in prompt
+    assert "notes" in prompt
+    assert "Недостаточно данных" in prompt
+
+
+def test_rewrite_comment_items_with_ai_respects_flag():
+    config = ConfigParser()
+    result = rewrite_comment_items_with_ai(
+        [{"id": "ABC-1", "comments": "text"}],
+        config,
+        {"ai_comments_enabled": "false"},
+    )
+    assert result == {}
 
 
 def test_fetch_jira_data_results_convert_attachment_markers_to_links():

@@ -77,6 +77,7 @@ python stats_main.py run \
 - Дополнительная HTML-строка в конце отчёта задаётся через `footer_html` (вставляется как raw HTML).
 - `jira_comprehensive` включает лист `Worklog_Activity` (агрегация времени по задаче и инженеру, только задачи с несколькими авторами).
 - `jira_comprehensive` включает лист `Worklog_Entries` (все логи времени за период).
+- `jira_comprehensive` включает лист `Comments_Period` (задачи с комментариями в период; колонки `Comments`, `Comments_In_Period`, `AI_Comments`). AI включается через `--params ai_comments_enabled=true`.
 - `Assistance_Provided` считается по метке `dev_assistance`.
 ```
 

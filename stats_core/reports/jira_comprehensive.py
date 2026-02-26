@@ -196,6 +196,70 @@ def _build_summary_prompt(items: list[dict[str, str]], *, start_index: int = 1) 
     return target_map, "\n".join(prompt_lines)
 
 
+def _strip_links_and_markup(text: str) -> str:
+    cleaned = str(text or "")
+    cleaned = re.sub(r"\b[A-Z]+-\d+\b", "", cleaned)
+    cleaned = re.sub(r"(?:https?://|ftp://|file://|www\.)\S+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\[[^\]]+\]\([^)]+\)", "", cleaned)  # markdown links
+    cleaned = re.sub(r"[`*_>#]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -,:;")
+    return cleaned
+
+
+def _build_comment_summary_prompt(
+    items: list[dict[str, str]],
+    *,
+    start_index: int = 1,
+) -> tuple[dict[str, str], str]:
+    prompt_lines = [
+        "Ты анализируешь комментарии по задачам Jira за период.",
+        "Цель: составить краткую и структурированную сводку прогресса по задаче.",
+        "Используй ТОЛЬКО текст комментариев за период, не выдумывай факты.",
+        "Удали ссылки, URL, упоминания PR/MR/репозиториев, ключи Jira и разметку.",
+        "Ответ должен быть строго в JSON, без пояснений, без кода.",
+        "Формат JSON: {\"t1\": {\"done\":\"...\", \"planned\":\"...\", \"risks\":\"...\", \"dependencies\":\"...\", \"notes\":\"...\"}}",
+        "Если данных недостаточно, заполни notes='Недостаточно данных', остальные поля оставь пустыми.",
+        "Если фрагмент неочевиден или двусмысленен, перенеси его в notes.",
+        "Извлекай факты: done=сделано, planned=планируется, risks=риски/проблемы, dependencies=зависимости.",
+        "Вывод на русском языке. Поля всегда строки.",
+        "Пример: {\"t1\": {\"done\":\"Исправлен дефект X.\", \"planned\":\"Доработать тесты.\", "
+        "\"risks\":\"Нет данных.\", \"dependencies\":\"Нет данных.\", \"notes\":\"\"}}",
+        "---",
+        "Input items:",
+    ]
+    target_map: dict[str, str] = {}
+    for idx, item in enumerate(items, start=start_index):
+        target_id = f"t{idx}"
+        target_map[target_id] = item["id"]
+        prompt_lines.append(f'ID={target_id}; comments="{item.get("comments", "")}"')
+    return target_map, "\n".join(prompt_lines)
+
+
+def _format_ai_comment_summary(value: dict[str, Any] | None) -> str:
+    if not isinstance(value, dict):
+        return "Недостаточно данных."
+
+    labels = {
+        "done": "Сделано",
+        "planned": "Планы",
+        "risks": "Риски",
+        "dependencies": "Зависимости",
+        "notes": "Примечания",
+    }
+    parts: list[str] = []
+    empty_fields = 0
+    for key, label in labels.items():
+        raw = value.get(key, "")
+        cleaned = _strip_links_and_markup(raw)
+        if not cleaned:
+            empty_fields += 1
+            cleaned = "нет данных"
+        parts.append(f"{label}: {cleaned}")
+    if empty_fields == len(labels):
+        return "Недостаточно данных."
+    return ". ".join(parts).strip()
+
+
 def _parse_label_set(value: Any) -> set[str]:
     text = _compact_text(value).casefold()
     if not text:
@@ -209,6 +273,15 @@ def _parse_iso_date(value: Any) -> date | None:
         return None
     try:
         return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _parse_jira_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
     except Exception:
         return None
 
@@ -485,6 +558,42 @@ def build_jql_query(params: dict[str, Any]) -> str:
             conditions.append(f"resolved >= '{start_date}' AND resolved < '{end_exclusive}'")
         except ValueError:
             conditions.append(f"resolved >= '{start_date}' AND resolved <= '{end_date}'")
+
+    version = params.get("version")
+    if version:
+        conditions.append(f"fixVersion = '{version}'")
+
+    epic = params.get("epic")
+    if epic:
+        conditions.append(f"'Epic Link' = {epic}")
+
+    if not conditions:
+        raise ValueError("Must specify at least one of: project+dates, version, epic, or jql")
+
+    return " AND ".join(conditions) + " ORDER BY created DESC"
+
+
+def build_comments_period_jql(params: dict[str, Any]) -> str:
+    """Build JQL query for comments-period sheet (updated-date based)."""
+    if params.get("jql"):
+        return str(params["jql"])
+
+    conditions: list[str] = []
+
+    project = params.get("project")
+    if project:
+        conditions.append(f"project = {project}")
+
+    start_date = params.get("start_date")
+    end_date = params.get("end_date")
+    if start_date and end_date:
+        try:
+            end_exclusive = (
+                datetime.strptime(str(end_date), "%Y-%m-%d").date() + timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+            conditions.append(f"updated >= '{start_date}' AND updated < '{end_exclusive}'")
+        except ValueError:
+            conditions.append(f"updated >= '{start_date}' AND updated <= '{end_date}'")
 
     version = params.get("version")
     if version:
@@ -959,6 +1068,177 @@ def fetch_jira_data(jira, jql_query: str) -> tuple[pd.DataFrame, pd.DataFrame, p
     return issues_df, links_df, results_df
 
 
+def _comment_activity_date(
+    created_dt: date | None,
+    updated_dt: date | None,
+    start_dt: date | None,
+    end_dt: date | None,
+) -> tuple[date | None, bool]:
+    if start_dt and end_dt:
+        if updated_dt and start_dt <= updated_dt <= end_dt:
+            return updated_dt, True
+        if created_dt and start_dt <= created_dt <= end_dt:
+            return created_dt, False
+        return None, False
+    return (updated_dt or created_dt), bool(updated_dt and updated_dt != created_dt)
+
+
+def build_comments_period_df(
+    jira,
+    jql_query: str,
+    start_date: str | None,
+    end_date: str | None,
+    config: ConfigParser,
+    extra_params: dict[str, Any],
+) -> pd.DataFrame:
+    start_dt = _parse_iso_date(start_date) if start_date else None
+    end_dt = _parse_iso_date(end_date) if end_date else None
+
+    start_at = 0
+    max_results = 100
+    all_issues: list[Any] = []
+    while True:
+        issues = jira.search_issues(
+            jql_query,
+            startAt=start_at,
+            maxResults=max_results,
+            fields=[
+                "key",
+                "summary",
+                "assignee",
+                "created",
+                "description",
+                "comment",
+                "priority",
+                "status",
+                "issuetype",
+                "customfield_10000",
+                "parent",
+            ],
+        )
+        all_issues.extend(issues)
+        if len(issues) < max_results:
+            break
+        start_at += max_results
+
+    if not all_issues:
+        columns = [
+            "Issue_Key",
+            "Summary",
+            "Type",
+            "Status",
+            "Priority",
+            "Assignee",
+            "Created",
+            "Epic_Name",
+            "Parent",
+            "Description",
+            "Comments",
+            "AI_Comments",
+            "Comments_In_Period",
+        ]
+        return pd.DataFrame(columns=columns)
+
+    issue_epic_map: dict[str, str] = {}
+    parent_keys_needed: set[str] = set()
+    for issue in all_issues:
+        epic_link = getattr(issue.fields, "customfield_10000", "") or ""
+        parent = getattr(issue.fields, "parent", None)
+        parent_key = parent.key if parent else ""
+        if not epic_link and parent_key:
+            parent_keys_needed.add(parent_key)
+        issue_epic_map[issue.key] = epic_link or ""
+
+    if parent_keys_needed:
+        missing_parent_keys = [
+            key for key in parent_keys_needed if not issue_epic_map.get(key)
+        ]
+        if missing_parent_keys:
+            chunk_size = 50
+            for i in range(0, len(missing_parent_keys), chunk_size):
+                chunk = missing_parent_keys[i:i + chunk_size]
+                parent_issues = jira.search_issues(
+                    f"issuekey in ({', '.join(chunk)})",
+                    maxResults=1000,
+                    fields=["key", "customfield_10000"],
+                )
+                for parent_issue in parent_issues:
+                    parent_epic = getattr(parent_issue.fields, "customfield_10000", "") or ""
+                    issue_epic_map[parent_issue.key] = parent_epic
+
+    epic_metadata_map = _fetch_epic_metadata(jira, list({value for value in issue_epic_map.values() if value}))
+    epic_name_map = {key: value.get("name", "") for key, value in epic_metadata_map.items()}
+
+    rows: list[dict[str, Any]] = []
+    ai_inputs: list[dict[str, str]] = []
+
+    for issue in all_issues:
+        key = issue.key
+        summary = issue.fields.summary
+        issue_type = issue.fields.issuetype.name if issue.fields.issuetype else ""
+        status = issue.fields.status.name if issue.fields.status else ""
+        priority = issue.fields.priority.name if issue.fields.priority else ""
+        assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
+        created = issue.fields.created[:10] if issue.fields.created else ""
+        description = issue.fields.description or ""
+        parent = getattr(issue.fields, "parent", None)
+        parent_key = parent.key if parent else ""
+        epic_link = issue_epic_map.get(issue.key, "")
+        if not epic_link and parent_key:
+            epic_link = issue_epic_map.get(parent_key, "")
+        epic_name = epic_name_map.get(epic_link, "Unknown Epic") if epic_link else "Unknown Epic"
+
+        comments: list[str] = []
+        comments_in_period: list[str] = []
+        if hasattr(issue.fields, "comment") and issue.fields.comment.comments:
+            for comment in issue.fields.comment.comments:
+                comment_text = _compact_text(_comment_body_to_text(comment.body))
+                if not comment_text:
+                    continue
+                comment_author = comment.author.displayName if comment.author else "Unknown"
+                created_dt = _parse_jira_date(getattr(comment, "created", None))
+                updated_dt = _parse_jira_date(getattr(comment, "updated", None))
+                created_str = created_dt.strftime("%Y-%m-%d") if created_dt else ""
+                comments.append(f"[{created_str}] {comment_author}: {comment_text}")
+
+                activity_dt, used_updated = _comment_activity_date(created_dt, updated_dt, start_dt, end_dt)
+                if activity_dt:
+                    activity_str = activity_dt.strftime("%Y-%m-%d")
+                    tag = f"{activity_str} updated" if used_updated else activity_str
+                    comments_in_period.append(f"[{tag}] {comment_author}: {comment_text}")
+
+        if start_dt and end_dt and not comments_in_period:
+            continue
+
+        all_comments_text = "\n---\n".join(comments)
+        comments_in_period_text = "\n---\n".join(comments_in_period)
+        rows.append(
+            {
+                "Issue_Key": key,
+                "Summary": summary,
+                "Type": issue_type,
+                "Status": status,
+                "Priority": priority,
+                "Assignee": assignee,
+                "Created": created,
+                "Epic_Name": epic_name,
+                "Parent": parent_key,
+                "Description": description,
+                "Comments": all_comments_text,
+                "AI_Comments": "",
+                "Comments_In_Period": comments_in_period_text,
+            }
+        )
+        ai_inputs.append({"id": key, "comments": comments_in_period_text})
+
+    ai_map = rewrite_comment_items_with_ai(ai_inputs, config, extra_params) if ai_inputs else {}
+    for row in rows:
+        ai_value = ai_map.get(row["Issue_Key"])
+        row["AI_Comments"] = _format_ai_comment_summary(ai_value)
+
+    return pd.DataFrame(rows)
+
+
 def _rewrite_summary_items_with_ollama(
     items: list[dict[str, str]],
     config: ConfigParser,
@@ -1162,6 +1442,213 @@ def rewrite_summary_items_with_ai(
     if provider not in {"", "ollama"}:
         logger.warning("Summary AI: unknown ai_provider=%s, falling back to ollama.", provider)
     return _rewrite_summary_items_with_ollama(items, config, extra_params)
+
+
+def _rewrite_comment_items_with_ollama(
+    items: list[dict[str, str]],
+    config: ConfigParser,
+    extra_params: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    ollama_enabled = _bool_value(
+        extra_params.get("ollama_enabled", config.get("ollama", "enabled", fallback="true")),
+        True,
+    )
+    if not ollama_enabled:
+        return {}
+    model = _compact_text(extra_params.get("ollama_model") or config.get("ollama", "model", fallback=""))
+    if not model:
+        logger.warning("Comments AI: Ollama model is not configured; using empty summaries.")
+        return {}
+    if not items:
+        return {}
+
+    ollama_url = _compact_text(extra_params.get("ollama_url") or config.get("ollama", "url", fallback="http://localhost:11434"))
+    ollama_api_key = _strip_wrapping_quotes(
+        _compact_text(extra_params.get("ollama_api_key") or config.get("ollama", "api_key", fallback=""))
+    )
+    timeout_seconds = int(
+        _compact_text(extra_params.get("ollama_timeout_seconds") or config.get("ollama", "timeout_seconds", fallback="60"))
+        or "60"
+    )
+    temperature = float(
+        _compact_text(extra_params.get("ollama_temperature") or config.get("ollama", "temperature", fallback="0.2"))
+        or "0.2"
+    )
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if ollama_api_key:
+        headers["Authorization"] = f"Bearer {ollama_api_key}"
+
+    rewritten: dict[str, dict[str, Any]] = {}
+    batch_size = 8
+    for i in range(0, len(items), batch_size):
+        batch = items[i : i + batch_size]
+        target_map, prompt = _build_comment_summary_prompt(batch, start_index=i + 1)
+        try:
+            response = requests.post(
+                f"{ollama_url.rstrip('/')}/api/generate",
+                headers=headers,
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": temperature},
+                },
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            response_json = response.json()
+            response_text = str(response_json.get("response", "") or "")
+            rewrite_map = _extract_json_object(response_text) or {}
+            for target_id, issue_id in target_map.items():
+                candidate = rewrite_map.get(target_id)
+                if isinstance(candidate, dict):
+                    rewritten[issue_id] = candidate
+        except Exception as exc:
+            logger.warning("Comments AI (Ollama) batch %s failed: %s", i // batch_size + 1, exc)
+    return rewritten
+
+
+def _rewrite_comment_items_with_webui(
+    items: list[dict[str, str]],
+    config: ConfigParser,
+    extra_params: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    webui_section = config["webui"] if config.has_section("webui") else {}
+    webui_enabled = _bool_value(
+        extra_params.get("webui_enabled")
+        or webui_section.get("enabled")
+        or config.get("webui", "enabled", fallback="false"),
+        False,
+    )
+    if not webui_enabled:
+        return {}
+    model = _compact_text(
+        extra_params.get("webui_model")
+        or webui_section.get("model")
+        or config.get("webui", "model", fallback="")
+    )
+    if not model:
+        logger.warning("Comments AI: WebUI model is not configured; using empty summaries.")
+        return {}
+    if not items:
+        return {}
+
+    base_url = _compact_text(
+        extra_params.get("webui_url")
+        or webui_section.get("url")
+        or config.get("webui", "url", fallback="http://localhost:3000")
+    )
+    endpoint = _compact_text(
+        extra_params.get("webui_endpoint")
+        or webui_section.get("endpoint")
+        or config.get("webui", "endpoint", fallback="/api/chat/completions")
+    )
+    api_url = _build_webui_api_url(base_url, endpoint)
+    webui_api_key = _strip_wrapping_quotes(
+        _compact_text(
+            extra_params.get("webui_api_key")
+            or webui_section.get("api_key")
+            or config.get("webui", "api_key", fallback="")
+        )
+    )
+    timeout_seconds = int(
+        _compact_text(
+            extra_params.get("webui_timeout_seconds")
+            or webui_section.get("timeout_seconds")
+            or config.get("webui", "timeout_seconds", fallback="120")
+        )
+        or "120"
+    )
+    connect_timeout_seconds = int(
+        _compact_text(
+            extra_params.get("webui_connect_timeout_seconds")
+            or webui_section.get("connect_timeout_seconds")
+            or config.get("webui", "connect_timeout_seconds", fallback="10")
+        )
+        or "10"
+    )
+    temperature = float(
+        _compact_text(
+            extra_params.get("webui_temperature")
+            or webui_section.get("temperature")
+            or config.get("webui", "temperature", fallback="0.2")
+        )
+        or "0.2"
+    )
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if webui_api_key:
+        headers["Authorization"] = f"Bearer {webui_api_key}"
+
+    rewritten: dict[str, dict[str, Any]] = {}
+    batch_size = 8
+    for i in range(0, len(items), batch_size):
+        batch = items[i : i + batch_size]
+        target_map, prompt = _build_comment_summary_prompt(batch, start_index=i + 1)
+        try:
+            response = requests.post(
+                api_url,
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You summarize Jira comment activity into structured progress JSON. "
+                                "Return only strict JSON."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                    "temperature": temperature,
+                },
+                timeout=(connect_timeout_seconds, timeout_seconds),
+            )
+            response.raise_for_status()
+            response_json = response.json()
+            response_text = ""
+            choices = response_json.get("choices")
+            if isinstance(choices, list) and choices:
+                first_choice = choices[0] or {}
+                message = first_choice.get("message") or {}
+                response_text = str(message.get("content", "") or "")
+            if not response_text:
+                response_text = str(response_json.get("response", "") or "")
+            rewrite_map = _extract_json_object(response_text) or {}
+            for target_id, issue_id in target_map.items():
+                candidate = rewrite_map.get(target_id)
+                if isinstance(candidate, dict):
+                    rewritten[issue_id] = candidate
+        except Exception as exc:
+            logger.warning("Comments AI (WebUI) batch %s failed: %s", i // batch_size + 1, exc)
+    return rewritten
+
+
+def rewrite_comment_items_with_ai(
+    items: list[dict[str, str]],
+    config: ConfigParser,
+    extra_params: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    if not _bool_value(extra_params.get("ai_comments_enabled"), False):
+        return {}
+    section = config["jira_comprehensive"] if config.has_section("jira_comprehensive") else {}
+    provider_raw = _compact_text(extra_params.get("ai_provider") or section.get("ai_provider"))
+    if provider_raw:
+        provider = provider_raw.casefold()
+    else:
+        webui_enabled = _bool_value(
+            extra_params.get("webui_enabled", config.get("webui", "enabled", fallback="false")),
+            False,
+        )
+        provider = "webui" if webui_enabled else "ollama"
+    if provider == "webui":
+        return _rewrite_comment_items_with_webui(items, config, extra_params)
+    if provider not in {"", "ollama"}:
+        logger.warning("Comments AI: unknown ai_provider=%s, falling back to ollama.", provider)
+    return _rewrite_comment_items_with_ollama(items, config, extra_params)
 
 
 def build_monthly_summary_df(
@@ -1761,6 +2248,7 @@ def export_to_excel(
     links_df: pd.DataFrame,
     results_df: pd.DataFrame,
     summary_df: pd.DataFrame,
+    comments_period_df: pd.DataFrame,
     engineer_metrics: pd.DataFrame,
     qa_metrics: pd.DataFrame,
     pm_metrics: pd.DataFrame,
@@ -1773,6 +2261,7 @@ def export_to_excel(
     links_df = _sanitize_dataframe_for_excel(links_df)
     results_df = _sanitize_dataframe_for_excel(results_df)
     summary_df = _sanitize_dataframe_for_excel(summary_df)
+    comments_period_df = _sanitize_dataframe_for_excel(comments_period_df)
     engineer_metrics = _sanitize_dataframe_for_excel(engineer_metrics)
     qa_metrics = _sanitize_dataframe_for_excel(qa_metrics)
     pm_metrics = _sanitize_dataframe_for_excel(pm_metrics)
@@ -1791,6 +2280,8 @@ def export_to_excel(
 
         if not summary_df.empty:
             summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
+        comments_period_df.to_excel(writer, sheet_name="Comments_Period", index=False)
 
         if not engineer_metrics.empty:
             engineer_metrics.to_excel(writer, sheet_name="Engineer_Performance", index=False)
@@ -1902,6 +2393,7 @@ class JiraComprehensiveReport:
         )
 
         jql_query = build_jql_query(params)
+        comments_jql = build_comments_period_jql(params)
 
         jira_source = JiraSource(config["jira"])
         jira = jira_source.jira
@@ -1911,6 +2403,14 @@ class JiraComprehensiveReport:
             logger.warning("No issues found matching the query.")
             return
         summary_df = build_monthly_summary_df(issues_df, config, extra_params)
+        comments_period_df = build_comments_period_df(
+            jira,
+            comments_jql,
+            params.get("start_date"),
+            params.get("end_date"),
+            config,
+            extra_params,
+        )
 
         worklog_activity_df = fetch_worklog_activity(
             jira_source,
@@ -1966,6 +2466,7 @@ class JiraComprehensiveReport:
             links_df,
             results_df,
             summary_df,
+            comments_period_df,
             engineer_metrics,
             qa_metrics,
             pm_metrics,
@@ -1982,10 +2483,11 @@ class JiraComprehensiveReport:
             resolved_count = 0
 
         logger.info(
-            "REPORT SUMMARY: issues=%s links=%s results=%s summary_epics=%s resolved=%s",
+            "REPORT SUMMARY: issues=%s links=%s results=%s summary_epics=%s resolved=%s comments_period=%s",
             len(issues_df),
             len(links_df),
             len(results_df),
             len(summary_df),
             resolved_count,
+            len(comments_period_df),
         )

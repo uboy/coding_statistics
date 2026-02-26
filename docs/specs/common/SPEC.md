@@ -21,6 +21,7 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
   - Produces Excel grouped by assignee/week.
 - **jira_comprehensive** (`stats_core/reports/jira_comprehensive.py`):
   - Generates multi-sheet Excel: Issues, Links, Engineer/QA/PM metrics, Worklog activity, Worklog entries.
+  - Adds Comments_Period sheet with issues that have comment activity in period and AI_Comments summary (AI off by default; enable with `ai_comments_enabled=true`).
   - Supports project+dates, version, epic, or custom JQL filters.
 - **jira_weekly_email** (`stats_core/reports/jira_weekly_email.py`):
   - Generates Outlook-friendly HTML weekly report from Jira comments for the selected week.
