@@ -1249,6 +1249,13 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _json_dict_or_raise(response: requests.Response) -> dict[str, Any]:
+    parsed = response.json()
+    if isinstance(parsed, dict):
+        return parsed
+    raise ValueError(f"Invalid JSON response type: {type(parsed).__name__}")
+
+
 def _log_ollama_check_commands(ollama_url: str, model: str, has_api_key: bool) -> None:
     base = ollama_url.rstrip("/")
     logger.error("Ollama API health checks (run in console):")
@@ -1508,7 +1515,7 @@ def rewrite_payload_with_ollama(payload: dict[str, Any], config: ConfigParser, e
                 )
             response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
-            response_json = response.json()
+            response_json = _json_dict_or_raise(response)
             response_text = _normalize_text(response_json.get("response", ""))
             rewrite_map = _extract_json_object(response_text)
             if rewrite_map:
@@ -1641,14 +1648,16 @@ def rewrite_payload_with_webui(payload: dict[str, Any], config: ConfigParser, ex
                 )
             response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
-            response_json = response.json()
-            
+            response_json = _json_dict_or_raise(response)
+
             response_text = ""
             choices = response_json.get("choices")
             if isinstance(choices, list) and choices:
-                first_choice = choices[0] or {}
-                message = first_choice.get("message") or {}
-                response_text = _normalize_text(message.get("content"))
+                first_choice = choices[0]
+                if isinstance(first_choice, dict):
+                    message = first_choice.get("message")
+                    if isinstance(message, dict):
+                        response_text = _normalize_text(message.get("content"))
             if not response_text:
                 response_text = _normalize_text(response_json.get("response", ""))
 

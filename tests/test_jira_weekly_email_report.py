@@ -235,6 +235,36 @@ def test_rewrite_payload_with_webui_provider(mock_post):
 
 
 @patch("stats_core.reports.jira_weekly_email.requests.post")
+def test_rewrite_payload_with_webui_ignores_non_dict_json_response(mock_post):
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = None
+    mock_post.return_value = response
+
+    payload = {
+        "highlights": [{"issue_key": "ABC-1", "headline": "Old headline", "comment": "Old comment"}],
+        "epics": [],
+        "next_week_plans": [],
+    }
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira_weekly_email": {"ai_provider": "webui"},
+            "webui": {
+                "enabled": "true",
+                "url": "http://localhost:3000",
+                "endpoint": "/api/chat/completions",
+                "api_key": "cfg-key",
+                "model": "qwen",
+            },
+        }
+    )
+
+    rewritten = rewrite_payload_with_ai(payload, config, {})
+    assert rewritten["highlights"][0]["comment"] == "Old comment"
+
+
+@patch("stats_core.reports.jira_weekly_email.requests.post")
 def test_rewrite_payload_with_webui_provider_avoids_duplicate_api_path(mock_post):
     response = Mock()
     response.raise_for_status.return_value = None

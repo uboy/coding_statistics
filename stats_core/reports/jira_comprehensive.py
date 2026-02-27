@@ -157,6 +157,13 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
         return None
 
 
+def _json_dict_or_raise(response: requests.Response) -> dict[str, Any]:
+    parsed = response.json()
+    if isinstance(parsed, dict):
+        return parsed
+    raise ValueError(f"Invalid JSON response type: {type(parsed).__name__}")
+
+
 def _sanitize_summary_ai_text(text: Any) -> str:
     cleaned = _compact_text(text)
     if not cleaned:
@@ -1400,7 +1407,7 @@ def _rewrite_summary_items_with_ollama(
         try:
             response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
-            response_json = response.json()
+            response_json = _json_dict_or_raise(response)
             response_text = str(response_json.get("response", "") or "")
             rewrite_map = _extract_json_object(response_text) or {}
             batch_result: dict[str, str] = {}
@@ -1410,7 +1417,7 @@ def _rewrite_summary_items_with_ollama(
                     batch_result[issue_id] = candidate
             return batch_result
         except Exception as exc:
-            logger.warning("Summary AI (Ollama) batch %s failed: %s", start_index // batch_size + 1, exc)
+            logger.debug("Summary AI (Ollama) batch %s failed: %s", start_index // batch_size + 1, exc)
             return {}
 
     for batch_result in parallel_map(
@@ -1532,13 +1539,15 @@ def _rewrite_summary_items_with_webui(
         try:
             response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
-            response_json = response.json()
+            response_json = _json_dict_or_raise(response)
             response_text = ""
             choices = response_json.get("choices")
             if isinstance(choices, list) and choices:
-                first_choice = choices[0] or {}
-                message = first_choice.get("message") or {}
-                response_text = str(message.get("content", "") or "")
+                first_choice = choices[0]
+                if isinstance(first_choice, dict):
+                    message = first_choice.get("message")
+                    if isinstance(message, dict):
+                        response_text = str(message.get("content", "") or "")
             if not response_text:
                 response_text = str(response_json.get("response", "") or "")
             rewrite_map = _extract_json_object(response_text) or {}
@@ -1549,7 +1558,7 @@ def _rewrite_summary_items_with_webui(
                     batch_result[issue_id] = candidate
             return batch_result
         except Exception as exc:
-            logger.warning("Summary AI (WebUI) batch %s failed: %s", start_index // batch_size + 1, exc)
+            logger.debug("Summary AI (WebUI) batch %s failed: %s", start_index // batch_size + 1, exc)
             return {}
 
     for batch_result in parallel_map(
@@ -1647,7 +1656,7 @@ def _rewrite_comment_items_with_ollama(
         try:
             response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
-            response_json = response.json()
+            response_json = _json_dict_or_raise(response)
             response_text = str(response_json.get("response", "") or "")
             rewrite_map = _extract_json_object(response_text) or {}
             batch_result: dict[str, dict[str, Any]] = {}
@@ -1659,7 +1668,7 @@ def _rewrite_comment_items_with_ollama(
                     batch_result[issue_id] = {"__error__": "AI response missing"}
             return batch_result
         except Exception as exc:
-            logger.warning("Comments AI (Ollama) batch %s failed: %s", start_index // batch_size + 1, exc)
+            logger.debug("Comments AI (Ollama) batch %s failed: %s", start_index // batch_size + 1, exc)
             error_reason = "timeout" if isinstance(
                 exc, (requests.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout)
             ) else "request failed"
@@ -1784,13 +1793,15 @@ def _rewrite_comment_items_with_webui(
         try:
             response = retry_ai_call(_request, logger=logger)
             response.raise_for_status()
-            response_json = response.json()
+            response_json = _json_dict_or_raise(response)
             response_text = ""
             choices = response_json.get("choices")
             if isinstance(choices, list) and choices:
-                first_choice = choices[0] or {}
-                message = first_choice.get("message") or {}
-                response_text = str(message.get("content", "") or "")
+                first_choice = choices[0]
+                if isinstance(first_choice, dict):
+                    message = first_choice.get("message")
+                    if isinstance(message, dict):
+                        response_text = str(message.get("content", "") or "")
             if not response_text:
                 response_text = str(response_json.get("response", "") or "")
             rewrite_map = _extract_json_object(response_text) or {}
@@ -1803,7 +1814,7 @@ def _rewrite_comment_items_with_webui(
                     batch_result[issue_id] = {"__error__": "AI response missing"}
             return batch_result
         except Exception as exc:
-            logger.warning("Comments AI (WebUI) batch %s failed: %s", start_index // batch_size + 1, exc)
+            logger.debug("Comments AI (WebUI) batch %s failed: %s", start_index // batch_size + 1, exc)
             error_reason = "timeout" if isinstance(
                 exc, (requests.Timeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout)
             ) else "request failed"

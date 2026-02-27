@@ -37,7 +37,8 @@ def retry_ai_call(
             if attempt >= retries:
                 raise
             delay = delays[min(attempt - 1, len(delays) - 1)]
-            logger.warning("AI request timeout (attempt %s/%s). Retrying in %ss.", attempt, retries, delay)
+            # Keep retry noise out of user-facing progress/log stream by default.
+            logger.debug("AI request timeout (attempt %s/%s). Retrying in %ss.", attempt, retries, delay)
             if delay > 0:
                 time.sleep(delay)
 

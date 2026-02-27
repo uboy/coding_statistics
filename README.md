@@ -174,7 +174,13 @@ chmod +x scripts/build/build_stats_tool.sh
 ./scripts/build/build_stats_tool.sh
 ```
 
-Outputs `dist/stats_tool` executable (PyInstaller-based) bundling Python + templates.
+Notes:
+- Requires `PyInstaller` in the active environment.
+- If `templates/` exists, it is bundled automatically.
+
+Outputs:
+- Windows: `dist/stats_tool.exe`
+- Linux/macOS: `dist/stats_tool`
 
 # Adding New Sources/Reports
 

@@ -87,3 +87,10 @@
   - Updated legacy weekly-email test to reflect new behavior: include all comments from selected week (exclude previous-week comments).
   - Full pytest green: 109 passed, 1 warning (openpyxl CF).
   - Added agent-memory entry for weekly-email aggregated comments + English-safe fallback + output_file write fix.
+  - Fixed WebUI null/non-dict JSON handling in weekly_email and comprehensive AI paths to avoid NoneType.get errors.
+  - Reduced AI timeout retry log noise to DEBUG in ai_retry to avoid breaking progress bars with warning spam.
+  - Added weekly-email test for non-dict WebUI JSON response fallback.
+  - Full pytest green after fixes: 110 passed, 1 warning (openpyxl CF).
+  - Hardened binary build scripts for Windows/Linux: explicit PyInstaller availability checks, fallback launchers, cleaner output messages.
+  - README build section updated with prerequisites and per-OS output binary names.
+  - Local environment check: PyInstaller is available (version 6.11.1).
