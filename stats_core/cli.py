@@ -190,9 +190,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "setup":
-        cmd_setup(args.config)
-    elif args.command == "run":
-        cmd_run(args)
-    else:  # pragma: no cover - guarded by argparse
-        parser.error("Unknown command")
+    try:
+        if args.command == "setup":
+            cmd_setup(args.config)
+        elif args.command == "run":
+            cmd_run(args)
+        else:  # pragma: no cover - guarded by argparse
+            parser.error("Unknown command")
+    except KeyboardInterrupt:
+        print("Interrupted by user (Ctrl+C).", file=sys.stderr)
+        raise SystemExit(130)

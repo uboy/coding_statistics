@@ -1495,7 +1495,7 @@ def rewrite_payload_with_ollama(payload: dict[str, Any], config: ConfigParser, e
 
         try:
             def _request():
-                return requests.post(
+                response = requests.post(
                     f"{ollama_url.rstrip('/')}/api/generate",
                     headers=headers,
                     json={
@@ -1513,9 +1513,19 @@ def rewrite_payload_with_ollama(payload: dict[str, Any], config: ConfigParser, e
                     },
                     timeout=timeout_seconds,
                 )
-            response = retry_ai_call(_request, logger=logger)
-            response.raise_for_status()
-            response_json = _json_dict_or_raise(response)
+                response.raise_for_status()
+                return _json_dict_or_raise(response)
+
+            response_json = retry_ai_call(
+                _request,
+                logger=logger,
+                retry_exceptions=(
+                    requests.Timeout,
+                    requests.exceptions.ReadTimeout,
+                    requests.exceptions.ConnectTimeout,
+                    ValueError,
+                ),
+            )
             response_text = _normalize_text(response_json.get("response", ""))
             rewrite_map = _extract_json_object(response_text)
             if rewrite_map:
@@ -1530,6 +1540,13 @@ def rewrite_payload_with_ollama(payload: dict[str, Any], config: ConfigParser, e
                 response_text = response_text[:500] + "..."
             logger.error("Ollama HTTP error: status=%s body=%s", status, response_text or "<empty>")
             _log_ollama_check_commands(ollama_url, model, bool(ollama_api_key))
+        except (
+            requests.Timeout,
+            requests.exceptions.ReadTimeout,
+            requests.exceptions.ConnectTimeout,
+            ValueError,
+        ) as exc:
+            logger.warning("Ollama transient failure (batch %s): %s", (i // batch_size) + 1, exc)
         except Exception as exc:
             logger.error("Ollama call failed: %s", exc)
             _log_ollama_check_commands(ollama_url, model, bool(ollama_api_key))
@@ -1632,7 +1649,7 @@ def rewrite_payload_with_webui(payload: dict[str, Any], config: ConfigParser, ex
 
         try:
             def _request():
-                return requests.post(
+                response = requests.post(
                     api_url,
                     headers=headers,
                     json={
@@ -1646,9 +1663,19 @@ def rewrite_payload_with_webui(payload: dict[str, Any], config: ConfigParser, ex
                     },
                     timeout=(connect_timeout_seconds, timeout_seconds),
                 )
-            response = retry_ai_call(_request, logger=logger)
-            response.raise_for_status()
-            response_json = _json_dict_or_raise(response)
+                response.raise_for_status()
+                return _json_dict_or_raise(response)
+
+            response_json = retry_ai_call(
+                _request,
+                logger=logger,
+                retry_exceptions=(
+                    requests.Timeout,
+                    requests.exceptions.ReadTimeout,
+                    requests.exceptions.ConnectTimeout,
+                    ValueError,
+                ),
+            )
 
             response_text = ""
             choices = response_json.get("choices")
@@ -1674,9 +1701,15 @@ def rewrite_payload_with_webui(payload: dict[str, Any], config: ConfigParser, ex
                 response_text = response_text[:500] + "..."
             logger.error("WebUI HTTP error: status=%s body=%s", status, response_text or "<empty>")
             _log_webui_check_commands(api_url, model, bool(webui_api_key), prompt)
+        except (
+            requests.Timeout,
+            requests.exceptions.ReadTimeout,
+            requests.exceptions.ConnectTimeout,
+            ValueError,
+        ) as exc:
+            logger.warning("WebUI transient failure (batch %s): %s", (i // batch_size) + 1, exc)
         except Exception as exc:
             logger.error("WebUI call failed: %s", exc)
-            _log_webui_check_commands(api_url, model, bool(webui_api_key), prompt)
 
     return _apply_rewrite_map(payload, full_target_map, full_rewrite_map)
 

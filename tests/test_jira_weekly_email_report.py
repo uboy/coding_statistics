@@ -306,7 +306,7 @@ def test_rewrite_payload_with_webui_provider_avoids_duplicate_api_path(mock_post
 
 
 @patch("stats_core.reports.jira_weekly_email.requests.post")
-def test_rewrite_payload_with_webui_logs_powershell_curl_on_timeout(mock_post, caplog):
+def test_rewrite_payload_with_webui_does_not_dump_curl_commands_on_generic_failure(mock_post, caplog):
     mock_post.side_effect = Exception("read timeout")
     payload = {
         "highlights": [{"issue_key": "ABC-1", "headline": "Old headline", "comment": "Old comment"}],
@@ -329,7 +329,8 @@ def test_rewrite_payload_with_webui_logs_powershell_curl_on_timeout(mock_post, c
     )
 
     rewrite_payload_with_ai(payload, config, {})
-    assert any("PowerShell: curl.exe" in record.message for record in caplog.records)
+    assert any("WebUI call failed:" in record.message for record in caplog.records)
+    assert not any("PowerShell: curl.exe" in record.message for record in caplog.records)
 
 
 @patch("stats_core.reports.jira_weekly_email.requests.post")

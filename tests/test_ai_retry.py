@@ -28,3 +28,22 @@ def test_retry_ai_call_raises_non_timeout():
         assert False, "expected ValueError"
     except ValueError:
         assert True
+
+
+def test_retry_ai_call_retries_on_custom_exceptions():
+    calls = {"count": 0}
+
+    def flaky_json():
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise ValueError("invalid json")
+        return {"ok": True}
+
+    result = retry_ai_call(
+        flaky_json,
+        retries=3,
+        backoff_seconds=(0, 0, 0),
+        retry_exceptions=(ValueError,),
+    )
+    assert result == {"ok": True}
+    assert calls["count"] == 3

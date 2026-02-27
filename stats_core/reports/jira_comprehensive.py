@@ -1392,7 +1392,7 @@ def _rewrite_summary_items_with_ollama(
         target_map, prompt = _build_summary_prompt(batch, start_index=start_index + 1)
 
         def _request():
-            return requests.post(
+            response = requests.post(
                 f"{ollama_url.rstrip('/')}/api/generate",
                 headers=headers,
                 json={
@@ -1403,11 +1403,20 @@ def _rewrite_summary_items_with_ollama(
                 },
                 timeout=timeout_seconds,
             )
+            response.raise_for_status()
+            return _json_dict_or_raise(response)
 
         try:
-            response = retry_ai_call(_request, logger=logger)
-            response.raise_for_status()
-            response_json = _json_dict_or_raise(response)
+            response_json = retry_ai_call(
+                _request,
+                logger=logger,
+                retry_exceptions=(
+                    requests.Timeout,
+                    requests.exceptions.ReadTimeout,
+                    requests.exceptions.ConnectTimeout,
+                    ValueError,
+                ),
+            )
             response_text = str(response_json.get("response", "") or "")
             rewrite_map = _extract_json_object(response_text) or {}
             batch_result: dict[str, str] = {}
@@ -1515,7 +1524,7 @@ def _rewrite_summary_items_with_webui(
         target_map, prompt = _build_summary_prompt(batch, start_index=start_index + 1)
 
         def _request():
-            return requests.post(
+            response = requests.post(
                 api_url,
                 headers=headers,
                 json={
@@ -1535,11 +1544,20 @@ def _rewrite_summary_items_with_webui(
                 },
                 timeout=(connect_timeout_seconds, timeout_seconds),
             )
+            response.raise_for_status()
+            return _json_dict_or_raise(response)
 
         try:
-            response = retry_ai_call(_request, logger=logger)
-            response.raise_for_status()
-            response_json = _json_dict_or_raise(response)
+            response_json = retry_ai_call(
+                _request,
+                logger=logger,
+                retry_exceptions=(
+                    requests.Timeout,
+                    requests.exceptions.ReadTimeout,
+                    requests.exceptions.ConnectTimeout,
+                    ValueError,
+                ),
+            )
             response_text = ""
             choices = response_json.get("choices")
             if isinstance(choices, list) and choices:
@@ -1641,7 +1659,7 @@ def _rewrite_comment_items_with_ollama(
         target_map, prompt = _build_comment_summary_prompt(batch, start_index=start_index + 1)
 
         def _request():
-            return requests.post(
+            response = requests.post(
                 f"{ollama_url.rstrip('/')}/api/generate",
                 headers=headers,
                 json={
@@ -1652,11 +1670,20 @@ def _rewrite_comment_items_with_ollama(
                 },
                 timeout=timeout_seconds,
             )
+            response.raise_for_status()
+            return _json_dict_or_raise(response)
 
         try:
-            response = retry_ai_call(_request, logger=logger)
-            response.raise_for_status()
-            response_json = _json_dict_or_raise(response)
+            response_json = retry_ai_call(
+                _request,
+                logger=logger,
+                retry_exceptions=(
+                    requests.Timeout,
+                    requests.exceptions.ReadTimeout,
+                    requests.exceptions.ConnectTimeout,
+                    ValueError,
+                ),
+            )
             response_text = str(response_json.get("response", "") or "")
             rewrite_map = _extract_json_object(response_text) or {}
             batch_result: dict[str, dict[str, Any]] = {}
@@ -1769,7 +1796,7 @@ def _rewrite_comment_items_with_webui(
         target_map, prompt = _build_comment_summary_prompt(batch, start_index=start_index + 1)
 
         def _request():
-            return requests.post(
+            response = requests.post(
                 api_url,
                 headers=headers,
                 json={
@@ -1789,11 +1816,20 @@ def _rewrite_comment_items_with_webui(
                 },
                 timeout=(connect_timeout_seconds, timeout_seconds),
             )
+            response.raise_for_status()
+            return _json_dict_or_raise(response)
 
         try:
-            response = retry_ai_call(_request, logger=logger)
-            response.raise_for_status()
-            response_json = _json_dict_or_raise(response)
+            response_json = retry_ai_call(
+                _request,
+                logger=logger,
+                retry_exceptions=(
+                    requests.Timeout,
+                    requests.exceptions.ReadTimeout,
+                    requests.exceptions.ConnectTimeout,
+                    ValueError,
+                ),
+            )
             response_text = ""
             choices = response_json.get("choices")
             if isinstance(choices, list) and choices:

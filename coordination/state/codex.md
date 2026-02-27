@@ -94,3 +94,7 @@
   - Hardened binary build scripts for Windows/Linux: explicit PyInstaller availability checks, fallback launchers, cleaner output messages.
   - README build section updated with prerequisites and per-OS output binary names.
   - Local environment check: PyInstaller is available (version 6.11.1).
+  - Added graceful Ctrl+C handling in CLI main: clean interruption message and SystemExit(130), no traceback.
+  - AI retry now supports custom retry exception types; WebUI/Ollama now retry on ValueError (invalid JSON response type) as transient failure.
+  - Reduced noisy diagnostic dumps for generic WebUI failures to avoid progress-bar disruption.
+  - Tests updated and passed: 112 passed, 1 warning (openpyxl CF).
