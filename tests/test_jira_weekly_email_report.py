@@ -838,7 +838,7 @@ def test_jira_weekly_email_report_run_html_snapshot_and_diff(mock_jira_source_cl
     assert "Actions: Work in progress for next week." in week10_text
     assert "Other completed work" not in week10_text
     assert "Epic Two" not in week10_text
-    assert "<td class='sec-label'>Summary</td>" in week10_text
+    assert "<td class='sec-label'>Summary</td>" not in week10_text
 
     html_path = tmp_path / "jira_weekly_email_ABC_26'w11.html"
     assert html_path.exists()
@@ -2517,7 +2517,7 @@ def test_jira_weekly_email_priority_high_values_respects_config_exactly(mock_jir
     assert text.count("High priority task (ABC-74)") == 1
     assert "Status: completed" in text
     assert "Highest priority task (ABC-75)" in text
-    assert "<td class='sec-label'>Summary</td>" in text
+    assert "<td class='sec-label'>Summary</td>" not in text
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")

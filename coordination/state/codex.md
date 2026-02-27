@@ -104,3 +104,7 @@
   - Weekly email report refactored to compact epic->feature output with concise statuses and next-week actions; added end summary table (section counts + epic coverage + closed tasks by epic).
   - Added explicit weekly AI toggle (`ai_enabled`, default false) and wired AI text targets for new feature fields.
   - Updated weekly email tests for compact format and reran full suite: 113 passed, 1 warning (openpyxl CF).
+  - User feedback: report became too noisy; summary must be console-only.
+  - Removed summary section from weekly email HTML; now summary prints as a console table block only.
+  - Strengthened deterministic comment cleanup (jira markup/json blobs/ids/noise) and tightened compact status fallbacks to reduce garbage text.
+  - Revalidated tests after rollback/cleanup: 113 passed, 1 warning (openpyxl CF).

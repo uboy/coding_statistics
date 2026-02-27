@@ -101,10 +101,21 @@ def _clean_comment_for_report(value: Any) -> str:
     cleaned = _normalize_text(value)
     if not cleaned:
         return ""
+    # Remove Jira/Confluence-style block markers and headings.
+    cleaned = re.sub(r"\{code(?::[^}]*)?\}|\{noformat\}|\{quote\}|\{panel(?::[^}]*)?\}|\{color(?::[^}]*)?\}|\{\/color\}", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(?<!\w)h[1-6]\.\s*", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\{[^}]{1,80}\}", " ", cleaned)
+    # Remove inline JSON-like fragments and long key/value blobs.
+    cleaned = re.sub(r"\[[\{\[][^][]{20,}[\}\]]\]", " ", cleaned)
+    cleaned = re.sub(r"\{[^{}]{20,}\}", " ", cleaned)
     cleaned = re.sub(r"\[[^\]]+\]\([^)]+\)", "", cleaned)
     cleaned = re.sub(r"(?:https?://|ftp://|file://|www\.)\S+", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b[A-Z]+-\d+\b", "", cleaned)
+    cleaned = re.sub(r"@\w+", " ", cleaned)
+    cleaned = re.sub(r"\b\d{6,}\b", " ", cleaned)
+    cleaned = re.sub(r"\b[A-Za-z0-9+/=_-]{20,}\b", " ", cleaned)
     cleaned = re.sub(r"[`*_>#]+", " ", cleaned)
+    cleaned = re.sub(r"\s*[\[\]{}|]+\s*", " ", cleaned)
     cleaned = _normalize_text(cleaned.strip(" -,:;"))
     if not cleaned:
         return ""
@@ -697,8 +708,15 @@ def _collect_comment_points(comments: Any) -> list[str]:
     unique_points: list[str] = []
     seen: set[str] = set()
     for point in raw_points:
+        point = _first_sentence(point)
         marker = _normalize_key(point)
         if not marker or marker in seen:
+            continue
+        if re.search(r"\b(weekly report|h2|h3|chapter|results summary)\b", marker):
+            continue
+        if len(point.split()) < 2:
+            continue
+        if len(re.findall(r"[^A-Za-z0-9\s.,;:!?()/-]", point)) > 4:
             continue
         seen.add(marker)
         unique_points.append(point)
@@ -796,13 +814,13 @@ def _build_compact_feature_status(feature: dict[str, Any]) -> str:
         parts.append(f"Dependencies: {dependency_part}")
 
     if not parts:
+        if int(feature.get("blocked_tasks") or 0) > 0:
+            return "Status: blocked; requires follow-up with owners."
         if int(feature.get("closed_tasks") or 0) > 0:
-            return "Done: completed in selected period."
+            return "Status: completed."
         if int(feature.get("in_progress_tasks") or 0) > 0:
-            return "In progress: details in Jira comments are limited."
-        if int(feature.get("comments_count") or 0) > 0:
-            return "Insufficient data: comments are too generic for a reliable status."
-        return "Insufficient data: not enough information in comments."
+            return "Status: in progress; update available in Jira comments."
+        return "Status: update available in Jira comments."
 
     compact = "; ".join(parts)
     if compact and compact[-1] not in ".!?":
@@ -2122,6 +2140,56 @@ def _payload_to_lines(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _render_summary_table_console(summary_table: dict[str, Any]) -> str:
+    rows = list((summary_table or {}).get("rows") or [])
+    totals = (summary_table or {}).get("totals") or {}
+    if not rows:
+        return "Section summary: no data."
+
+    headers = ["Epic", "Highlights", "ThisWeek", "NextWeek", "Closed"]
+    table_rows: list[list[str]] = []
+    for row in rows:
+        epic_name = _normalize_text(row.get("epic_name")) or "No Epic"
+        epic_key = _normalize_text(row.get("epic_key"))
+        epic_label = f"{epic_name} ({epic_key})" if epic_key else epic_name
+        table_rows.append(
+            [
+                epic_label,
+                str(int(row.get("highlights") or 0)),
+                str(int(row.get("this_week") or 0)),
+                str(int(row.get("next_week") or 0)),
+                str(int(row.get("closed_tasks") or 0)),
+            ]
+        )
+
+    table_rows.append(
+        [
+            "TOTAL",
+            str(int(totals.get("highlights") or 0)),
+            str(int(totals.get("this_week") or 0)),
+            str(int(totals.get("next_week") or 0)),
+            str(int(totals.get("closed_tasks") or 0)),
+        ]
+    )
+    widths = [len(h) for h in headers]
+    for row in table_rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(cell))
+
+    def _fmt(cells: list[str]) -> str:
+        return " | ".join(cell.ljust(widths[idx]) for idx, cell in enumerate(cells))
+
+    separator = "-+-".join("-" * width for width in widths)
+    lines = [
+        f"Section summary (epics covered: {int(totals.get('epics_covered') or len(rows))})",
+        _fmt(headers),
+        separator,
+    ]
+    for row in table_rows:
+        lines.append(_fmt(row))
+    return "\n".join(lines)
+
+
 def compute_payload_diff(previous_payload: dict[str, Any] | None, current_payload: dict[str, Any]) -> list[str]:
     if not previous_payload:
         return []
@@ -2324,7 +2392,6 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     highlights_title = _cfg_html("highlights", "Highlights")
     results_title = _cfg_html("results", "Key Results and Achievements")
     plans_title = _cfg_html("plans", "Next Week Plans")
-    summary_title = _cfg_html("summary", "Summary")
     vacations_title = _cfg_html("vacations", "Vacations (next 60 days)")
     bugs_title = _cfg_html("bugs_subtitle", "Bugs summary")
     bugs_summary_template = _normalize_text(
@@ -2394,11 +2461,6 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     rows.append(".lvl2{margin-left:18px;}.lvl2 li:before{content:'\\25C6';position:absolute;left:0;top:0;font-size:12px;line-height:1.2;color:#ffffff;}")
     rows.append(".lvl3{margin-left:36px;}.lvl3 li:before{content:'\\2022';position:absolute;left:0;top:0;font-size:12px;line-height:1.2;color:#ffffff;}")
     rows.append(".lvl4{margin-left:20px;}.lvl4 li:before{content:'\\25E6';position:absolute;left:0;top:0;font-size:12px;line-height:1.2;color:#ffffff;}")
-    rows.append(".summary-grid{width:100%;border-collapse:collapse;margin-top:4px;}")
-    rows.append(".summary-grid th,.summary-grid td{border:1px solid rgba(255,255,255,.45);padding:6px 8px;font-size:12px;text-align:left;}")
-    rows.append(".summary-grid th{background:rgba(0,0,0,.28);font-weight:700;}")
-    rows.append(".summary-grid td.num{text-align:right;white-space:nowrap;}")
-    rows.append(".summary-grid tr.total td{font-weight:700;background:rgba(0,0,0,.25);}")
     rows.append("@media print{body{background:#ffffff;padding:0;}.sheet{width:100%;box-shadow:none;}}")
     rows.append("</style>")
     rows.append("</head>")
@@ -2523,53 +2585,6 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     if not (payload.get("vacations") or []):
         rows.append("<li>No vacations found for the configured horizon.</li>")
     rows.append("</ul></td></tr>")
-
-    summary_table = payload.get("summary_table") or {}
-    summary_rows = list(summary_table.get("rows") or [])
-    totals = summary_table.get("totals") or {}
-    rows.append("<tr>")
-    rows.append(f"<td class='sec-label'>{summary_title}</td><td class='sec-body'>")
-    rows.append(
-        f"<div class='muted'>Epics covered: {html.escape(str(int(totals.get('epics_covered') or len(summary_rows))))}</div>"
-    )
-    if summary_rows:
-        rows.append("<table class='summary-grid' cellspacing='0' cellpadding='0'>")
-        rows.append(
-            "<tr>"
-            "<th>Epic</th>"
-            "<th>Highlights</th>"
-            "<th>This Week Features</th>"
-            "<th>Next Week Features</th>"
-            "<th>Closed Tasks</th>"
-            "</tr>"
-        )
-        for row in summary_rows:
-            epic_label = _normalize_text(row.get("epic_name"))
-            epic_key = _normalize_text(row.get("epic_key"))
-            if epic_key:
-                epic_label = f"{epic_label} ({epic_key})"
-            rows.append(
-                "<tr>"
-                f"<td>{html.escape(epic_label or 'No Epic')}</td>"
-                f"<td class='num'>{int(row.get('highlights') or 0)}</td>"
-                f"<td class='num'>{int(row.get('this_week') or 0)}</td>"
-                f"<td class='num'>{int(row.get('next_week') or 0)}</td>"
-                f"<td class='num'>{int(row.get('closed_tasks') or 0)}</td>"
-                "</tr>"
-            )
-        rows.append(
-            "<tr class='total'>"
-            "<td>TOTAL</td>"
-            f"<td class='num'>{int(totals.get('highlights') or 0)}</td>"
-            f"<td class='num'>{int(totals.get('this_week') or 0)}</td>"
-            f"<td class='num'>{int(totals.get('next_week') or 0)}</td>"
-            f"<td class='num'>{int(totals.get('closed_tasks') or 0)}</td>"
-            "</tr>"
-        )
-        rows.append("</table>")
-    else:
-        rows.append("<p class='muted'>No summary data for selected scope.</p>")
-    rows.append("</td></tr>")
 
     rows.append("</table>")
     if footer_html.strip():
@@ -2909,3 +2924,4 @@ class JiraWeeklyEmailReport:
             len(payload.get("vacations") or []),
             output_path,
         )
+        logger.info("\n%s", _render_summary_table_console(payload.get("summary_table") or {}))
