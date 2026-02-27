@@ -395,7 +395,7 @@ def test_rewrite_payload_with_webui_sanitizes_links_and_limits_to_two_sentences(
 
     rewritten = rewrite_payload_with_ai(payload, config, {})
     prompt = mock_post.call_args.kwargs["json"]["messages"][1]["content"]
-    assert "One compact status line with 2-4 short clauses separated by '; '." in prompt
+    assert "English" in prompt
     assert rewritten["highlights"][0]["headline"] == "Old headline"
     assert rewritten["highlights"][0]["comment"] != "Old comment"
     assert rewritten["next_week_plans"][0]["items"][0]["text"] == "Old plan"
@@ -468,7 +468,7 @@ def test_rewrite_payload_with_ollama_sanitizes_links_and_limits_to_two_sentences
 
     rewritten = rewrite_payload_with_ai(payload, config, {})
     prompt = mock_post.call_args.kwargs["json"]["prompt"]
-    assert "One compact status line with 2-4 short clauses separated by '; '." in prompt
+    assert "English" in prompt
     assert rewritten["highlights"][0]["headline"] == "Old headline"
     assert rewritten["highlights"][0]["comment"] != "Old comment"
     assert rewritten["next_week_plans"][0]["items"][0]["text"] == "Old plan"
@@ -829,13 +829,12 @@ def test_jira_weekly_email_report_run_html_snapshot_and_diff(mock_jira_source_cl
     assert "(ABC-1)" in week10_text
     assert "Report items" not in week10_text
     assert "Feature delivery (ABC-1)" in week10_text
-    assert "Status: completed" in week10_text
+    assert "Completed" in week10_text
     assert "Task completion:" not in week10_text
     assert "Parent task (ABC-2)" in week10_text
     assert "Subtask completed." in week10_text
     assert "High priority focus:" not in week10_text
     assert "Work in progress for next week." in week10_text
-    assert "Actions: Work in progress for next week." in week10_text
     assert "Other completed work" not in week10_text
     assert "Epic Two" not in week10_text
     assert "<td class='sec-label'>Summary</td>" not in week10_text
@@ -1274,7 +1273,7 @@ def test_jira_weekly_email_high_priority_has_comment_and_no_duplicate_in_results
     text = html_path.read_text(encoding="utf-8")
     assert "High priority items" not in text
     assert text.count("High priority task (ABC-74)") == 1
-    assert "Status: completed" in text
+    assert "Completed" in text
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
@@ -1484,7 +1483,7 @@ def test_jira_weekly_email_results_status_renders_inline_not_as_nested_line(mock
     assert results_idx != -1 and plans_idx != -1 and plans_idx > results_idx
     results_text = text[results_idx:plans_idx]
     assert "Standalone progress task (ABC-930)" in results_text
-    assert "Status: in progress" in results_text
+    assert "In progress" in results_text
     assert "Progress note." in results_text
 
 
@@ -2311,7 +2310,7 @@ def test_jira_weekly_email_plans_include_epic_scoped_in_progress_task_without_is
     assert "Epic One (EPIC-1)" in text
     assert "Epic scoped task (ABC-73)" in text
     assert "Ongoing implementation update." in text
-    assert "Status: in progress" in text
+    assert "In progress" in text
     results_idx = text.index("Key Results and Achievements")
     plans_idx = text.index("Next Week Plans")
     issue_idx = text.find("Epic scoped task (ABC-73)", results_idx, plans_idx)
@@ -2441,7 +2440,7 @@ def test_jira_weekly_email_excludes_closed_items_with_non_done_resolution(mock_j
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
     assert "Completed valid (ABC-97)" in text
-    assert "Status: completed" in text
+    assert "Completed" in text
     assert "Closed not for report" not in text
 
 
@@ -2515,7 +2514,7 @@ def test_jira_weekly_email_priority_high_values_respects_config_exactly(mock_jir
     assert "High priority items" not in text
     assert "High priority task (ABC-74)" in text
     assert text.count("High priority task (ABC-74)") == 1
-    assert "Status: completed" in text
+    assert "Completed" in text
     assert "Highest priority task (ABC-75)" in text
     assert "<td class='sec-label'>Summary</td>" not in text
 

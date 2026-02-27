@@ -785,42 +785,40 @@ def _build_compact_feature_status(feature: dict[str, Any]) -> str:
     dependency_part = _limit_points(classified["dependency"], max_items=1, max_words_per_item=14)
     misc_part = _limit_points(classified["misc"], max_items=1, max_words_per_item=14)
 
+    has_comments = bool((feature.get("points") or []))
+
     if int(feature.get("blocked_tasks") or 0) > 0:
-        parts.append("Status: blocked")
+        parts.append("Blocked")
     elif int(feature.get("in_progress_tasks") or 0) > 0 and int(feature.get("closed_tasks") or 0) <= 0:
-        parts.append("Status: in progress")
+        parts.append("In progress")
     elif int(feature.get("closed_tasks") or 0) > 0 and int(feature.get("in_progress_tasks") or 0) <= 0:
-        parts.append("Status: completed")
+        parts.append("Completed")
 
     if done_part:
         parts.append(f"Done: {done_part}")
-    elif int(feature.get("closed_tasks") or 0) > 0:
-        parts.append("Done: closed tasks in selected period")
 
     if misc_part:
-        parts.append(f"Update: {misc_part}")
+        parts.append(misc_part)
 
     if plan_part:
         parts.append(f"Next: {plan_part}")
-    elif int(feature.get("in_progress_tasks") or 0) > 0:
-        parts.append("Next: continue implementation and verification")
 
     if risk_part:
-        parts.append(f"Risks: {risk_part}")
-    elif int(feature.get("blocked_tasks") or 0) > 0:
-        parts.append("Risks: blocked items require follow-up")
+        parts.append(f"Risk: {risk_part}")
+    elif int(feature.get("blocked_tasks") or 0) > 0 and has_comments:
+        parts.append("Blocked; requires follow-up")
 
     if dependency_part:
-        parts.append(f"Dependencies: {dependency_part}")
+        parts.append(f"Depends on: {dependency_part}")
 
     if not parts:
         if int(feature.get("blocked_tasks") or 0) > 0:
-            return "Status: blocked; requires follow-up with owners."
+            return "Blocked."
         if int(feature.get("closed_tasks") or 0) > 0:
-            return "Status: completed."
+            return "Completed."
         if int(feature.get("in_progress_tasks") or 0) > 0:
-            return "Status: in progress; update available in Jira comments."
-        return "Status: update available in Jira comments."
+            return "In progress."
+        return ""
 
     compact = "; ".join(parts)
     if compact and compact[-1] not in ".!?":
@@ -837,20 +835,17 @@ def _build_compact_plan_status(feature: dict[str, Any]) -> str:
 
     parts: list[str] = []
     if plan_part:
-        parts.append(f"Actions: {plan_part}")
+        parts.append(plan_part)
     elif misc_part:
-        parts.append(f"Actions: {misc_part}")
-    elif int(feature.get("in_progress_tasks") or 0) > 0:
-        parts.append("Actions: continue current in-progress work")
-    elif int(feature.get("closed_tasks") or 0) > 0:
-        parts.append("Actions: finalize closure follow-ups")
-    else:
-        parts.append("Actions: clarify next implementation steps")
+        parts.append(misc_part)
 
     if risk_part:
-        parts.append(f"Risks: {risk_part}")
+        parts.append(f"Risk: {risk_part}")
     if dependency_part:
-        parts.append(f"Dependencies: {dependency_part}")
+        parts.append(f"Depends on: {dependency_part}")
+
+    if not parts:
+        return ""
 
     compact = "; ".join(parts)
     if compact and compact[-1] not in ".!?":
@@ -1372,12 +1367,12 @@ def _collect_text_targets(payload: dict[str, Any]) -> list[tuple[str, str]]:
     for epic_idx, epic in enumerate(payload.get("epics") or []):
         for item_idx, item in enumerate(epic.get("feature_statuses") or []):
             status_text = _normalize_text(item.get("status"))
-            if status_text:
+            if status_text and not _is_ai_skip_text(status_text):
                 targets.append((f"epics.{epic_idx}.feature_statuses.{item_idx}.status", status_text))
 
         for item_idx, item in enumerate(epic.get("next_week_items") or []):
             status_text = _normalize_text(item.get("status"))
-            if status_text:
+            if status_text and not _is_ai_skip_text(status_text):
                 targets.append((f"epics.{epic_idx}.next_week_items.{item_idx}.status", status_text))
 
     # Backward-compatible section paths (legacy payload shape)
@@ -1403,10 +1398,10 @@ def _collect_text_targets(payload: dict[str, Any]) -> list[tuple[str, str]]:
     for epic_idx, plan_epic in enumerate(payload.get("next_week_plans") or []):
         for item_idx, item in enumerate(plan_epic.get("items") or []):
             status_text = _normalize_text(item.get("status"))
-            if status_text:
+            if status_text and not _is_ai_skip_text(status_text):
                 targets.append((f"next_week_plans.{epic_idx}.items.{item_idx}.status", status_text))
             comment = _normalize_text(item.get("comment"))
-            if comment:
+            if comment and not _is_ai_skip_text(comment):
                 targets.append((f"next_week_plans.{epic_idx}.items.{item_idx}.comment", comment))
 
             for subtask_idx, subtask in enumerate(item.get("subtasks") or []):
@@ -1467,54 +1462,59 @@ def _log_ollama_check_commands(ollama_url: str, model: str, has_api_key: bool) -
         )
 
 
+_AI_SKIP_PHRASES: frozenset[str] = frozenset({
+    "in progress.",
+    "in progress",
+    "completed.",
+    "completed",
+    "blocked.",
+    "blocked",
+})
+
+
+def _is_ai_skip_text(text: str) -> bool:
+    """Return True if the text is a trivial status word that AI cannot improve."""
+    return _normalize_key(text).rstrip(". ") in _AI_SKIP_PHRASES
+
+
 def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) -> tuple[dict[str, str], str]:
     if not targets:
         return {}, ""
 
     def _intent_from_path(path: str) -> str:
-        if path.startswith("next_week_plans."):
-            return "PLAN"
-        if ".next_week_items." in path:
+        if path.startswith("next_week_plans.") or ".next_week_items." in path:
             return "PLAN"
         if path.startswith("highlights."):
             return "HIGHLIGHT"
-        if ".feature_statuses." in path:
-            return "RESULT"
         return "RESULT"
 
+    # NOTE: model range is 32b–120b; keep prompt short and unambiguous.
     prompt_lines = [
-        "You are an expert technical writer preparing a formal weekly engineering report for management.",
-        "Rewrite each input into a polished management-ready status update.",
-        "Important: model quality is limited, so follow rules strictly and prioritize factual clarity.",
-        "Follow these strict rules:",
-        "1. Style: Formal, professional, and concise.",
-        "2. Language: English.",
-        "3. Length: One compact status line with 2-4 short clauses separated by '; '.",
-        "4. Content and structure:",
-        "   - For HIGHLIGHT: Rewrite only the progress note for a highlighted task. Task title is handled separately and MUST NOT be repeated in output.",
-        "   - For RESULT: include delivered progress first, then planned next actions (if present), then blockers/risks (if present), then dependencies (if present).",
-        "   - For PLAN: start with explicit next actions, then risks/dependencies if present.",
-        "   - Keep all meaningful points from input, merge duplicates, remove noise.",
-        "   - Keep status meanings explicit: completed / in progress / blocked / waiting.",
-        "5. Exclusions: REMOVE ALL of the following:",
-        "   - Links and URLs (e.g., http://..., www....).",
-        "   - Code/repository references (PRs, MRs, commit hashes, file paths, 'see commit', '#123').",
-        "   - Jira ticket numbers (e.g., PROJ-123).",
-        "   - Conversational filler and noisy prefixes (e.g., 'results:', 'update:', 'details:', 'just a note').",
-        "6. Quality checks before output:",
-        "   - Do NOT cut off words or leave unfinished phrases.",
-        "   - Return plain text only; no markdown and no bullet markers.",
-        "   - If information is weak but not empty, still provide a concrete short status line.",
-        "   - If no useful information exists, output exactly: Insufficient data: not enough information in comments.",
-        "7. Output Format: Return ONLY a valid JSON object mapping the original ID to the rewritten text. Example: {\"t1\":\"Rewritten text for t1.\", \"t2\":\"Rewritten text for t2.\"}",
-        "---",
-        "Input texts to rewrite:",
+        "You are a technical writer producing a formal weekly engineering status report.",
+        "Task: rewrite each numbered input into one clear English status line for management.",
+        "",
+        "Rules (follow exactly):",
+        "- Output language: English only.",
+        "- Length: 1 compact line, up to 30 words.",
+        "- No links, no URLs, no commit/PR/MR hashes, no Jira ticket numbers (e.g. PROJ-123).",
+        "- No markdown, no bullet markers, no code blocks.",
+        "- RESULT item: state what was accomplished; add next step only if explicitly mentioned in input.",
+        "- PLAN item: state what will be done next week based on input; use future tense.",
+        "- HIGHLIGHT item: state progress only (title is shown separately, do not repeat it).",
+        "- If input has real content: rewrite it concisely.",
+        "- If input has no real content (e.g. only status words): return it unchanged.",
+        "",
+        "Output: return ONLY a valid JSON object. Example:",
+        '{"t1":"Merged authentication cache fix into main branch.","t2":"Continue integration testing for payment module."}',
+        "",
+        "Inputs:",
     ]
     target_map: dict[str, str] = {}
     for idx, (path, text_value) in enumerate(targets, start=start_index):
         target_id = f"t{idx}"
         target_map[target_id] = path
-        prompt_lines.append(f"ID: {target_id} [Intent: {_intent_from_path(path)}] Original: \"{text_value}\"")
+        intent = _intent_from_path(path)
+        prompt_lines.append(f'{target_id} [{intent}]: "{text_value}"')
     return target_map, "\n".join(prompt_lines)
 
 
@@ -2529,30 +2529,33 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
             rows.append("</ul>")
         else:
             rows.append("<p class='muted'>No feature updates in selected period.</p>")
-        bugs = epic.get("bugs") or {}
-        closed_bugs = int(bugs.get("closed", 0))
-        project_bugs = payload.get("project_bugs") or {}
-        in_progress_bugs = int(project_bugs.get("in_progress", bugs.get("in_progress", 0)) or 0)
-        open_bugs = int(project_bugs.get("open", 0) or 0)
-        if closed_bugs or in_progress_bugs or open_bugs:
-            try:
-                bugs_summary_line = bugs_summary_template.format(
-                    closed=closed_bugs,
-                    in_progress=in_progress_bugs,
-                    open=open_bugs,
-                )
-            except Exception:
-                bugs_summary_line = (
-                    f"{closed_bugs} trouble reports/issues are analyzed and closed, "
-                    f"{in_progress_bugs} currently in progress, {open_bugs} open in project."
-                )
-            rows.append(
-                f"<li><b>{bugs_title}</b>: {html.escape(_normalize_text(bugs_summary_line))}</li>"
-            )
         if epic_idx < len(payload.get("epics") or []) - 1:
             rows.append("<div class='divider'></div>")
     if not (payload.get("epics") or []):
         rows.append("<p class='muted'>No epic feature updates for selected scope.</p>")
+    total_closed_bugs = sum(
+        int((epic.get("bugs") or {}).get("closed", 0))
+        for epic in (payload.get("epics") or [])
+    )
+    project_bugs = payload.get("project_bugs") or {}
+    in_progress_bugs = int(project_bugs.get("in_progress", 0) or 0)
+    open_bugs = int(project_bugs.get("open", 0) or 0)
+    if total_closed_bugs or in_progress_bugs or open_bugs:
+        try:
+            bugs_summary_line = bugs_summary_template.format(
+                closed=total_closed_bugs,
+                in_progress=in_progress_bugs,
+                open=open_bugs,
+            )
+        except Exception:
+            bugs_summary_line = (
+                f"{total_closed_bugs} trouble reports/issues are analyzed and closed, "
+                f"{in_progress_bugs} currently in progress, {open_bugs} open in project."
+            )
+        rows.append(
+            f"<ul class='lvl1'><li><b>{bugs_title}</b>: "
+            f"{html.escape(_normalize_text(bugs_summary_line))}</li></ul>"
+        )
     rows.append("</td></tr>")
 
     rows.append("<tr>")
