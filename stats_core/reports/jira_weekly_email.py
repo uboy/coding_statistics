@@ -682,6 +682,164 @@ def _split_progress_points(text: Any) -> list[str]:
     return [part for part in parts if part]
 
 
+def _collect_comment_points(comments: Any) -> list[str]:
+    values = comments if isinstance(comments, list) else [comments]
+    raw_points: list[str] = []
+    for value in values:
+        cleaned = _clean_comment_for_report(value)
+        if not cleaned:
+            continue
+        split_points = _split_progress_points(cleaned)
+        if split_points:
+            raw_points.extend(split_points)
+        else:
+            raw_points.append(cleaned)
+    unique_points: list[str] = []
+    seen: set[str] = set()
+    for point in raw_points:
+        marker = _normalize_key(point)
+        if not marker or marker in seen:
+            continue
+        seen.add(marker)
+        unique_points.append(point)
+    return unique_points
+
+
+def _truncate_words(text: str, max_words: int = 12) -> str:
+    words = _normalize_text(text).split()
+    if not words:
+        return ""
+    if len(words) <= max_words:
+        return " ".join(words)
+    truncated = " ".join(words[:max_words]).rstrip(" ,;:-")
+    if truncated and truncated[-1] not in ".!?":
+        truncated += "..."
+    return truncated
+
+
+def _limit_points(points: list[str], *, max_items: int = 2, max_words_per_item: int = 12) -> str:
+    if not points:
+        return ""
+    compact = [_truncate_words(item, max_words=max_words_per_item) for item in points[:max_items]]
+    compact = [item for item in compact if item]
+    return "; ".join(compact)
+
+
+def _classify_progress_points(points: list[str]) -> dict[str, list[str]]:
+    done: list[str] = []
+    plan: list[str] = []
+    risk: list[str] = []
+    dependency: list[str] = []
+    misc: list[str] = []
+    for point in points:
+        marker = _normalize_key(point)
+        if not marker:
+            continue
+        if re.search(
+            r"\b(done|completed|fixed|merged|implemented|released|resolved|verified|tested|closed|prepared|delivered)\b",
+            marker,
+        ):
+            done.append(point)
+            continue
+        if re.search(
+            r"\b(next|plan|will|todo|to do|continue|prepare|scheduled|pending|need to|going to|target)\b",
+            marker,
+        ):
+            plan.append(point)
+            continue
+        if re.search(r"\b(block|blocked|issue|problem|risk|fail|failed|unstable|delay|stuck|timeout|hold)\b", marker):
+            risk.append(point)
+            continue
+        if re.search(r"\b(depend|dependency|waiting|await|requires|need from|external|review|approval)\b", marker):
+            dependency.append(point)
+            continue
+        misc.append(point)
+    return {"done": done, "plan": plan, "risk": risk, "dependency": dependency, "misc": misc}
+
+
+def _build_compact_feature_status(feature: dict[str, Any]) -> str:
+    classified = _classify_progress_points(feature.get("points") or [])
+    parts: list[str] = []
+
+    done_part = _limit_points(classified["done"], max_items=2, max_words_per_item=12)
+    plan_part = _limit_points(classified["plan"], max_items=2, max_words_per_item=12)
+    risk_part = _limit_points(classified["risk"], max_items=1, max_words_per_item=14)
+    dependency_part = _limit_points(classified["dependency"], max_items=1, max_words_per_item=14)
+    misc_part = _limit_points(classified["misc"], max_items=1, max_words_per_item=14)
+
+    if int(feature.get("blocked_tasks") or 0) > 0:
+        parts.append("Status: blocked")
+    elif int(feature.get("in_progress_tasks") or 0) > 0 and int(feature.get("closed_tasks") or 0) <= 0:
+        parts.append("Status: in progress")
+    elif int(feature.get("closed_tasks") or 0) > 0 and int(feature.get("in_progress_tasks") or 0) <= 0:
+        parts.append("Status: completed")
+
+    if done_part:
+        parts.append(f"Done: {done_part}")
+    elif int(feature.get("closed_tasks") or 0) > 0:
+        parts.append("Done: closed tasks in selected period")
+
+    if misc_part:
+        parts.append(f"Update: {misc_part}")
+
+    if plan_part:
+        parts.append(f"Next: {plan_part}")
+    elif int(feature.get("in_progress_tasks") or 0) > 0:
+        parts.append("Next: continue implementation and verification")
+
+    if risk_part:
+        parts.append(f"Risks: {risk_part}")
+    elif int(feature.get("blocked_tasks") or 0) > 0:
+        parts.append("Risks: blocked items require follow-up")
+
+    if dependency_part:
+        parts.append(f"Dependencies: {dependency_part}")
+
+    if not parts:
+        if int(feature.get("closed_tasks") or 0) > 0:
+            return "Done: completed in selected period."
+        if int(feature.get("in_progress_tasks") or 0) > 0:
+            return "In progress: details in Jira comments are limited."
+        if int(feature.get("comments_count") or 0) > 0:
+            return "Insufficient data: comments are too generic for a reliable status."
+        return "Insufficient data: not enough information in comments."
+
+    compact = "; ".join(parts)
+    if compact and compact[-1] not in ".!?":
+        compact += "."
+    return compact
+
+
+def _build_compact_plan_status(feature: dict[str, Any]) -> str:
+    classified = _classify_progress_points(feature.get("points") or [])
+    plan_part = _limit_points(classified["plan"], max_items=2, max_words_per_item=12)
+    misc_part = _limit_points(classified["misc"], max_items=1, max_words_per_item=14)
+    risk_part = _limit_points(classified["risk"], max_items=1, max_words_per_item=14)
+    dependency_part = _limit_points(classified["dependency"], max_items=1, max_words_per_item=14)
+
+    parts: list[str] = []
+    if plan_part:
+        parts.append(f"Actions: {plan_part}")
+    elif misc_part:
+        parts.append(f"Actions: {misc_part}")
+    elif int(feature.get("in_progress_tasks") or 0) > 0:
+        parts.append("Actions: continue current in-progress work")
+    elif int(feature.get("closed_tasks") or 0) > 0:
+        parts.append("Actions: finalize closure follow-ups")
+    else:
+        parts.append("Actions: clarify next implementation steps")
+
+    if risk_part:
+        parts.append(f"Risks: {risk_part}")
+    if dependency_part:
+        parts.append(f"Dependencies: {dependency_part}")
+
+    compact = "; ".join(parts)
+    if compact and compact[-1] not in ".!?":
+        compact += "."
+    return compact
+
+
 def _build_highlight_progress(entry: dict[str, Any], subtasks: list[dict[str, Any]]) -> str:
     if entry.get("Finished"):
         return "Finished this week."
@@ -775,11 +933,10 @@ def build_report_payload(
 ) -> dict[str, Any]:
     highlights: list[dict[str, str]] = []
     epics: dict[str, dict[str, Any]] = {}
-    plans: dict[str, list[dict[str, Any]]] = {}
-    plan_index: dict[tuple[str, str], dict[str, Any]] = {}
     subtasks_by_parent: dict[str, list[dict[str, Any]]] = {}
     report_epic_ids: set[str] = set()
     report_all_labels = "@all" in labels_report
+    blocked_status_values = {"blocked", "on hold", "hold", "waiting", "stalled"}
     project_bug_stats = project_bug_stats or {"in_progress": 0, "open": 0}
 
     for item in evidence:
@@ -791,32 +948,48 @@ def build_report_payload(
         subtasks_by_parent.setdefault(parent_key, []).append(item)
 
     for entry in evidence:
-        # FIX: Exclude low-priority bugs entirely from all processing
+        issue_key = _normalize_text(entry.get("Issue_Key"))
+        labels_norm = {_normalize_key(label) for label in (entry.get("Labels") or [])}
+        epic_name = _normalize_text(entry.get("Epic_Name")) or "No Epic"
+        epic_key = _normalize_text(entry.get("Epic_Key"))
+
+        if labels_norm & labels_highlights:
+            issue_summary = _normalize_text(entry.get("Summary"))
+            highlights.append(
+                {
+                    "issue_key": issue_key,
+                    "headline": issue_summary or issue_key or "Task",
+                    "comment": _build_highlight_progress(entry, subtasks_by_parent.get(issue_key, [])),
+                    "epic_key": epic_key,
+                    "epic_name": epic_name,
+                }
+            )
+
         is_bug = bool(entry.get("Bug"))
         priority_key = _normalize_key(entry.get("Priority"))
         if is_bug and priority_key not in priority_high_values:
             continue
 
-        issue_key = _normalize_text(entry.get("Issue_Key"))
-        issue_type_key = _normalize_key(entry.get("Type"))
-        is_non_bug_task = (not is_bug) and issue_type_key != "epic"
         resolution_key = _normalize_key(entry.get("Resolution"))
-        is_in_progress = _is_in_progress_status(entry.get("Status"))
-        # Exclude closed issues that are not explicitly Done/Resolved from report sections.
         if entry.get("Finished") and resolution_key not in _REPORT_CLOSED_RESOLUTION_VALUES:
             continue
-        labels_norm = {_normalize_key(label) for label in (entry.get("Labels") or [])}
+
+        epic_identifier = _epic_id(entry)
         epic_labels_norm = {_normalize_key(label) for label in (entry.get("Epic_Labels") or [])}
         epic_labels_known = bool(entry.get("Epic_Labels_Known"))
-        epic_name = _normalize_text(entry.get("Epic_Name")) or "Unknown Epic"
-        epic_key = _normalize_text(entry.get("Epic_Key"))
-        epic_identifier = _epic_id(entry)
         issue_report_scope = report_all_labels or bool(labels_norm & labels_report)
         issue_in_report_scope = report_all_labels or bool(epic_labels_norm & labels_report)
         if not issue_in_report_scope and epic_key and not epic_labels_known:
             issue_in_report_scope = bool(labels_norm & labels_report)
-        if issue_in_report_scope or issue_report_scope:
-            report_epic_ids.add(epic_identifier)
+
+        parent_labels_norm = {_normalize_key(label) for label in (entry.get("Parent_Labels") or [])}
+        parent_report_scope = report_all_labels or bool(parent_labels_norm & labels_report)
+        subtask_parent_key = _normalize_text(entry.get("Parent_Key"))
+        subtask_parent_scope = bool(entry.get("Subtask") and subtask_parent_key and parent_report_scope)
+
+        if not (issue_report_scope or issue_in_report_scope or subtask_parent_scope):
+            continue
+        report_epic_ids.add(epic_identifier)
 
         epic_bucket = epics.setdefault(
             epic_identifier,
@@ -828,213 +1001,192 @@ def build_report_payload(
                 "progress_items": [],
                 "parent_subtasks": [],
                 "high_priority_items": [],
+                "feature_statuses": [],
+                "next_week_items": [],
+                "closed_tasks": 0,
                 "bugs": {"closed": 0, "in_progress": 0},
-                "_parent_subtask_map": {},
+                "_feature_map": {},
             },
         )
 
-        if labels_norm & labels_highlights:
-            issue_summary = _normalize_text(entry.get("Summary"))
-            highlights.append(
-                {
-                    "issue_key": issue_key,
-                    "headline": issue_summary or issue_key or "Task",
-                    "comment": _build_highlight_progress(entry, subtasks_by_parent.get(issue_key, [])),
-                }
-            )
-
-        if entry.get("Bug"):
-            # This logic now only runs for high-priority bugs due to the check at the start
+        if is_bug:
             if entry.get("Finished"):
                 epic_bucket["bugs"]["closed"] += 1
-            else:
+            elif _is_in_progress_status(entry.get("Status")):
                 epic_bucket["bugs"]["in_progress"] += 1
-        elif entry.get("Finished") and is_non_bug_task:
-            if entry.get("Subtask") and _normalize_text(entry.get("Parent_Key")):
-                parent_issue_key = _normalize_text(entry.get("Parent_Key"))
-                subtask_comment = _comment_hints_joined(entry.get("Comments") or [])
-                parent_map = epic_bucket["_parent_subtask_map"]
-                parent_group = parent_map.setdefault(
-                    parent_issue_key,
-                    {
-                        "parent_issue_key": parent_issue_key,
-                        "parent_text": _normalize_text(entry.get("Parent_Summary"))
-                        or _normalize_text(entry.get("Parent_Key"))
-                        or "Task",
-                        "subtasks": [],
-                    },
-                )
-                parent_group["subtasks"].append(
-                    {
-                        "issue_key": issue_key,
-                        "text": _build_item_text(entry, mode="subtask"),
-                        "status": _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution")),
-                        "comment": subtask_comment,
-                    }
-                )
-            else:
-                completed_item = {
-                    "issue_key": issue_key,
-                    "text": _build_item_text(entry, mode="completed"),
-                    "status": "Finished",
-                    "comment": _comment_hints_joined(entry.get("Comments") or []),
-                }
-                if issue_in_report_scope:
-                    epic_bucket["report_items"].append(completed_item)
-                else:
-                    epic_bucket["completed_items"].append(completed_item)
-        elif (
-            not entry.get("Finished")
-            and is_non_bug_task
-            and is_in_progress
-        ):
-            if entry.get("Subtask"):
-                parent_key = _normalize_text(entry.get("Parent_Key"))
-                parent_labels_norm = {_normalize_key(label) for label in (entry.get("Parent_Labels") or [])}
-                parent_report_scope = report_all_labels or bool(parent_labels_norm & labels_report)
-                if parent_key and (parent_report_scope or issue_in_report_scope):
-                    report_epic_ids.add(epic_identifier)
-                    parent_text = _normalize_text(entry.get("Parent_Summary")) or parent_key
-                    subtask_comment = _comment_hints_joined(entry.get("Comments") or [])
 
-                    parent_map = epic_bucket["_parent_subtask_map"]
-                    parent_group = parent_map.setdefault(
-                        parent_key,
-                        {
-                            "parent_issue_key": parent_key,
-                            "parent_text": parent_text or "Task",
-                            "subtasks": [],
-                        },
-                    )
-                    parent_group["subtasks"].append(
-                        {
-                            "issue_key": issue_key,
-                            "text": _normalize_text(entry.get("Summary")) or issue_key,
-                            "status": _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution")),
-                            "comment": subtask_comment,
-                        }
-                    )
+        feature_key = _normalize_text(entry.get("Parent_Key")) if entry.get("Subtask") else issue_key
+        if not feature_key:
+            feature_key = issue_key or _normalize_text(entry.get("Summary")) or "feature"
+        feature_name = (
+            _normalize_text(entry.get("Parent_Summary"))
+            if entry.get("Subtask")
+            else _normalize_text(entry.get("Summary"))
+        )
+        if not feature_name:
+            feature_name = feature_key
 
-                    parent_item = plan_index.get((epic_identifier, parent_key))
-                    if not parent_item:
-                        parent_item = {
-                            "issue_key": parent_key,
-                            "text": parent_text,
-                            "comment": "",
-                            "status": "",
-                            "subtasks": [],
-                        }
-                        plans.setdefault(epic_identifier, []).append(parent_item)
-                        plan_index[(epic_identifier, parent_key)] = parent_item
-                    parent_item["subtasks"].append(
-                        {
-                            "issue_key": issue_key,
-                            "text": _normalize_text(entry.get("Summary")) or issue_key,
-                            "status": _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution")),
-                            "comment": subtask_comment,
-                        }
-                    )
-            elif issue_report_scope or issue_in_report_scope:
-                plan_headline = _normalize_text(entry.get("Summary")) or issue_key
-                plan_comment = _build_item_text(entry, mode="plan")
-                progress_status = _normalize_text(entry.get("Status")) or "In Progress"
-                epic_bucket["progress_items"].append(
-                    {
-                        "issue_key": issue_key,
-                        "text": _build_item_text(entry, mode="result_progress"),
-                        "status": progress_status,
-                        "comment": plan_comment,
-                    }
-                )
-                existing_item = plan_index.get((epic_identifier, issue_key))
-                if existing_item:
-                    existing_item["text"] = plan_headline
-                    existing_item["comment"] = plan_comment
-                    existing_item["status"] = progress_status
-                else:
-                    parent_plan_item = {
-                        "issue_key": issue_key,
-                        "text": plan_headline,
-                        "comment": plan_comment,
-                        "status": progress_status,
-                        "subtasks": [],
-                    }
-                    plans.setdefault(epic_identifier, []).append(parent_plan_item)
-                    plan_index[(epic_identifier, issue_key)] = parent_plan_item
+        feature = epic_bucket["_feature_map"].setdefault(
+            feature_key,
+            {
+                "feature_key": feature_key,
+                "feature_name": feature_name,
+                "issue_keys": set(),
+                "points": [],
+                "comments_count": 0,
+                "closed_tasks": 0,
+                "in_progress_tasks": 0,
+                "blocked_tasks": 0,
+            },
+        )
 
-        if _normalize_key(entry.get("Priority")) in priority_high_values:
-            high_status = "Finished" if entry.get("Finished") else (
-                _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution"))
-            )
-            epic_bucket["high_priority_items"].append(
-                {
-                    "issue_key": issue_key,
-                    "text": _build_item_text(entry, mode="high"),
-                    "status": high_status,
-                    "comment": _comment_hints_joined(entry.get("Comments") or []),
-                }
-            )
+        if issue_key:
+            feature["issue_keys"].add(issue_key)
+        comment_points = _collect_comment_points(entry.get("Comments") or [])
+        if comment_points:
+            feature["points"].extend(comment_points)
+        feature["comments_count"] += len(entry.get("Comments") or [])
+
+        status_key = _normalize_key(entry.get("Status"))
+        if entry.get("Finished"):
+            feature["closed_tasks"] += 1
+            epic_bucket["closed_tasks"] += 1
+        elif _is_in_progress_status(entry.get("Status")):
+            feature["in_progress_tasks"] += 1
+        if status_key in blocked_status_values:
+            feature["blocked_tasks"] += 1
 
     epic_entries: list[dict[str, Any]] = []
     for epic_id, epic in epics.items():
         if epic_id not in report_epic_ids:
             continue
-        parent_map: dict[str, dict[str, Any]] = epic.pop("_parent_subtask_map", {})
-        parent_groups = []
-        for _, group in sorted(parent_map.items(), key=lambda item: item[0]):
-            group["subtasks"] = sorted(
-                list(group.get("subtasks") or []),
-                key=lambda item: _normalize_key(item.get("issue_key")),
-            )
-            parent_groups.append(group)
-        parent_issue_keys = {_normalize_text(group.get("parent_issue_key")) for group in parent_groups}
-        if parent_issue_keys:
-            epic["progress_items"] = [
-                item
-                for item in (epic.get("progress_items") or [])
-                if _normalize_text(item.get("issue_key")) not in parent_issue_keys
-            ]
-        epic["parent_subtasks"] = parent_groups
+
+        feature_statuses: list[dict[str, Any]] = []
+        next_week_items: list[dict[str, Any]] = []
+        for feature_key, feature in sorted(
+            (epic.get("_feature_map") or {}).items(),
+            key=lambda item: (_normalize_key(item[0]), _normalize_key(item[1].get("feature_name"))),
+        ):
+            raw_points = list(feature.get("points") or [])
+            dedup_points: list[str] = []
+            seen: set[str] = set()
+            for point in raw_points:
+                marker = _normalize_key(point)
+                if not marker or marker in seen:
+                    continue
+                seen.add(marker)
+                dedup_points.append(point)
+            feature["points"] = dedup_points
+
+            status_text = _build_compact_feature_status(feature)
+            plan_text = _build_compact_plan_status(feature)
+
+            feature_item = {
+                "issue_key": feature_key,
+                "text": _normalize_text(feature.get("feature_name")) or feature_key,
+                "status": status_text,
+                "comment": status_text,
+                "closed_tasks": int(feature.get("closed_tasks") or 0),
+                "issue_keys": sorted(list(feature.get("issue_keys") or []), key=_normalize_key),
+            }
+            feature_statuses.append(feature_item)
+
+            if int(feature.get("in_progress_tasks") or 0) > 0:
+                next_week_items.append(
+                    {
+                        "issue_key": feature_key,
+                        "text": feature_item["text"],
+                        "status": plan_text,
+                        "comment": plan_text,
+                        "subtasks": [],
+                    }
+                )
+
+        epic["feature_statuses"] = feature_statuses
+        epic["next_week_items"] = next_week_items
+        epic["report_items"] = []
+        epic["completed_items"] = []
+        epic["progress_items"] = []
+        epic["parent_subtasks"] = []
+        epic["high_priority_items"] = []
+        epic.pop("_feature_map", None)
         epic_entries.append(epic)
 
     if not report_all_labels:
         epic_entries = [epic for epic in epic_entries if _normalize_text(epic.get("epic_key"))]
 
-    epic_entries = sorted(epic_entries, key=lambda item: (_normalize_key(item["epic_name"]), _normalize_key(item["epic_key"])))
+    epic_entries = sorted(
+        epic_entries,
+        key=lambda item: (_normalize_key(item.get("epic_name")), _normalize_key(item.get("epic_key"))),
+    )
+
     next_week_plans: list[dict[str, Any]] = []
     for epic in epic_entries:
-        epic_identifier = epic["epic_key"] if epic["epic_key"] else f"name::{epic['epic_name']}"
-        plan_items = plans.get(epic_identifier, [])
-        if not plan_items:
+        items = list(epic.get("next_week_items") or [])
+        if not items:
             continue
-        for plan_item in plan_items:
-            subtasks = list(plan_item.get("subtasks") or [])
-            if subtasks:
-                plan_item["subtasks"] = sorted(
-                    subtasks,
-                    key=lambda item: _normalize_key(item.get("issue_key")),
-                )
         next_week_plans.append(
             {
                 "epic_key": epic["epic_key"],
                 "epic_name": epic["epic_name"],
-                "items": plan_items,
+                "items": items,
             }
         )
 
+    summary_rows_map: dict[str, dict[str, Any]] = {}
+    for epic in epic_entries:
+        epic_key = _normalize_text(epic.get("epic_key"))
+        epic_name = _normalize_text(epic.get("epic_name")) or "No Epic"
+        epic_id = epic_key if epic_key else f"name::{epic_name}"
+        summary_rows_map[epic_id] = {
+            "epic_key": epic_key,
+            "epic_name": epic_name,
+            "highlights": 0,
+            "this_week": len(epic.get("feature_statuses") or []),
+            "next_week": len(epic.get("next_week_items") or []),
+            "closed_tasks": int(epic.get("closed_tasks") or 0),
+        }
+
+    for item in highlights:
+        highlight_epic_key = _normalize_text(item.get("epic_key"))
+        highlight_epic_name = _normalize_text(item.get("epic_name")) or "No Epic"
+        highlight_epic_id = highlight_epic_key if highlight_epic_key else f"name::{highlight_epic_name}"
+        row = summary_rows_map.setdefault(
+            highlight_epic_id,
+            {
+                "epic_key": highlight_epic_key,
+                "epic_name": highlight_epic_name,
+                "highlights": 0,
+                "this_week": 0,
+                "next_week": 0,
+                "closed_tasks": 0,
+            },
+        )
+        row["highlights"] += 1
+
+    summary_rows = sorted(
+        summary_rows_map.values(),
+        key=lambda item: (_normalize_key(item.get("epic_name")), _normalize_key(item.get("epic_key"))),
+    )
+    summary_totals = {
+        "highlights": sum(int(row.get("highlights") or 0) for row in summary_rows),
+        "this_week": sum(int(row.get("this_week") or 0) for row in summary_rows),
+        "next_week": sum(int(row.get("next_week") or 0) for row in summary_rows),
+        "closed_tasks": sum(int(row.get("closed_tasks") or 0) for row in summary_rows),
+        "epics_covered": len(summary_rows),
+    }
+
     logger.info(
-        "PAYLOAD SUMMARY: project=%s week=%s evidence=%s epics_total=%s epics_in_report=%s highlights=%s report_items=%s completed_items=%s parent_subtasks=%s plans=%s high_priority=%s bugs_closed=%s bugs_in_progress=%s project_bugs_in_progress=%s project_bugs_open=%s",
+        "PAYLOAD SUMMARY: project=%s week=%s evidence=%s epics_total=%s epics_in_report=%s highlights=%s this_week_features=%s next_week_features=%s closed_tasks=%s bugs_closed=%s bugs_in_progress=%s project_bugs_in_progress=%s project_bugs_open=%s",
         project,
         week.key,
         len(evidence),
         len(epics),
         len(epic_entries),
         len(highlights),
-        sum(len(epic.get("report_items") or []) for epic in epic_entries),
-        sum(len(epic.get("completed_items") or []) for epic in epic_entries),
-        sum(len(epic.get("parent_subtasks") or []) for epic in epic_entries),
-        sum(len(item.get("items") or []) for item in next_week_plans),
-        sum(len(epic.get("high_priority_items") or []) for epic in epic_entries),
+        sum(len(epic.get("feature_statuses") or []) for epic in epic_entries),
+        sum(len(epic.get("next_week_items") or []) for epic in epic_entries),
+        sum(int(epic.get("closed_tasks") or 0) for epic in epic_entries),
         sum(int((epic.get("bugs") or {}).get("closed") or 0) for epic in epic_entries),
         sum(int((epic.get("bugs") or {}).get("in_progress") or 0) for epic in epic_entries),
         int(project_bug_stats.get("in_progress") or 0),
@@ -1050,6 +1202,10 @@ def build_report_payload(
         "highlights": highlights,
         "epics": epic_entries,
         "next_week_plans": next_week_plans,
+        "summary_table": {
+            "rows": summary_rows,
+            "totals": summary_totals,
+        },
         "project_bugs": {
             "in_progress": int(project_bug_stats.get("in_progress") or 0),
             "open": int(project_bug_stats.get("open") or 0),
@@ -1064,6 +1220,7 @@ def build_report_payload(
                 fallback="Key Results and Achievements",
             ),
             "plans": config.get("jira_weekly_email", "chapter_next_week_title", fallback="Next Week Plans"),
+            "summary": config.get("jira_weekly_email", "chapter_summary_title", fallback="Summary"),
             "vacations": config.get("jira_weekly_email", "chapter_vacations_title", fallback="Vacations (next 60 days)"),
             "high_priority_subtitle": config.get(
                 "jira_weekly_email", "chapter_results_high_priority_subtitle", fallback="High priority items"
@@ -1154,6 +1311,8 @@ def apply_previous_order(payload: dict[str, Any], previous_snapshot: dict[str, A
             issue_order = [str(item) for item in (issue_order_by_epic.get(epic_id) or [])]
             if issue_order:
                 rank = {key: idx for idx, key in enumerate(issue_order)}
+                epic["feature_statuses"] = _apply_order_for_items(list(epic.get("feature_statuses") or []), issue_order)
+                epic["next_week_items"] = _apply_order_for_items(list(epic.get("next_week_items") or []), issue_order)
                 epic["report_items"] = _apply_order_for_items(list(epic.get("report_items") or []), issue_order)
                 epic["completed_items"] = _apply_order_for_items(list(epic.get("completed_items") or []), issue_order)
                 epic["progress_items"] = _apply_order_for_items(list(epic.get("progress_items") or []), issue_order)
@@ -1191,7 +1350,19 @@ def _collect_text_targets(payload: dict[str, Any]) -> list[tuple[str, str]]:
         if comment:
             targets.append((f"highlights.{idx}.comment", comment))
 
-    # SECTION: Key Results (epics) -> comments from all task levels
+    # SECTION: Key Results (epics) -> compact feature statuses
+    for epic_idx, epic in enumerate(payload.get("epics") or []):
+        for item_idx, item in enumerate(epic.get("feature_statuses") or []):
+            status_text = _normalize_text(item.get("status"))
+            if status_text:
+                targets.append((f"epics.{epic_idx}.feature_statuses.{item_idx}.status", status_text))
+
+        for item_idx, item in enumerate(epic.get("next_week_items") or []):
+            status_text = _normalize_text(item.get("status"))
+            if status_text:
+                targets.append((f"epics.{epic_idx}.next_week_items.{item_idx}.status", status_text))
+
+    # Backward-compatible section paths (legacy payload shape)
     for epic_idx, epic in enumerate(payload.get("epics") or []):
         for section in ("report_items", "completed_items", "progress_items", "high_priority_items"):
             for item_idx, item in enumerate(epic.get(section) or []):
@@ -1213,6 +1384,9 @@ def _collect_text_targets(payload: dict[str, Any]) -> list[tuple[str, str]]:
     # SECTION: Plans (next_week_plans) -> only comments
     for epic_idx, plan_epic in enumerate(payload.get("next_week_plans") or []):
         for item_idx, item in enumerate(plan_epic.get("items") or []):
+            status_text = _normalize_text(item.get("status"))
+            if status_text:
+                targets.append((f"next_week_plans.{epic_idx}.items.{item_idx}.status", status_text))
             comment = _normalize_text(item.get("comment"))
             if comment:
                 targets.append((f"next_week_plans.{epic_idx}.items.{item_idx}.comment", comment))
@@ -1282,8 +1456,12 @@ def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) 
     def _intent_from_path(path: str) -> str:
         if path.startswith("next_week_plans."):
             return "PLAN"
+        if ".next_week_items." in path:
+            return "PLAN"
         if path.startswith("highlights."):
             return "HIGHLIGHT"
+        if ".feature_statuses." in path:
+            return "RESULT"
         return "RESULT"
 
     prompt_lines = [
@@ -1863,7 +2041,14 @@ def _extract_order(payload: dict[str, Any]) -> dict[str, Any]:
         epic_id = epic_key if epic_key else f"name::{epic_name}"
         epic_order.append(epic_id)
         keys: list[str] = []
-        for section in ("report_items", "completed_items", "progress_items", "high_priority_items"):
+        for section in (
+            "feature_statuses",
+            "next_week_items",
+            "report_items",
+            "completed_items",
+            "progress_items",
+            "high_priority_items",
+        ):
             for item in epic.get(section) or []:
                 key = _normalize_text(item.get("issue_key"))
                 if key and key not in keys:
@@ -1892,6 +2077,10 @@ def _payload_to_lines(payload: dict[str, Any]) -> list[str]:
 
     for epic in payload.get("epics") or []:
         lines.append(f"EPIC {epic.get('epic_name')} ({epic.get('epic_key')})")
+        for item in epic.get("feature_statuses") or []:
+            lines.append(f"feature:{item.get('issue_key')} {item.get('text')} status={item.get('status')}")
+        for item in epic.get("next_week_items") or []:
+            lines.append(f"next_week:{item.get('issue_key')} {item.get('text')} status={item.get('status')}")
         for section in ("report_items", "completed_items", "progress_items", "high_priority_items"):
             for item in epic.get(section) or []:
                 lines.append(f"{section}:{item.get('issue_key')} {item.get('text')}")
@@ -1918,6 +2107,15 @@ def _payload_to_lines(payload: dict[str, Any]) -> list[str]:
                 )
                 if _normalize_text(subtask.get("comment")):
                     lines.append(f"plan_subtask_comment:{subtask.get('issue_key')} {subtask.get('comment')}")
+
+    summary_table = payload.get("summary_table") or {}
+    for row in summary_table.get("rows") or []:
+        lines.append(
+            "SUMMARY "
+            f"{row.get('epic_name')} ({row.get('epic_key')}) "
+            f"H={row.get('highlights', 0)} W={row.get('this_week', 0)} "
+            f"N={row.get('next_week', 0)} C={row.get('closed_tasks', 0)}"
+        )
 
     for vacation in payload.get("vacations") or []:
         lines.append(f"VACATION {vacation}")
@@ -2126,8 +2324,8 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     highlights_title = _cfg_html("highlights", "Highlights")
     results_title = _cfg_html("results", "Key Results and Achievements")
     plans_title = _cfg_html("plans", "Next Week Plans")
+    summary_title = _cfg_html("summary", "Summary")
     vacations_title = _cfg_html("vacations", "Vacations (next 60 days)")
-    high_priority_title = _cfg_html("high_priority_subtitle", "High priority items")
     bugs_title = _cfg_html("bugs_subtitle", "Bugs summary")
     bugs_summary_template = _normalize_text(
         titles.get(
@@ -2196,6 +2394,11 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     rows.append(".lvl2{margin-left:18px;}.lvl2 li:before{content:'\\25C6';position:absolute;left:0;top:0;font-size:12px;line-height:1.2;color:#ffffff;}")
     rows.append(".lvl3{margin-left:36px;}.lvl3 li:before{content:'\\2022';position:absolute;left:0;top:0;font-size:12px;line-height:1.2;color:#ffffff;}")
     rows.append(".lvl4{margin-left:20px;}.lvl4 li:before{content:'\\25E6';position:absolute;left:0;top:0;font-size:12px;line-height:1.2;color:#ffffff;}")
+    rows.append(".summary-grid{width:100%;border-collapse:collapse;margin-top:4px;}")
+    rows.append(".summary-grid th,.summary-grid td{border:1px solid rgba(255,255,255,.45);padding:6px 8px;font-size:12px;text-align:left;}")
+    rows.append(".summary-grid th{background:rgba(0,0,0,.28);font-weight:700;}")
+    rows.append(".summary-grid td.num{text-align:right;white-space:nowrap;}")
+    rows.append(".summary-grid tr.total td{font-weight:700;background:rgba(0,0,0,.25);}")
     rows.append("@media print{body{background:#ffffff;padding:0;}.sheet{width:100%;box-shadow:none;}}")
     rows.append("</style>")
     rows.append("</head>")
@@ -2246,82 +2449,24 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     for epic_idx, epic in enumerate(payload.get("epics") or []):
         epic_name = html.escape(_normalize_text(epic.get("epic_name")))
         epic_key = html.escape(_normalize_text(epic.get("epic_key")))
-        high_priority_issue_keys = {
-            _normalize_key(item.get("issue_key"))
-            for item in (epic.get("high_priority_items") or [])
-            if _normalize_key(item.get("issue_key"))
-        }
         rows.append("<ul class='lvl1'>")
         rows.append(f"<li><b>{epic_name} ({epic_key})</b></li>")
         rows.append("</ul>")
-        rows.append("<ul class='lvl2'>")
-        regular_seen_issue_keys: set[str] = set()
-        for item in (epic.get("report_items") or []) + (epic.get("completed_items") or []) + (epic.get("progress_items") or []):
-            item_issue_key_norm = _normalize_key(item.get("issue_key"))
-            item_issue_key = _normalize_text(item.get("issue_key"))
-            if item_issue_key_norm and item_issue_key_norm in high_priority_issue_keys:
-                continue
-            if item_issue_key_norm and item_issue_key_norm in regular_seen_issue_keys:
-                continue
-            text = html.escape(_normalize_text(item.get("text")))
-            issue_key = html.escape(item_issue_key)
-            status = html.escape(_normalize_text(item.get("status")))
-            comment = html.escape(_normalize_text(item.get("comment")))
-            status_suffix = f" - {status}" if status else ""
-            rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}{status_suffix}</li>")
-            if comment:
-                rows.append("</ul><ul class='lvl3'>")
-                rows.append(f"<li>{comment}</li>")
-                rows.append("</ul><ul class='lvl2'>")
-            if item_issue_key_norm:
-                regular_seen_issue_keys.add(item_issue_key_norm)
-        for group in epic.get("parent_subtasks") or []:
-            parent_issue_key_raw = _normalize_text(group.get("parent_issue_key"))
-            parent_issue_key = html.escape(parent_issue_key_raw)
-            parent_text = html.escape(_normalize_text(group.get("parent_text")))
-            filtered_subtasks = []
-            for subtask in group.get("subtasks") or []:
-                subtask_issue_key = _normalize_key(subtask.get("issue_key"))
-                if subtask_issue_key and subtask_issue_key in high_priority_issue_keys:
-                    continue
-                filtered_subtasks.append(subtask)
-            if not filtered_subtasks:
-                continue
-            rows.append(f"<li>{parent_text}{f' ({parent_issue_key})' if parent_issue_key else ''}:</li>")
-            rows.append("</ul><ul class='lvl3'>")
-            for subtask in filtered_subtasks:
-                subtask_key = html.escape(_normalize_text(subtask.get("issue_key")))
-                subtask_text = html.escape(_normalize_text(subtask.get("text")))
-                subtask_status = html.escape(_normalize_text(subtask.get("status")))
-                subtask_comment = html.escape(_normalize_text(subtask.get("comment")))
-                suffix = f" - {subtask_status}" if subtask_status else ""
-                rows.append(f"<li>{subtask_text}{suffix}{f' ({subtask_key})' if subtask_key else ''}</li>")
-                if subtask_comment:
-                    rows.append("<ul class='lvl4'>")
-                    rows.append(f"<li>{subtask_comment}</li>")
-                    rows.append("</ul>")
-            rows.append("</ul><ul class='lvl2'>")
-        if epic.get("high_priority_items"):
-            rows.append(f"<li><b>{high_priority_title}</b></li>")
-            rows.append("</ul><ul class='lvl3'>")
-            high_seen_issue_keys: set[str] = set()
-            for item in epic.get("high_priority_items") or []:
-                item_issue_key_norm = _normalize_key(item.get("issue_key"))
-                if item_issue_key_norm and item_issue_key_norm in high_seen_issue_keys:
-                    continue
+        feature_items = list(epic.get("feature_statuses") or [])
+        if feature_items:
+            rows.append("<ul class='lvl2'>")
+            for item in feature_items:
                 text = html.escape(_normalize_text(item.get("text")))
                 issue_key = html.escape(_normalize_text(item.get("issue_key")))
                 status = html.escape(_normalize_text(item.get("status")))
-                comment = html.escape(_normalize_text(item.get("comment")))
-                status_suffix = f" - {status}" if status else ""
-                rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}{status_suffix}</li>")
-                if comment:
-                    rows.append("<ul class='lvl4'>")
-                    rows.append(f"<li>{comment}</li>")
-                    rows.append("</ul>")
-                if item_issue_key_norm:
-                    high_seen_issue_keys.add(item_issue_key_norm)
-            rows.append("</ul><ul class='lvl2'>")
+                rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
+                if status:
+                    rows.append("</ul><ul class='lvl3'>")
+                    rows.append(f"<li>{status}</li>")
+                    rows.append("</ul><ul class='lvl2'>")
+            rows.append("</ul>")
+        else:
+            rows.append("<p class='muted'>No feature updates in selected period.</p>")
         bugs = epic.get("bugs") or {}
         closed_bugs = int(bugs.get("closed", 0))
         project_bugs = payload.get("project_bugs") or {}
@@ -2342,11 +2487,10 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
             rows.append(
                 f"<li><b>{bugs_title}</b>: {html.escape(_normalize_text(bugs_summary_line))}</li>"
             )
-        rows.append("</ul>")
         if epic_idx < len(payload.get("epics") or []) - 1:
             rows.append("<div class='divider'></div>")
     if not (payload.get("epics") or []):
-        rows.append("<p class='muted'>No completed items for selected scope.</p>")
+        rows.append("<p class='muted'>No epic feature updates for selected scope.</p>")
     rows.append("</td></tr>")
 
     rows.append("<tr>")
@@ -2360,27 +2504,12 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
         rows.append("<ul class='lvl2'>")
         for item in epic.get("items") or []:
             text = html.escape(_normalize_text(item.get("text")))
-            comment = html.escape(_normalize_text(item.get("comment")))
             issue_key = html.escape(_normalize_text(item.get("issue_key")))
             status = html.escape(_normalize_text(item.get("status")))
-            status_suffix = f" - {status}" if status else ""
-            rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}{status_suffix}</li>")
-            if comment:
+            rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
+            if status:
                 rows.append("</ul><ul class='lvl3'>")
-                rows.append(f"<li>{comment}</li>")
-                rows.append("</ul><ul class='lvl2'>")
-            for subtask in item.get("subtasks") or []:
-                subtask_key = html.escape(_normalize_text(subtask.get("issue_key")))
-                subtask_text = html.escape(_normalize_text(subtask.get("text")))
-                subtask_status = html.escape(_normalize_text(subtask.get("status")))
-                subtask_comment = html.escape(_normalize_text(subtask.get("comment")))
-                suffix = f" - {subtask_status}" if subtask_status else ""
-                rows.append("</ul><ul class='lvl3'>")
-                rows.append(f"<li>{subtask_text}{suffix}{f' ({subtask_key})' if subtask_key else ''}</li>")
-                if subtask_comment:
-                    rows.append("<ul class='lvl4'>")
-                    rows.append(f"<li>{subtask_comment}</li>")
-                    rows.append("</ul>")
+                rows.append(f"<li>{status}</li>")
                 rows.append("</ul><ul class='lvl2'>")
         rows.append("</ul>")
     if not (payload.get("next_week_plans") or []):
@@ -2394,6 +2523,53 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     if not (payload.get("vacations") or []):
         rows.append("<li>No vacations found for the configured horizon.</li>")
     rows.append("</ul></td></tr>")
+
+    summary_table = payload.get("summary_table") or {}
+    summary_rows = list(summary_table.get("rows") or [])
+    totals = summary_table.get("totals") or {}
+    rows.append("<tr>")
+    rows.append(f"<td class='sec-label'>{summary_title}</td><td class='sec-body'>")
+    rows.append(
+        f"<div class='muted'>Epics covered: {html.escape(str(int(totals.get('epics_covered') or len(summary_rows))))}</div>"
+    )
+    if summary_rows:
+        rows.append("<table class='summary-grid' cellspacing='0' cellpadding='0'>")
+        rows.append(
+            "<tr>"
+            "<th>Epic</th>"
+            "<th>Highlights</th>"
+            "<th>This Week Features</th>"
+            "<th>Next Week Features</th>"
+            "<th>Closed Tasks</th>"
+            "</tr>"
+        )
+        for row in summary_rows:
+            epic_label = _normalize_text(row.get("epic_name"))
+            epic_key = _normalize_text(row.get("epic_key"))
+            if epic_key:
+                epic_label = f"{epic_label} ({epic_key})"
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape(epic_label or 'No Epic')}</td>"
+                f"<td class='num'>{int(row.get('highlights') or 0)}</td>"
+                f"<td class='num'>{int(row.get('this_week') or 0)}</td>"
+                f"<td class='num'>{int(row.get('next_week') or 0)}</td>"
+                f"<td class='num'>{int(row.get('closed_tasks') or 0)}</td>"
+                "</tr>"
+            )
+        rows.append(
+            "<tr class='total'>"
+            "<td>TOTAL</td>"
+            f"<td class='num'>{int(totals.get('highlights') or 0)}</td>"
+            f"<td class='num'>{int(totals.get('this_week') or 0)}</td>"
+            f"<td class='num'>{int(totals.get('next_week') or 0)}</td>"
+            f"<td class='num'>{int(totals.get('closed_tasks') or 0)}</td>"
+            "</tr>"
+        )
+        rows.append("</table>")
+    else:
+        rows.append("<p class='muted'>No summary data for selected scope.</p>")
+    rows.append("</td></tr>")
 
     rows.append("</table>")
     if footer_html.strip():
@@ -2487,8 +2663,16 @@ class JiraWeeklyEmailReport:
             extra_params.get("priority_high_values") or section.get("priority_high_values"),
             ["High", "Highest"],
         )
+        ai_enabled_value = extra_params.get("ai_enabled")
+        if ai_enabled_value is None:
+            ai_enabled_value = extra_params.get("enable_ai")
+        if ai_enabled_value is None:
+            ai_enabled_value = section.get("ai_enabled")
+        if ai_enabled_value is None:
+            ai_enabled_value = config.get("jira_weekly_email", "ai_enabled", fallback="false")
+        ai_enabled = _bool_value(ai_enabled_value, False)
         logger.info(
-            "REPORT PARAMS: project=%s week=%s range=[%s..%s] labels_highlights=%s labels_report=%s priority_high_values=%s",
+            "REPORT PARAMS: project=%s week=%s range=[%s..%s] labels_highlights=%s labels_report=%s priority_high_values=%s ai_enabled=%s",
             project,
             week.key,
             week.start.strftime("%Y-%m-%d"),
@@ -2496,6 +2680,7 @@ class JiraWeeklyEmailReport:
             ",".join(sorted(labels_highlights)),
             ",".join(sorted(labels_report)),
             ",".join(sorted(priority_high_values)),
+            ai_enabled,
         )
 
         try:
@@ -2654,7 +2839,10 @@ class JiraWeeklyEmailReport:
             else:
                 logger.info("SNAPSHOT NOT FOUND: expected_previous_week=%s", previous_week.key)
             payload = apply_previous_order(payload, previous_snapshot)
-            payload = rewrite_payload_with_ai(payload, config, extra_params)
+            if ai_enabled:
+                payload = rewrite_payload_with_ai(payload, config, extra_params)
+            else:
+                logger.info("AI rewrite skipped: ai_enabled=false")
 
         with progress.step("Export report"):
             html_text = render_outlook_html(payload)

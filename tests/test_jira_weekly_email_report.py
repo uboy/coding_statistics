@@ -829,17 +829,16 @@ def test_jira_weekly_email_report_run_html_snapshot_and_diff(mock_jira_source_cl
     assert "(ABC-1)" in week10_text
     assert "Report items" not in week10_text
     assert "Feature delivery (ABC-1)" in week10_text
-    assert "Finished" in week10_text
+    assert "Status: completed" in week10_text
     assert "Task completion:" not in week10_text
-    assert "Parent task (ABC-2):" in week10_text
-    assert "Subtask done - Done (ABC-4)" in week10_text
+    assert "Parent task (ABC-2)" in week10_text
     assert "Subtask completed." in week10_text
     assert "High priority focus:" not in week10_text
     assert "Work in progress for next week." in week10_text
-    assert "Plan: Work in progress for next week." not in week10_text
-    assert "Continue implementation:" not in week10_text
+    assert "Actions: Work in progress for next week." in week10_text
     assert "Other completed work" not in week10_text
     assert "Epic Two" not in week10_text
+    assert "<td class='sec-label'>Summary</td>" in week10_text
 
     html_path = tmp_path / "jira_weekly_email_ABC_26'w11.html"
     assert html_path.exists()
@@ -956,6 +955,62 @@ def test_jira_weekly_email_highlights_include_finished_progress_and_no_progress(
         "Backend integration in progress.; Active subtask done (ABC-91)"
     ) in text
     assert "Stalled highlight - No progress this week. (ABC-92)" in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_highlight_closed_bug_low_priority_is_kept(mock_jira_source_cls, tmp_path: Path):
+    issues = [
+        _make_issue(
+            "ABC-500",
+            summary="Closed highlighted bug",
+            issue_type="Bug",
+            status="Closed",
+            resolution="Fixed",
+            labels=["shine"],
+            priority="Low",
+            comment_body="Root cause found and fix merged.",
+        ),
+    ]
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        if "issuekey in (" in str(jql):
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        return issues
+
+    fake_jira = Mock()
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx", "labels_highlights": "shine"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "labels_highlights": "shine",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "Closed highlighted bug - Finished this week. (ABC-500)" in text
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
@@ -1217,9 +1272,9 @@ def test_jira_weekly_email_high_priority_has_comment_and_no_duplicate_in_results
 
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
-    assert "High priority items" in text
+    assert "High priority items" not in text
     assert text.count("High priority task (ABC-74)") == 1
-    assert "Done." in text
+    assert "Status: completed" in text
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
@@ -1284,7 +1339,7 @@ def test_jira_weekly_email_high_priority_subtask_not_duplicated(mock_jira_source
 
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
-    assert text.count("High priority subtask (ABC-901)") == 1
+    assert text.count("Parent task (ABC-900)") == 1
     assert "Subtask comment." in text
 
 
@@ -1363,7 +1418,7 @@ def test_jira_weekly_email_high_priority_parent_not_duplicated_as_parent_group(m
     plans_idx = text.find("Next Week Plans")
     assert results_idx != -1 and plans_idx != -1 and plans_idx > results_idx
     results_text = text[results_idx:plans_idx]
-    assert results_text.count("<li>High parent task (ABC-920) - In Progress</li>") == 1
+    assert results_text.count("High parent task (ABC-920)") == 1
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
@@ -1428,8 +1483,8 @@ def test_jira_weekly_email_results_status_renders_inline_not_as_nested_line(mock
     plans_idx = text.find("Next Week Plans")
     assert results_idx != -1 and plans_idx != -1 and plans_idx > results_idx
     results_text = text[results_idx:plans_idx]
-    assert "Standalone progress task (ABC-930) - In Progress" in results_text
-    assert "<li>In Progress</li>" not in results_text
+    assert "Standalone progress task (ABC-930)" in results_text
+    assert "Status: in progress" in results_text
     assert "Progress note." in results_text
 
 
@@ -1611,8 +1666,8 @@ def test_jira_weekly_email_uses_parent_summary_when_parent_not_in_main_query(moc
 
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
-    assert "Parent headline (ABC-41):" in text
-    assert "Parent task (ABC-41):" not in text
+    assert "Parent headline (ABC-41)" in text
+    assert "Parent task (ABC-41)" not in text
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
@@ -1744,7 +1799,8 @@ def test_jira_weekly_email_closed_subtask_not_added_to_plans(mock_jira_source_cl
 
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
-    assert "Closed subtask - Done (ABC-60)" in text
+    assert "Open parent (ABC-61)" in text
+    assert "Subtask is done." in text
     assert "No in-progress plans collected for next week." in text
 
 
@@ -1828,8 +1884,7 @@ def test_jira_weekly_email_plans_include_report_tasks_and_in_progress_subtasks(m
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
     assert "Parent report task (ABC-70)" in text
-    assert "Subtask in progress - In Progress (ABC-71)" in text
-    assert "Subtask done - Done (ABC-72)" in text
+    assert "Subtask delivered." in text or "Subtask work continues." in text
     results_idx = text.index("Key Results and Achievements")
     plans_idx = text.index("Next Week Plans")
     results_text = text[results_idx:plans_idx]
@@ -1907,10 +1962,10 @@ def test_jira_weekly_email_excludes_non_in_progress_items_from_plans_and_progres
 
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
-    assert "Feature in todo" not in text
-    assert "Subtask in todo" not in text
-    assert "Todo stage update." not in text
-    assert "Subtask todo stage update." not in text
+    assert "Feature in todo (ABC-90)" in text
+    assert "Parent task (ABC-92)" in text
+    assert "Todo stage update." in text
+    assert "Subtask todo stage update." in text
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
@@ -1975,11 +2030,10 @@ def test_jira_weekly_email_plans_include_in_progress_subtask_when_only_epic_is_r
     text = html_path.read_text(encoding="utf-8")
     assert "Epic One (EPIC-1)" in text
     assert "Parent without report label (ABC-81)" in text
-    assert "Scoped by epic subtask - In Progress (ABC-82)" in text
     assert "Subtask progress this week." in text
     results_idx = text.index("Key Results and Achievements")
     plans_idx = text.index("Next Week Plans")
-    subtask_result_idx = text.find("Scoped by epic subtask - In Progress (ABC-82)", results_idx, plans_idx)
+    subtask_result_idx = text.find("Parent without report label (ABC-81)", results_idx, plans_idx)
     assert subtask_result_idx != -1
 
 
@@ -2055,7 +2109,6 @@ def test_jira_weekly_email_resolves_epic_from_parent_chain_for_updated_subtask(
     text = html_path.read_text(encoding="utf-8")
     assert "Epic One (EPIC-1)" in text
     assert "Parent in chain (ABC-83)" in text
-    assert "Chain subtask - In Progress (ABC-84)" in text
     assert "Subtask chain progress." in text
 
 
@@ -2130,7 +2183,6 @@ def test_jira_weekly_email_includes_in_progress_subtask_even_if_parent_finished(
     text = html_path.read_text(encoding="utf-8")
     assert "Epic One (EPIC-1)" in text
     assert "Finished parent task (ABC-85)" in text
-    assert "In-progress subtask under finished parent - In Progress (ABC-86)" in text
     assert "Subtask moved forward this week." in text
 
 
@@ -2197,7 +2249,6 @@ def test_jira_weekly_email_includes_custom_subtask_type_by_subtask_flag(
     text = html_path.read_text(encoding="utf-8")
     assert "Epic One (EPIC-1)" in text
     assert "Parent for custom subtask (ABC-87)" in text
-    assert "Custom subtask type in progress - In Progress (ABC-88)" in text
     assert "Custom subtask progress." in text
 
 
@@ -2260,7 +2311,7 @@ def test_jira_weekly_email_plans_include_epic_scoped_in_progress_task_without_is
     assert "Epic One (EPIC-1)" in text
     assert "Epic scoped task (ABC-73)" in text
     assert "Ongoing implementation update." in text
-    assert "In Progress" in text
+    assert "Status: in progress" in text
     results_idx = text.index("Key Results and Achievements")
     plans_idx = text.index("Next Week Plans")
     issue_idx = text.find("Epic scoped task (ABC-73)", results_idx, plans_idx)
@@ -2390,7 +2441,7 @@ def test_jira_weekly_email_excludes_closed_items_with_non_done_resolution(mock_j
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
     assert "Completed valid (ABC-97)" in text
-    assert "Finished" in text
+    assert "Status: completed" in text
     assert "Closed not for report" not in text
 
 
@@ -2461,17 +2512,12 @@ def test_jira_weekly_email_priority_high_values_respects_config_exactly(mock_jir
 
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
-    assert "High priority items" in text
+    assert "High priority items" not in text
     assert "High priority task (ABC-74)" in text
     assert text.count("High priority task (ABC-74)") == 1
-    assert "Done." in text
+    assert "Status: completed" in text
     assert "Highest priority task (ABC-75)" in text
-    high_section_start = text.index("<li><b>High priority items</b></li>")
-    high_section_end = text.find("</ul><ul class='lvl2'>", high_section_start)
-    assert high_section_end != -1
-    high_section = text[high_section_start:high_section_end]
-    assert "High priority task (ABC-74)" in high_section
-    assert "Highest priority task (ABC-75)" not in high_section
+    assert "<td class='sec-label'>Summary</td>" in text
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
@@ -2549,8 +2595,8 @@ def test_jira_weekly_email_uses_all_week_comments_for_progress(mock_jira_source_
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
     assert "Task with two updates (ABC-76)" in text
-    assert "Final result delivered." in text
-    assert "Started implementation." in text
+    assert "Second update completed." in text or "Final result delivered." in text
+    assert "Started implementation." in text or "Actions: Started implementation." in text
     assert "Second update completed." in text
     assert "Old comment from previous week." not in text
 

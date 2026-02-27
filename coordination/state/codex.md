@@ -98,3 +98,9 @@
   - AI retry now supports custom retry exception types; WebUI/Ollama now retry on ValueError (invalid JSON response type) as transient failure.
   - Reduced noisy diagnostic dumps for generic WebUI failures to avoid progress-bar disruption.
   - Tests updated and passed: 112 passed, 1 warning (openpyxl CF).
+  - Fixed weekly_email highlights scope: highlight-labeled tasks are now added before report-section filters (low-priority bug / non-Done resolution filters no longer drop highlights).
+  - Added regression test for closed low-priority highlighted bug visibility in Highlights.
+  - Full pytest green after highlight fix: 113 passed, 1 warning (openpyxl CF).
+  - Weekly email report refactored to compact epic->feature output with concise statuses and next-week actions; added end summary table (section counts + epic coverage + closed tasks by epic).
+  - Added explicit weekly AI toggle (`ai_enabled`, default false) and wired AI text targets for new feature fields.
+  - Updated weekly email tests for compact format and reran full suite: 113 passed, 1 warning (openpyxl CF).
