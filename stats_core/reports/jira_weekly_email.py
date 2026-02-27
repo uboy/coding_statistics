@@ -93,6 +93,27 @@ def _normalize_key(value: Any) -> str:
     return _normalize_text(value).casefold()
 
 
+def _contains_cyrillic(text: str) -> bool:
+    return bool(re.search(r"[А-Яа-яЁё]", text or ""))
+
+
+def _clean_comment_for_report(value: Any) -> str:
+    cleaned = _normalize_text(value)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\[[^\]]+\]\([^)]+\)", "", cleaned)
+    cleaned = re.sub(r"(?:https?://|ftp://|file://|www\.)\S+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b[A-Z]+-\d+\b", "", cleaned)
+    cleaned = re.sub(r"[`*_>#]+", " ", cleaned)
+    cleaned = _normalize_text(cleaned.strip(" -,:;"))
+    if not cleaned:
+        return ""
+    # Keep final weekly email report English-only even when source comments are non-English.
+    if _contains_cyrillic(cleaned) and not re.search(r"[A-Za-z]", cleaned):
+        return "Progress update recorded in Jira comments."
+    return cleaned
+
+
 def _strip_wrapping_quotes(value: str) -> str:
     cleaned = _normalize_text(value)
     if len(cleaned) >= 2 and ((cleaned[0] == '"' and cleaned[-1] == '"') or (cleaned[0] == "'" and cleaned[-1] == "'")):
@@ -619,13 +640,35 @@ def _first_sentence(text: str) -> str:
 
 def _comment_hints_joined(comments: Any) -> str:
     values = comments if isinstance(comments, list) else [comments]
-    latest_hint = ""
+    points: list[str] = []
     for value in values:
-        hint = _normalize_text(value)
-        if not hint:
+        cleaned = _clean_comment_for_report(value)
+        if not cleaned:
             continue
-        latest_hint = hint
-    return latest_hint
+        split_points = _split_progress_points(cleaned)
+        if split_points:
+            points.extend(split_points)
+        else:
+            points.append(cleaned)
+    if not points:
+        return ""
+    unique_points: list[str] = []
+    seen: set[str] = set()
+    for point in points:
+        marker = _normalize_key(point)
+        if not marker or marker in seen:
+            continue
+        seen.add(marker)
+        unique_points.append(point)
+    if not unique_points:
+        return ""
+    joined = "; ".join(unique_points[:6])
+    words = joined.split()
+    if len(words) > 80:
+        joined = " ".join(words[:80]).rstrip(" ,;:-")
+        if joined and joined[-1] not in ".!?":
+            joined += "..."
+    return joined
 
 
 def _split_progress_points(text: Any) -> list[str]:
@@ -1238,18 +1281,18 @@ def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) 
 
     prompt_lines = [
         "You are an expert technical writer preparing a formal weekly engineering report for management.",
-        "Rewrite each input into a polished management-ready report entry.",
-        "Important: model quality is limited, so follow the rules exactly and prioritize correctness over creativity.",
+        "Rewrite each input into a polished management-ready status update.",
+        "Important: model quality is limited, so follow rules strictly and prioritize factual clarity.",
         "Follow these strict rules:",
         "1. Style: Formal, professional, and concise.",
         "2. Language: English.",
-        "3. Length: ONE concise sentence. Use a second sentence ONLY if absolutely necessary for clarity. Maximum is 2 sentences.",
-        "4. Content and Formatting:",
+        "3. Length: One compact status line with 2-4 short clauses separated by '; '.",
+        "4. Content and structure:",
         "   - For HIGHLIGHT: Rewrite only the progress note for a highlighted task. Task title is handled separately and MUST NOT be repeated in output.",
-        "   - For RESULT: Focus on concrete achievements, outcomes, and impact. (Что было сделано и какой результат).",
-        "   - For PLAN: Clearly state the next actions or planned work. (Что планируется сделать).",
-        "   - If input contains multiple progress points (lists, semicolons, bullet-like items), keep them as short semicolon-separated clauses in one sentence.",
-        "   - Keep status meanings clear (e.g., completed / in progress / blocked).",
+        "   - For RESULT: include delivered progress first, then planned next actions (if present), then blockers/risks (if present), then dependencies (if present).",
+        "   - For PLAN: start with explicit next actions, then risks/dependencies if present.",
+        "   - Keep all meaningful points from input, merge duplicates, remove noise.",
+        "   - Keep status meanings explicit: completed / in progress / blocked / waiting.",
         "5. Exclusions: REMOVE ALL of the following:",
         "   - Links and URLs (e.g., http://..., www....).",
         "   - Code/repository references (PRs, MRs, commit hashes, file paths, 'see commit', '#123').",
@@ -1257,8 +1300,9 @@ def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) 
         "   - Conversational filler and noisy prefixes (e.g., 'results:', 'update:', 'details:', 'just a note').",
         "6. Quality checks before output:",
         "   - Do NOT cut off words or leave unfinished phrases.",
-        "   - End each sentence with proper punctuation.",
-        "   - Return plain text only (no markdown, no numbering unless present as a compact list inside the sentence).",
+        "   - Return plain text only; no markdown and no bullet markers.",
+        "   - If information is weak but not empty, still provide a concrete short status line.",
+        "   - If no useful information exists, output exactly: Insufficient data: not enough information in comments.",
         "7. Output Format: Return ONLY a valid JSON object mapping the original ID to the rewritten text. Example: {\"t1\":\"Rewritten text for t1.\", \"t2\":\"Rewritten text for t2.\"}",
         "---",
         "Input texts to rewrite:",
@@ -1311,24 +1355,16 @@ def _sanitize_ai_text(text: str) -> str:
     cleaned = _normalize_text(cleaned.strip(" -,:;"))
     if not cleaned:
         return ""
-
-    sentences = [
-        part.strip(" -,:;")
-        for part in re.split(r"(?<=[.!?])\s+", cleaned)
-        if part.strip(" -,:;")
-    ]
-    if not sentences:
+    if _contains_cyrillic(cleaned):
         return ""
-
-    limited: list[str] = []
-    for sentence in sentences[:2]:
-        words = sentence.split()
-        if len(words) > 40:
-            sentence = " ".join(words[:40]).rstrip(" ,;:-")
-            if sentence and sentence[-1] not in ".!?":
-                sentence += "..."
-        limited.append(sentence)
-    return _normalize_text(" ".join(limited))
+    words = cleaned.split()
+    if not words:
+        return ""
+    if len(words) > 70:
+        cleaned = " ".join(words[:70]).rstrip(" ,;:-")
+        if cleaned and cleaned[-1] not in ".!?":
+            cleaned += "..."
+    return cleaned
 
 
 def _apply_rewrite_map(payload: dict[str, Any], target_map: dict[str, str], rewrite_map: dict[str, Any]) -> dict[str, Any]:
@@ -2589,57 +2625,57 @@ class JiraWeeklyEmailReport:
                 output_path = output_path.with_suffix(".html")
         else:
             output_path = output_base / f"jira_weekly_email_{project}_{week.key}.html"
-            try:
-                output_path.write_text(html_text, encoding="utf-8")
-            except Exception as exc:
-                logger.error(
-                    "jira_weekly_email: failed to write HTML output %s (%s). "
-                    "Check output path permissions and disk space.",
-                    output_path,
-                    exc,
-                )
-                return
-
-            snapshot_path = snapshot_base / f"jira_weekly_email_{project}_{week.key}.json"
-            try:
-                save_snapshot(snapshot_path, payload, week)
-            except Exception as exc:
-                logger.error(
-                    "jira_weekly_email: failed to write snapshot %s (%s). "
-                    "Check snapshot_dir permissions.",
-                    snapshot_path,
-                    exc,
-                )
-                return
-
-            diff_lines = compute_payload_diff(previous_payload, payload)
-            diff_stats = _diff_stats(diff_lines)
-            logger.info(
-                "DIFF SUMMARY: previous_week=%s added=%s removed=%s unchanged=%s",
-                previous_week_key or "none",
-                diff_stats["added"],
-                diff_stats["removed"],
-                diff_stats["unchanged"],
-            )
-            if diff_lines and previous_week_key:
-                render_console_diff(
-                    diff_lines,
-                    project=project,
-                    current_week_key=week.key,
-                    previous_week_key=previous_week_key,
-                    use_color=True,
-                )
-            elif not previous_week_key:
-                logger.info("DIFF SKIPPED: previous week snapshot is missing for week=%s", previous_week.key)
-
-            logger.info(
-                "REPORT SUMMARY: project=%s week=%s issues=%s highlights=%s epics=%s plans=%s vacations=%s output=%s",
-                project,
-                week.key,
-                len(evidence),
-                len(payload.get("highlights") or []),
-                len(payload.get("epics") or []),
-                sum(len(item.get("items") or []) for item in (payload.get("next_week_plans") or [])),
-                len(payload.get("vacations") or []),
+        try:
+            output_path.write_text(html_text, encoding="utf-8")
+        except Exception as exc:
+            logger.error(
+                "jira_weekly_email: failed to write HTML output %s (%s). "
+                "Check output path permissions and disk space.",
                 output_path,
+                exc,
             )
+            return
+
+        snapshot_path = snapshot_base / f"jira_weekly_email_{project}_{week.key}.json"
+        try:
+            save_snapshot(snapshot_path, payload, week)
+        except Exception as exc:
+            logger.error(
+                "jira_weekly_email: failed to write snapshot %s (%s). "
+                "Check snapshot_dir permissions.",
+                snapshot_path,
+                exc,
+            )
+            return
+
+        diff_lines = compute_payload_diff(previous_payload, payload)
+        diff_stats = _diff_stats(diff_lines)
+        logger.info(
+            "DIFF SUMMARY: previous_week=%s added=%s removed=%s unchanged=%s",
+            previous_week_key or "none",
+            diff_stats["added"],
+            diff_stats["removed"],
+            diff_stats["unchanged"],
+        )
+        if diff_lines and previous_week_key:
+            render_console_diff(
+                diff_lines,
+                project=project,
+                current_week_key=week.key,
+                previous_week_key=previous_week_key,
+                use_color=True,
+            )
+        elif not previous_week_key:
+            logger.info("DIFF SKIPPED: previous week snapshot is missing for week=%s", previous_week.key)
+
+        logger.info(
+            "REPORT SUMMARY: project=%s week=%s issues=%s highlights=%s epics=%s plans=%s vacations=%s output=%s",
+            project,
+            week.key,
+            len(evidence),
+            len(payload.get("highlights") or []),
+            len(payload.get("epics") or []),
+            sum(len(item.get("items") or []) for item in (payload.get("next_week_plans") or [])),
+            len(payload.get("vacations") or []),
+            output_path,
+        )

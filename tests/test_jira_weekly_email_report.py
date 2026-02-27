@@ -11,6 +11,7 @@ from openpyxl import Workbook
 
 from stats_core.reports.jira_weekly_email import (
     JiraWeeklyEmailReport,
+    _comment_hints_joined,
     load_previous_snapshot,
     parse_vacations_excel,
     render_outlook_html,
@@ -363,7 +364,7 @@ def test_rewrite_payload_with_webui_sanitizes_links_and_limits_to_two_sentences(
 
     rewritten = rewrite_payload_with_ai(payload, config, {})
     prompt = mock_post.call_args.kwargs["json"]["messages"][1]["content"]
-    assert "Maximum is 2 sentences." in prompt
+    assert "One compact status line with 2-4 short clauses separated by '; '." in prompt
     assert rewritten["highlights"][0]["headline"] == "Old headline"
     assert rewritten["highlights"][0]["comment"] != "Old comment"
     assert rewritten["next_week_plans"][0]["items"][0]["text"] == "Old plan"
@@ -383,9 +384,7 @@ def test_rewrite_payload_with_webui_sanitizes_links_and_limits_to_two_sentences(
         assert "results:" not in value.lower()
         assert "plan:" not in value.lower()
         assert "update:" not in value.lower()
-        sentences = [s for s in value.replace("?", ".").replace("!", ".").split(".") if s.strip()]
-        assert len(sentences) <= 2
-        assert len(value.split()) <= 48
+        assert len(value.split()) <= 70
 
 
 @patch("stats_core.reports.jira_weekly_email.requests.post")
@@ -438,7 +437,7 @@ def test_rewrite_payload_with_ollama_sanitizes_links_and_limits_to_two_sentences
 
     rewritten = rewrite_payload_with_ai(payload, config, {})
     prompt = mock_post.call_args.kwargs["json"]["prompt"]
-    assert "Maximum is 2 sentences." in prompt
+    assert "One compact status line with 2-4 short clauses separated by '; '." in prompt
     assert rewritten["highlights"][0]["headline"] == "Old headline"
     assert rewritten["highlights"][0]["comment"] != "Old comment"
     assert rewritten["next_week_plans"][0]["items"][0]["text"] == "Old plan"
@@ -457,9 +456,7 @@ def test_rewrite_payload_with_ollama_sanitizes_links_and_limits_to_two_sentences
         assert "results:" not in value.lower()
         assert "plan:" not in value.lower()
         assert "update:" not in value.lower()
-        sentences = [s for s in value.replace("?", ".").replace("!", ".").split(".") if s.strip()]
-        assert len(sentences) <= 2
-        assert len(value.split()) <= 48
+        assert len(value.split()) <= 70
 
 
 def test_parse_vacations_excel_sheet_format(tmp_path: Path):
@@ -2447,7 +2444,7 @@ def test_jira_weekly_email_priority_high_values_respects_config_exactly(mock_jir
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
-def test_jira_weekly_email_uses_only_last_week_comment_for_progress(mock_jira_source_cls, tmp_path: Path):
+def test_jira_weekly_email_uses_all_week_comments_for_progress(mock_jira_source_cls, tmp_path: Path):
     issue = _make_issue(
         "ABC-76",
         summary="Task with two updates",
@@ -2522,8 +2519,8 @@ def test_jira_weekly_email_uses_only_last_week_comment_for_progress(mock_jira_so
     text = html_path.read_text(encoding="utf-8")
     assert "Task with two updates (ABC-76)" in text
     assert "Final result delivered." in text
-    assert "Started implementation." not in text
-    assert "Second update completed." not in text
+    assert "Started implementation." in text
+    assert "Second update completed." in text
     assert "Old comment from previous week." not in text
 
 
@@ -2714,3 +2711,73 @@ def test_load_previous_snapshot_accepts_compact_week_filename(tmp_path: Path):
     loaded = load_previous_snapshot(snapshot_base, "OHOSUI", current_week)
     assert loaded is not None
     assert (loaded.get("meta") or {}).get("week_key") == "26w07"
+
+
+def test_comment_hints_joined_aggregates_all_weekly_comments_and_keeps_english():
+    text = _comment_hints_joined(
+        [
+            "Implemented renderer update and fixed 2 regressions.",
+            "results: https://example.com/build/123",
+            "Implemented renderer update and fixed 2 regressions.",
+            "Сделали проверку по задаче",
+        ]
+    )
+    assert "Implemented renderer update and fixed 2 regressions." in text
+    assert "https://example.com/build/123" not in text
+    assert "Progress update recorded in Jira comments." in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_writes_output_file_when_output_name_is_set(mock_jira_source_cls, tmp_path: Path):
+    issues = [
+        _make_issue(
+            "ABC-100",
+            summary="Weekly delivery",
+            issue_type="Task",
+            status="Done",
+            resolution="Done",
+            labels=["reportx"],
+            priority="High",
+            comment_body="Completed weekly target and prepared next integration step.",
+        )
+    ]
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        if "issuekey in (" in str(jql):
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        return issues
+
+    fake_jira = Mock()
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+    output_path = tmp_path / "custom-weekly.html"
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-10",
+            "labels_report": "reportx",
+            "output_file": str(output_path),
+            "output_dir": str(tmp_path),
+            "snapshot_dir": str(tmp_path),
+        },
+    )
+
+    assert output_path.exists()
+    assert (tmp_path / "jira_weekly_email_ABC_26'w11.json").exists()

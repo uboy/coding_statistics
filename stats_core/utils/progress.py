@@ -18,9 +18,24 @@ class TqdmLoggingHandler(logging.Handler):
                 tqdm.write(msg, file=sys.stderr)
             else:
                 print(msg, file=sys.stderr)
+            _refresh_active_bars()
             self.flush()
         except Exception:
             self.handleError(record)
+
+
+def _refresh_active_bars() -> None:
+    try:
+        lock = tqdm.get_lock()
+    except Exception:
+        lock = None
+    if lock:
+        with lock:
+            for bar in list(tqdm._instances):
+                bar.refresh()
+    else:
+        for bar in list(tqdm._instances):
+            bar.refresh()
 
 
 @contextmanager
@@ -72,9 +87,11 @@ class ProgressManager:
         report_name: str,
         logger: logging.Logger | None = None,
         enabled: bool = True,
+        children_enabled: bool = True,
     ) -> None:
         self.logger = logger or logging.getLogger("report.progress")
         self._enabled = enabled
+        self._children_enabled = children_enabled
         self._total = max(int(total_steps or 0), 1)
         self.current = 0
         self._children: list[ChildProgress] = []
@@ -115,7 +132,7 @@ class ProgressManager:
             self._bar.close()
 
     def create_children(self, *, count: int, total: int | None, label: str) -> list["ChildProgress"]:
-        if not self._enabled or not self._tty or count <= 0:
+        if not self._enabled or not self._tty or not self._children_enabled or count <= 0:
             return []
         per_total = None if total is None else max(int(total), 1)
         children: list[ChildProgress] = []

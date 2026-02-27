@@ -586,6 +586,43 @@ def test_build_comments_period_df_without_dates_includes_all_comments():
     assert "second" in str(row["Comments_In_Period"])
 
 
+def test_build_comments_period_df_sorts_by_epic_then_parent():
+    issue_parent = _make_issue_with_comments(
+        "ABC-2",
+        [_make_comment("parent", created="2025-02-01T10:00:00.000+0000")],
+    )
+    issue_parent.fields.customfield_10000 = "EPIC-1"
+    issue_parent.fields.parent = SimpleNamespace(key="ABC-1")
+
+    issue_child = _make_issue_with_comments(
+        "ABC-1",
+        [_make_comment("child", created="2025-02-01T10:00:00.000+0000")],
+    )
+    issue_child.fields.customfield_10000 = "EPIC-1"
+    fake_jira = SimpleNamespace(
+        _options={"server": "https://jira.example.com"},
+        search_issues=Mock(side_effect=[[issue_parent, issue_child]]),
+    )
+    config = ConfigParser()
+    with patch(
+        "stats_core.reports.jira_comprehensive.rewrite_comment_items_with_ai",
+        return_value={},
+    ), patch(
+        "stats_core.reports.jira_comprehensive._fetch_epic_metadata",
+        return_value={"EPIC-1": {"name": "Epic One"}},
+    ):
+        df = build_comments_period_df(
+            fake_jira,
+            "project = ABC ORDER BY created DESC",
+            None,
+            None,
+            config,
+            {"ai_comments_enabled": "false"},
+        )
+    assert df.iloc[0]["Parent"] == ""
+    assert df.iloc[1]["Parent"] == "ABC-1"
+
+
 def test_build_comment_summary_prompt_has_required_fields():
     _, prompt = _build_comment_summary_prompt([{"id": "ABC-1", "comments": "text"}])
     assert "JSON" in prompt

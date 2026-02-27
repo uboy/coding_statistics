@@ -1310,7 +1310,33 @@ def build_comments_period_df(
             row.get("Comments_In_Period"),
         )
 
-    return pd.DataFrame(rows)
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "Issue_Key",
+                "Summary",
+                "Type",
+                "Status",
+                "Priority",
+                "Assignee",
+                "Created",
+                "Epic_Name",
+                "Parent",
+                "Description",
+                "Comments",
+                "AI_Comments",
+                "Comments_In_Period",
+            ]
+        )
+
+    df = pd.DataFrame(rows)
+    df["_epic_sort"] = df["Epic_Name"].fillna("").astype(str).map(_normalize_text)
+    df["_parent_sort"] = df["Parent"].fillna("").astype(str).map(_normalize_text)
+    df["_issue_sort"] = df["Issue_Key"].fillna("").astype(str).map(_normalize_text)
+    df = df.sort_values(by=["_epic_sort", "_parent_sort", "_issue_sort"]).drop(
+        columns=["_epic_sort", "_parent_sort", "_issue_sort"]
+    )
+    return df
 
 
 def _rewrite_summary_items_with_ollama(

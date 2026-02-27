@@ -41,3 +41,17 @@ def test_progress_manager_creates_child_bars():
         children[1].advance(1)
         for child in children:
             child.close()
+
+
+def test_progress_manager_disables_child_bars():
+    logger = logging.getLogger("progress-child-disabled-test")
+    logger.setLevel(logging.INFO)
+    with patch.object(sys.stderr, "isatty", return_value=True):
+        manager = ProgressManager(
+            total_steps=1,
+            report_name="report",
+            logger=logger,
+            children_enabled=False,
+        )
+        children = manager.create_children(count=2, total=4, label="worker")
+        assert children == []

@@ -3,6 +3,7 @@
 - Session: 2026-02-26
 - Mode: Default
 - Status: Resumed; need to fix progress bar stability (bars held at bottom) and wire child bars into parallel execution.
+- Status: Analyzed weekly email target screenshots and current jira_weekly_email implementation; preparing gap analysis and weak-model AI strategy.
 - Notes:
   - Repo lacked coordination/ and state files; created them.
   - team-lead-orchestrator policy file not found.
@@ -69,3 +70,20 @@
   - pytest failed: test_rewrite_comment_items_with_ai_respects_flag expected empty map; updated test for new error marker.
   - pytest run: 105 passed, 1 warning (openpyxl CF).
   - Added agent-memory entry for AI comments insufficient-data reasons.
+  - Added tqdm refresh after log writes; sorted Comments_Period by epic then parent; added sort test.
+  - pytest failed: new sort test missing created date; fixed test data.
+  - pytest failed: sort test used unsupported args; updated test to set epic/parent fields directly.
+  - pytest run: 106 passed, 1 warning (openpyxl CF).
+  - Added agent-memory entry for refreshing active tqdm bars after log emission.
+  - Added progress_children flag to disable child bars (IDE-friendly) and test coverage.
+  - pytest run: 107 passed, 1 warning (openpyxl CF).
+  - Added agent-memory entry for progress_children IDE flag.
+  - progress_children now defaults to stderr TTY detection when not explicitly set.
+  - pytest run: 107 passed, 1 warning (openpyxl CF).
+  - New findings: weekly_email currently takes only latest weekly comment per task (`_comment_hints_joined`) and AI rewrites comments only, which limits status completeness.
+  - New findings: potential output bug in `jira_weekly_email.run` where custom `output_name` path branch does not write html/snapshot due indentation.
+  - Implemented in jira_weekly_email: aggregated weekly comments (not last-only), link/noise cleanup, English fallback for non-English comments, stronger weak-model rewrite prompt, and fixed output_file write/snapshot path logic.
+  - Updated weekly email tests for new prompt constraints and added tests for aggregated comments and output_file path behavior.
+  - Updated legacy weekly-email test to reflect new behavior: include all comments from selected week (exclude previous-week comments).
+  - Full pytest green: 109 passed, 1 warning (openpyxl CF).
+  - Added agent-memory entry for weekly-email aggregated comments + English-safe fallback + output_file write fix.

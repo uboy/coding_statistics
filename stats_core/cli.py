@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import pathlib
+import sys
 from typing import Sequence
 
 from . import config as config_utils
@@ -161,7 +162,17 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     report = report_registry.get(report_name)
     with tqdm_console_logging(root_logger, formatter):
-        progress = ProgressManager(total_steps=1, report_name=report_name, logger=logging.getLogger("report.progress"))
+        progress_children_raw = extra_params.get("progress_children")
+        if progress_children_raw is None:
+            children_enabled = bool(getattr(sys.stderr, "isatty", lambda: False)())
+        else:
+            children_enabled = str(progress_children_raw).strip().lower() not in {"0", "false", "off", "no"}
+        progress = ProgressManager(
+            total_steps=1,
+            report_name=report_name,
+            logger=logging.getLogger("report.progress"),
+            children_enabled=children_enabled,
+        )
         extra_params["progress_manager"] = progress
         logging.getLogger(__name__).info("Report started: %s", report_name)
         try:

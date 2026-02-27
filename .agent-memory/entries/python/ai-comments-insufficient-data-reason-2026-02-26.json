@@ -1,0 +1,17 @@
+{
+  "id": "ai-comments-insufficient-data-reason-2026-02-26",
+  "technology": "python",
+  "skills": ["developer"],
+  "applies_to_systems": ["codex"],
+  "summary": "When AI comment summaries are missing, report explicit reasons (timeout, disabled, model missing, response missing, or insufficient info in comments).",
+  "source_links": ["user-report: AI comments show 'Insufficient data' without reason"],
+  "recorded_on": "2026-02-26",
+  "last_verified_on": "2026-02-26",
+  "verify_after_days": 60,
+  "status": "active",
+  "details": [
+    "Propagate AI failures per issue with a __error__ marker so formatting can render timeout vs. missing info.",
+    "If no comments in period, show 'Insufficient data: no comments in period.'",
+    "If comments exist but summary empty, show 'Insufficient data: not enough information in comments.'"
+  ]
+}
