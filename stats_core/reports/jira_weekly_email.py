@@ -1028,6 +1028,22 @@ def build_report_payload(
             elif _is_in_progress_status(entry.get("Status")):
                 epic_bucket["bugs"]["in_progress"] += 1
 
+        if priority_key in priority_high_values and not is_bug:
+            high_status = "Finished" if entry.get("Finished") else (
+                _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution"))
+            )
+            all_hp_comments = list(entry.get("Comments") or [])
+            for subtask_entry in (subtasks_by_parent.get(issue_key) or []):
+                all_hp_comments.extend(subtask_entry.get("Comments") or [])
+            epic_bucket["high_priority_items"].append(
+                {
+                    "issue_key": issue_key,
+                    "text": _normalize_text(entry.get("Summary")) or issue_key,
+                    "status": high_status,
+                    "comment": _comment_hints_joined(all_hp_comments),
+                }
+            )
+
         feature_key = _normalize_text(entry.get("Parent_Key")) if entry.get("Subtask") else issue_key
         if not feature_key:
             feature_key = issue_key or _normalize_text(entry.get("Summary")) or "feature"
@@ -1074,6 +1090,11 @@ def build_report_payload(
         if epic_id not in report_epic_ids:
             continue
 
+        hp_issue_keys: set[str] = {
+            _normalize_key(item.get("issue_key"))
+            for item in (epic.get("high_priority_items") or [])
+            if item.get("issue_key")
+        }
         feature_statuses: list[dict[str, Any]] = []
         next_week_items: list[dict[str, Any]] = []
         for feature_key, feature in sorted(
@@ -1106,7 +1127,8 @@ def build_report_payload(
                 int(feature.get("closed_tasks") or 0) > 0
                 or len(feature.get("points") or []) > 0
             )
-            if has_results:
+            is_high_priority = _normalize_key(feature_key) in hp_issue_keys
+            if has_results and not is_high_priority:
                 feature_statuses.append(feature_item)
 
             if int(feature.get("in_progress_tasks") or 0) > 0:
@@ -1126,7 +1148,7 @@ def build_report_payload(
         epic["completed_items"] = []
         epic["progress_items"] = []
         epic["parent_subtasks"] = []
-        epic["high_priority_items"] = []
+        # high_priority_items already populated during evidence loop — do not overwrite
         epic.pop("_feature_map", None)
         epic_entries.append(epic)
 
@@ -2398,6 +2420,7 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     results_title = _cfg_html("results", "Key Results and Achievements")
     plans_title = _cfg_html("plans", "Next Week Plans")
     vacations_title = _cfg_html("vacations", "Vacations (next 60 days)")
+    high_priority_title = _cfg_html("high_priority_subtitle", "High priority items")
     bugs_title = _cfg_html("bugs_subtitle", "Bugs summary")
     bugs_summary_template = _normalize_text(
         titles.get(
@@ -2534,6 +2557,30 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
             rows.append("</ul>")
         else:
             rows.append("<p class='muted'>No feature updates in selected period.</p>")
+        high_priority_items = list(epic.get("high_priority_items") or [])
+        if high_priority_items:
+            rows.append("<ul class='lvl2'>")
+            rows.append(f"<li><b>{high_priority_title}</b></li>")
+            rows.append("</ul>")
+            seen_hp: set[str] = set()
+            rows.append("<ul class='lvl3'>")
+            for item in high_priority_items:
+                item_key_norm = _normalize_key(item.get("issue_key"))
+                if item_key_norm and item_key_norm in seen_hp:
+                    continue
+                if item_key_norm:
+                    seen_hp.add(item_key_norm)
+                text = html.escape(_normalize_text(item.get("text")))
+                issue_key_hp = html.escape(_normalize_text(item.get("issue_key")))
+                status_hp = html.escape(_normalize_text(item.get("status")))
+                comment_hp = html.escape(_normalize_text(item.get("comment")))
+                status_suffix = f" — {status_hp}" if status_hp else ""
+                rows.append(f"<li>{text}{f' ({issue_key_hp})' if issue_key_hp else ''}{status_suffix}</li>")
+                if comment_hp:
+                    rows.append("<ul class='lvl4'>")
+                    rows.append(f"<li>{comment_hp}</li>")
+                    rows.append("</ul>")
+            rows.append("</ul>")
         if epic_idx < len(payload.get("epics") or []) - 1:
             rows.append("<div class='divider'></div>")
     if not (payload.get("epics") or []):

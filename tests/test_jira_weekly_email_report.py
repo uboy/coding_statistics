@@ -829,7 +829,8 @@ def test_jira_weekly_email_report_run_html_snapshot_and_diff(mock_jira_source_cl
     assert "(ABC-1)" in week10_text
     assert "Report items" not in week10_text
     assert "Feature delivery (ABC-1)" in week10_text
-    assert "Completed" in week10_text
+    assert "High priority items" in week10_text
+    assert "Finished" in week10_text
     assert "Task completion:" not in week10_text
     assert "Parent task (ABC-2)" in week10_text
     assert "Subtask completed." in week10_text
@@ -1271,9 +1272,9 @@ def test_jira_weekly_email_high_priority_has_comment_and_no_duplicate_in_results
 
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
-    assert "High priority items" not in text
+    assert "High priority items" in text
     assert text.count("High priority task (ABC-74)") == 1
-    assert "Completed" in text
+    assert "Finished" in text
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
@@ -2511,11 +2512,13 @@ def test_jira_weekly_email_priority_high_values_respects_config_exactly(mock_jir
 
     html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
     text = html_path.read_text(encoding="utf-8")
-    assert "High priority items" not in text
+    # ABC-74 priority="High" is in priority_high_values → goes to HP section
+    assert "High priority items" in text
     assert "High priority task (ABC-74)" in text
     assert text.count("High priority task (ABC-74)") == 1
-    assert "Completed" in text
+    # ABC-75 priority="Highest" is NOT in priority_high_values → goes to feature_statuses
     assert "Highest priority task (ABC-75)" in text
+    assert "Completed" in text
     assert "<td class='sec-label'>Summary</td>" not in text
 
 
