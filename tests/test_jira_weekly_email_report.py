@@ -2523,6 +2523,145 @@ def test_jira_weekly_email_priority_high_values_respects_config_exactly(mock_jir
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_hp_always_show_no_weekly_activity(mock_jira_source_cls, tmp_path: Path):
+    """HP task (High) with no weekly comments should appear in high_priority_items with 'No updates this week.'"""
+    hp_task = _make_issue(
+        "ABC-80",
+        summary="High priority open task",
+        issue_type="Task",
+        status="In Progress",
+        resolution="",
+        labels=["reportx"],
+        priority="High",
+        epic_link="EPIC-1",
+        comment_body="",  # no comments
+    )
+
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_str = str(jql)
+        if "issuekey in (EPIC-1)" in jql_str:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "statusCategory = 'In Progress'" in jql_str:
+            return []
+        if "resolutiondate >=" in jql_str:
+            return []  # no closed-in-period
+        # _parse_label_set normalizes to lowercase, so JQL uses "high" not "High"
+        if 'priority in ("high")' in jql_str and "resolution = Unresolved" in jql_str:
+            return [hp_task]  # open HP task
+        if "updated <" in jql_str:
+            return []  # no weekly evidence
+        return []
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "High priority items" in text
+    assert "High priority open task (ABC-80)" in text
+    assert "No updates this week." in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_jira_weekly_email_highest_always_show_no_weekly_activity(mock_jira_source_cls, tmp_path: Path):
+    """Highest task with no weekly comments should appear in feature_statuses with 'No updates this week.'"""
+    highest_task = _make_issue(
+        "ABC-81",
+        summary="Highest priority open task",
+        issue_type="Task",
+        status="In Progress",
+        resolution="",
+        labels=["reportx"],
+        priority="Highest",
+        epic_link="EPIC-1",
+        comment_body="",  # no comments
+    )
+
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_str = str(jql)
+        if "issuekey in (EPIC-1)" in jql_str:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "statusCategory = 'In Progress'" in jql_str:
+            return []
+        if "resolutiondate >=" in jql_str:
+            return []  # no closed-in-period
+        # _parse_label_set normalizes to lowercase, so JQL uses "highest" not "Highest"
+        if 'priority in ("highest")' in jql_str and "resolution = Unresolved" in jql_str:
+            return [highest_task]  # open Highest task
+        if "updated <" in jql_str:
+            return []  # no weekly evidence
+        return []
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    html_path = tmp_path / "jira_weekly_email_ABC_26'w10.html"
+    text = html_path.read_text(encoding="utf-8")
+    assert "High priority items" not in text  # Highest goes to general block, not HP
+    assert "Highest priority open task (ABC-81)" in text
+    results_idx = text.find("Key Results")
+    plans_idx = text.find("Next Week Plans")
+    results_text = text[results_idx:plans_idx]
+    assert "No updates this week." in results_text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
 def test_jira_weekly_email_uses_all_week_comments_for_progress(mock_jira_source_cls, tmp_path: Path):
     issue = _make_issue(
         "ABC-76",

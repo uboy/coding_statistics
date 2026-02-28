@@ -609,6 +609,151 @@ def _count_issues_for_jql(jira: Any, jql: str, fallback_match: Any) -> int:
     return sum(1 for issue in materialized if fallback_match(issue))
 
 
+def collect_priority_always_evidence(
+    jira_source: JiraSource,
+    project: str,
+    week: WeekWindow,
+    priority_values: set[str],
+) -> list[dict[str, Any]]:
+    """Fetch all non-Epic issues with the given priority values that are open or closed in the week period.
+
+    Returns evidence in the same structure as collect_weekly_comment_evidence.
+    Comments are filtered to the week window; issues without week comments will have Comments=[].
+    """
+    if not priority_values:
+        return []
+    jira = jira_source.jira
+    project_key = _safe_project_key(project)
+    start_value = week.start.strftime("%Y-%m-%d")
+    end_exclusive = (week.end + timedelta(days=1)).strftime("%Y-%m-%d")
+    priority_list = ", ".join(f'"{p}"' for p in sorted(priority_values))
+
+    open_jql = (
+        f"project = {project_key} "
+        f"AND priority in ({priority_list}) "
+        "AND resolution = Unresolved "
+        "AND issuetype not in (Epic) "
+        "ORDER BY created DESC"
+    )
+    closed_jql = (
+        f"project = {project_key} "
+        f"AND priority in ({priority_list}) "
+        f"AND resolutiondate >= '{start_value}' "
+        f"AND resolutiondate < '{end_exclusive}' "
+        "AND issuetype not in (Epic) "
+        "ORDER BY created DESC"
+    )
+
+    fields = [
+        "key", "summary", "status", "resolution", "issuetype",
+        "labels", "priority", "customfield_10000", "parent", "comment",
+    ]
+    all_issues: list[Any] = []
+    seen_keys: set[str] = set()
+
+    for jql_query in [open_jql, closed_jql]:
+        start_at = 0
+        max_results = 100
+        while True:
+            issues = jira.search_issues(jql_query, startAt=start_at, maxResults=max_results, fields=fields)
+            for issue in issues:
+                if issue.key not in seen_keys:
+                    seen_keys.add(issue.key)
+                    all_issues.append(issue)
+            if len(issues) < max_results:
+                break
+            start_at += max_results
+
+    if not all_issues:
+        return []
+
+    issue_epic_map, issue_parent_map, epic_names, epic_labels_map, issue_details = _fetch_epic_names(
+        jira_source, jira, all_issues
+    )
+    summary_map: dict[str, str] = {
+        key: _normalize_text((d or {}).get("summary", "")) for key, d in issue_details.items()
+    }
+    status_map: dict[str, str] = {
+        key: _normalize_text((d or {}).get("status", "")) for key, d in issue_details.items()
+    }
+    resolution_map: dict[str, str] = {
+        key: _normalize_text((d or {}).get("resolution", "")) for key, d in issue_details.items()
+    }
+    labels_map: dict[str, list[str]] = {
+        key: [str(label) for label in ((d or {}).get("labels") or [])]
+        for key, d in issue_details.items()
+    }
+
+    evidence: list[dict[str, Any]] = []
+    for issue in all_issues:
+        issue_key = issue.key
+        labels = [str(label) for label in (issue.fields.labels or [])]
+        priority = issue.fields.priority.name if issue.fields.priority else ""
+        status = issue.fields.status.name if issue.fields.status else ""
+        resolution = issue.fields.resolution.name if issue.fields.resolution else ""
+        issue_type_obj = issue.fields.issuetype if issue.fields.issuetype else None
+        issue_type = issue_type_obj.name if issue_type_obj else ""
+        issue_is_subtask = bool(getattr(issue_type_obj, "subtask", False))
+
+        epic_link = issue_epic_map.get(issue_key, "")
+        parent_key = issue_parent_map.get(issue_key, "")
+        if not epic_link and parent_key:
+            epic_link = issue_epic_map.get(parent_key, "")
+        epic_name = epic_names.get(epic_link, "Unknown Epic") if epic_link else "Unknown Epic"
+
+        comments_rows: list[tuple[date, int, str]] = []
+        comment_block = getattr(getattr(issue.fields, "comment", None), "comments", []) or []
+        for comment_idx, comment in enumerate(comment_block):
+            created_dt = _parse_jira_date(getattr(comment, "created", ""))
+            if not created_dt or not (week.start <= created_dt <= week.end):
+                continue
+            body_text = _normalize_text(_comment_body_to_text(getattr(comment, "body", "")))
+            if body_text:
+                comments_rows.append((created_dt, comment_idx, body_text))
+        comments_rows.sort(key=lambda item: (item[0], item[1]))
+        comments_in_week = [item[2] for item in comments_rows]
+
+        parent_finished = False
+        if parent_key:
+            parent_finished = _is_finished(status_map.get(parent_key, ""), resolution_map.get(parent_key, ""))
+
+        evidence.append(
+            {
+                "Issue_Key": issue_key,
+                "Summary": _normalize_text(issue.fields.summary),
+                "Epic_Key": epic_link,
+                "Epic_Name": epic_name,
+                "Parent_Key": parent_key,
+                "Type": issue_type,
+                "Status": status,
+                "Resolution": resolution,
+                "Priority": priority,
+                "Labels": labels,
+                "Epic_Labels": epic_labels_map.get(epic_link, []),
+                "Epic_Labels_Known": epic_link in epic_labels_map,
+                "Comments": comments_in_week,
+                "Finished": _is_finished(status, resolution),
+                "Bug": _normalize_key(issue_type) == "bug",
+                "Subtask": issue_is_subtask or _normalize_key(issue_type) in {"sub-task", "subtask"},
+                "Parent_Finished": parent_finished,
+                "Parent_Summary": summary_map.get(parent_key, ""),
+                "Parent_Status": status_map.get(parent_key, ""),
+                "Parent_Resolution": resolution_map.get(parent_key, ""),
+                "Parent_Labels": labels_map.get(parent_key, []),
+                "AlwaysShow": True,
+            }
+        )
+
+    logger.info(
+        "PRIORITY ALWAYS EVIDENCE: project=%s week=%s priority=%s issues=%s",
+        project,
+        week.key,
+        ",".join(sorted(priority_values)),
+        len(evidence),
+    )
+    return evidence
+
+
 def collect_project_bug_stats(jira_source: JiraSource, project: str) -> dict[str, int]:
     jira = jira_source.jira
     project_key = _safe_project_key(project)
@@ -942,6 +1087,9 @@ def build_report_payload(
     labels_highlights: set[str],
     labels_report: set[str],
     priority_high_values: set[str],
+    priority_always_show_values: set[str] = frozenset(),
+    hp_always_evidence: list[dict[str, Any]] | None = None,
+    always_show_evidence: list[dict[str, Any]] | None = None,
     project_bug_stats: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     highlights: list[dict[str, str]] = []
@@ -980,11 +1128,11 @@ def build_report_payload(
 
         is_bug = bool(entry.get("Bug"))
         priority_key = _normalize_key(entry.get("Priority"))
-        if is_bug and priority_key not in priority_high_values:
+        if is_bug and priority_key not in (priority_high_values | priority_always_show_values):
             continue
 
         resolution_key = _normalize_key(entry.get("Resolution"))
-        if entry.get("Finished") and resolution_key not in _REPORT_CLOSED_RESOLUTION_VALUES:
+        if entry.get("Finished") and resolution_key and resolution_key not in _REPORT_CLOSED_RESOLUTION_VALUES:
             continue
 
         epic_identifier = _epic_id(entry)
@@ -1085,6 +1233,110 @@ def build_report_payload(
         if status_key in blocked_status_values:
             feature["blocked_tasks"] += 1
 
+    # Post-process hp_always_evidence: add HP always-show items not yet in high_priority_items
+    _existing_hp_keys: set[str] = {
+        _normalize_key(item.get("issue_key"))
+        for epic in epics.values()
+        for item in (epic.get("high_priority_items") or [])
+        if item.get("issue_key")
+    }
+    for _hp_entry in (hp_always_evidence or []):
+        _hp_ik = _normalize_text(_hp_entry.get("Issue_Key"))
+        _hp_ik_norm = _normalize_key(_hp_ik)
+        if _normalize_key(_hp_entry.get("Priority")) not in priority_high_values:
+            continue
+        if bool(_hp_entry.get("Bug")):
+            continue
+        if _hp_ik_norm in _existing_hp_keys:
+            # Already present — set "No updates this week." if comment is empty
+            for _epic in epics.values():
+                for _item in (_epic.get("high_priority_items") or []):
+                    if _normalize_key(_item.get("issue_key")) == _hp_ik_norm and not _item.get("comment"):
+                        _item["comment"] = "No updates this week."
+            continue
+        _hp_epic_id = _epic_id(_hp_entry)
+        _hp_epic_key = _normalize_text(_hp_entry.get("Epic_Key"))
+        _hp_epic_name = _normalize_text(_hp_entry.get("Epic_Name")) or "No Epic"
+        _hp_bucket = epics.setdefault(
+            _hp_epic_id,
+            {
+                "epic_key": _hp_epic_key,
+                "epic_name": _hp_epic_name,
+                "report_items": [],
+                "completed_items": [],
+                "progress_items": [],
+                "parent_subtasks": [],
+                "high_priority_items": [],
+                "feature_statuses": [],
+                "next_week_items": [],
+                "closed_tasks": 0,
+                "bugs": {"closed": 0, "in_progress": 0},
+                "_feature_map": {},
+            },
+        )
+        report_epic_ids.add(_hp_epic_id)
+        _hp_comments = list(_hp_entry.get("Comments") or [])
+        _hp_comment_text = _comment_hints_joined(_hp_comments) if _hp_comments else "No updates this week."
+        _hp_status = "Finished" if _hp_entry.get("Finished") else (
+            _normalize_text(_hp_entry.get("Status")) or _normalize_text(_hp_entry.get("Resolution"))
+        )
+        _hp_bucket["high_priority_items"].append(
+            {
+                "issue_key": _hp_ik,
+                "text": _normalize_text(_hp_entry.get("Summary")) or _hp_ik,
+                "status": _hp_status,
+                "comment": _hp_comment_text,
+            }
+        )
+        _existing_hp_keys.add(_hp_ik_norm)
+
+    # Post-process always_show_evidence: add Highest always-show tasks to _feature_map
+    for _as_entry in (always_show_evidence or []):
+        _as_ik = _normalize_text(_as_entry.get("Issue_Key"))
+        _as_priority_key = _normalize_key(_as_entry.get("Priority"))
+        if _as_priority_key not in priority_always_show_values:
+            continue
+        if bool(_as_entry.get("Bug")):
+            continue
+        _as_epic_id = _epic_id(_as_entry)
+        _as_epic_key = _normalize_text(_as_entry.get("Epic_Key"))
+        _as_epic_name = _normalize_text(_as_entry.get("Epic_Name")) or "No Epic"
+        _as_bucket = epics.setdefault(
+            _as_epic_id,
+            {
+                "epic_key": _as_epic_key,
+                "epic_name": _as_epic_name,
+                "report_items": [],
+                "completed_items": [],
+                "progress_items": [],
+                "parent_subtasks": [],
+                "high_priority_items": [],
+                "feature_statuses": [],
+                "next_week_items": [],
+                "closed_tasks": 0,
+                "bugs": {"closed": 0, "in_progress": 0},
+                "_feature_map": {},
+            },
+        )
+        report_epic_ids.add(_as_epic_id)
+        _as_fmap = _as_bucket["_feature_map"]
+        _as_feat_key = _as_ik or _normalize_text(_as_entry.get("Summary")) or "feature"
+        if _as_feat_key in _as_fmap:
+            _as_fmap[_as_feat_key]["always_show"] = True
+        else:
+            _as_comment_points = _collect_comment_points(_as_entry.get("Comments") or [])
+            _as_fmap[_as_feat_key] = {
+                "feature_key": _as_feat_key,
+                "feature_name": _normalize_text(_as_entry.get("Summary")) or _as_feat_key,
+                "issue_keys": {_as_ik} if _as_ik else set(),
+                "points": _as_comment_points,
+                "comments_count": len(_as_entry.get("Comments") or []),
+                "closed_tasks": 1 if _as_entry.get("Finished") else 0,
+                "in_progress_tasks": 1 if not _as_entry.get("Finished") and _is_in_progress_status(_as_entry.get("Status")) else 0,
+                "blocked_tasks": 0,
+                "always_show": True,
+            }
+
     epic_entries: list[dict[str, Any]] = []
     for epic_id, epic in epics.items():
         if epic_id not in report_epic_ids:
@@ -1128,7 +1380,11 @@ def build_report_payload(
                 or len(feature.get("points") or []) > 0
             )
             is_high_priority = _normalize_key(feature_key) in hp_issue_keys
-            if has_results and not is_high_priority:
+            is_always_show = bool(feature.get("always_show"))
+            if (has_results or is_always_show) and not is_high_priority:
+                if is_always_show and not has_results:
+                    feature_item["status"] = "No updates this week."
+                    feature_item["comment"] = "No updates this week."
                 feature_statuses.append(feature_item)
 
             if int(feature.get("in_progress_tasks") or 0) > 0:
@@ -2731,7 +2987,11 @@ class JiraWeeklyEmailReport:
         )
         priority_high_values = _parse_label_set(
             extra_params.get("priority_high_values") or section.get("priority_high_values"),
-            ["High", "Highest"],
+            ["High"],
+        )
+        priority_always_show_values = _parse_label_set(
+            extra_params.get("priority_always_show_values") or section.get("priority_always_show_values"),
+            ["Highest"],
         )
         ai_enabled_value = extra_params.get("ai_enabled")
         if ai_enabled_value is None:
@@ -2742,7 +3002,7 @@ class JiraWeeklyEmailReport:
             ai_enabled_value = config.get("jira_weekly_email", "ai_enabled", fallback="false")
         ai_enabled = _bool_value(ai_enabled_value, False)
         logger.info(
-            "REPORT PARAMS: project=%s week=%s range=[%s..%s] labels_highlights=%s labels_report=%s priority_high_values=%s ai_enabled=%s",
+            "REPORT PARAMS: project=%s week=%s range=[%s..%s] labels_highlights=%s labels_report=%s priority_high_values=%s priority_always_show_values=%s ai_enabled=%s",
             project,
             week.key,
             week.start.strftime("%Y-%m-%d"),
@@ -2750,6 +3010,7 @@ class JiraWeeklyEmailReport:
             ",".join(sorted(labels_highlights)),
             ",".join(sorted(labels_report)),
             ",".join(sorted(priority_high_values)),
+            ",".join(sorted(priority_always_show_values)),
             ai_enabled,
         )
 
@@ -2767,6 +3028,12 @@ class JiraWeeklyEmailReport:
             try:
                 evidence = collect_weekly_comment_evidence(jira_source, project, week)
                 project_bug_stats = collect_project_bug_stats(jira_source, project)
+                hp_always_evidence = collect_priority_always_evidence(
+                    jira_source, project, week, priority_high_values
+                )
+                always_show_evidence = collect_priority_always_evidence(
+                    jira_source, project, week, priority_always_show_values
+                )
             except Exception as exc:
                 logger.error(
                     "jira_weekly_email: failed to fetch Jira data (%s). "
@@ -2784,6 +3051,9 @@ class JiraWeeklyEmailReport:
                 labels_highlights=labels_highlights,
                 labels_report=labels_report,
                 priority_high_values=priority_high_values,
+                priority_always_show_values=priority_always_show_values,
+                hp_always_evidence=hp_always_evidence,
+                always_show_evidence=always_show_evidence,
                 project_bug_stats=project_bug_stats,
             )
 
