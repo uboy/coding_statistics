@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from stats_core.reports.jira_weekly_email import (
     JiraWeeklyEmailReport,
     _comment_hints_joined,
+    build_report_payload,
     load_previous_snapshot,
     parse_vacations_excel,
     render_outlook_html,
@@ -2999,3 +3000,265 @@ def test_jira_weekly_email_writes_output_file_when_output_name_is_set(mock_jira_
 
     assert output_path.exists()
     assert (tmp_path / "jira_weekly_email_ABC_26'w11.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Subtask aggregation tests
+# ---------------------------------------------------------------------------
+
+def _make_subtask_evidence(
+    key: str,
+    parent_key: str,
+    summary: str,
+    *,
+    epic_key: str = "EPIC-1",
+    epic_name: str = "Epic One",
+    epic_labels: list[str] | None = None,
+    labels: list[str] | None = None,
+    comment: str = "Subtask work done.",
+) -> dict:
+    return {
+        "Issue_Key": key,
+        "Summary": summary,
+        "Epic_Key": epic_key,
+        "Epic_Name": epic_name,
+        "Parent_Key": parent_key,
+        "Type": "Sub-task",
+        "Status": "In Progress",
+        "Resolution": "",
+        "Priority": "Medium",
+        "Labels": labels or [],
+        "Epic_Labels": epic_labels or ["reportx"],
+        "Epic_Labels_Known": True,
+        "Comments": [comment],
+        "Finished": False,
+        "Bug": False,
+        "Subtask": True,
+        "Parent_Finished": False,
+        "Parent_Summary": "Parent Feature",
+        "Parent_Status": "In Progress",
+        "Parent_Resolution": "",
+        "Parent_Labels": ["reportx"],
+    }
+
+
+def _make_parent_evidence(
+    key: str,
+    summary: str,
+    *,
+    epic_key: str = "EPIC-1",
+    epic_name: str = "Epic One",
+    epic_labels: list[str] | None = None,
+    labels: list[str] | None = None,
+    status: str = "In Progress",
+    finished: bool = False,
+) -> dict:
+    return {
+        "Issue_Key": key,
+        "Summary": summary,
+        "Epic_Key": epic_key,
+        "Epic_Name": epic_name,
+        "Parent_Key": None,
+        "Type": "Task",
+        "Status": status,
+        "Resolution": "Done" if finished else "",
+        "Priority": "Medium",
+        "Labels": labels or ["reportx"],
+        "Epic_Labels": epic_labels or ["reportx"],
+        "Epic_Labels_Known": True,
+        "Comments": [],
+        "Finished": finished,
+        "Bug": False,
+        "Subtask": False,
+        "Parent_Finished": False,
+        "Parent_Summary": "",
+        "Parent_Status": "",
+        "Parent_Resolution": "",
+        "Parent_Labels": [],
+    }
+
+
+def _make_payload_week():
+    from configparser import ConfigParser
+    from datetime import date
+    cfg = ConfigParser()
+    cfg.read_dict({"jira_weekly_email": {}})
+    return resolve_week_window({"week": "10", "year": "2026"}, now=date(2026, 3, 4))
+
+
+def test_subtask_aggregation_threshold_two_no_aggregate():
+    """2 subtasks → no aggregate_input in feature_statuses item."""
+    week = _make_payload_week()
+    cfg = __import__("configparser").ConfigParser()
+    evidence = [
+        _make_parent_evidence("FEAT-1", "Parent Feature"),
+        _make_subtask_evidence("FEAT-2", "FEAT-1", "Subtask Alpha", comment="Alpha done."),
+        _make_subtask_evidence("FEAT-3", "FEAT-1", "Subtask Beta", comment="Beta done."),
+    ]
+    payload = build_report_payload(
+        evidence,
+        week,
+        cfg,
+        "ABC",
+        labels_highlights=set(),
+        labels_report={"reportx"},
+        priority_high_values={"high"},
+    )
+    feature_items = [
+        item
+        for epic in payload.get("epics") or []
+        for item in (epic.get("feature_statuses") or [])
+    ]
+    assert feature_items, "Expected at least one feature_statuses item"
+    feat = feature_items[0]
+    assert "aggregate_input" not in feat, "2 subtasks must NOT trigger aggregation"
+
+
+def test_subtask_aggregation_three_subtasks_aggregate_input_built():
+    """3 subtasks → aggregate_input present with 3 subtask keys."""
+    week = _make_payload_week()
+    cfg = __import__("configparser").ConfigParser()
+    evidence = [
+        _make_parent_evidence("FEAT-1", "Parent Feature"),
+        _make_subtask_evidence("FEAT-2", "FEAT-1", "Subtask Alpha", comment="Alpha done."),
+        _make_subtask_evidence("FEAT-3", "FEAT-1", "Subtask Beta", comment="Beta done."),
+        _make_subtask_evidence("FEAT-4", "FEAT-1", "Subtask Gamma", comment="Gamma done."),
+    ]
+    payload = build_report_payload(
+        evidence,
+        week,
+        cfg,
+        "ABC",
+        labels_highlights=set(),
+        labels_report={"reportx"},
+        priority_high_values={"high"},
+    )
+    feature_items = [
+        item
+        for epic in payload.get("epics") or []
+        for item in (epic.get("feature_statuses") or [])
+    ]
+    assert feature_items, "Expected at least one feature_statuses item"
+    feat = feature_items[0]
+    assert "aggregate_input" in feat, "3 subtasks must trigger aggregation"
+    assert feat.get("aggregate_status") == "", "aggregate_status must start empty"
+    keys_in_report = feat.get("subtask_keys_in_report") or []
+    assert len(keys_in_report) == 3, f"Expected 3 subtask keys, got {keys_in_report}"
+    assert set(keys_in_report) == {"FEAT-2", "FEAT-3", "FEAT-4"}
+
+
+def test_subtask_aggregation_ai_result_shown_with_debug_suffix():
+    """HTML shows AI aggregate_status with (key1, key2, key3) debug suffix for Key Results."""
+    payload = {
+        "meta": {"project": "ABC", "week_key": "26'w10", "week_start": "2026-03-02", "week_end": "2026-03-08"},
+        "titles": {},
+        "highlights": [],
+        "epics": [
+            {
+                "epic_key": "EPIC-1",
+                "epic_name": "Epic One",
+                "feature_statuses": [
+                    {
+                        "issue_key": "FEAT-1",
+                        "text": "Parent Feature",
+                        "status": "In progress.",
+                        "comment": "In progress.",
+                        "aggregate_status": "Team completed backend integration and unit tests.",
+                        "aggregate_input": "Feature: Parent Feature. Tasks: Subtask Alpha; Subtask Beta; Subtask Gamma. Done: Alpha done; Beta done; Gamma done.",
+                        "subtask_keys_in_report": ["FEAT-2", "FEAT-3", "FEAT-4"],
+                        "closed_tasks": 0,
+                        "issue_keys": ["FEAT-1"],
+                    }
+                ],
+                "next_week_items": [],
+                "high_priority_items": [],
+                "bugs": {"closed": 0, "in_progress": 0},
+            }
+        ],
+        "next_week_plans": [],
+        "summary_rows": [],
+        "summary_totals": {},
+        "vacations": [],
+        "project_bugs": {"in_progress": 0, "open": 0},
+    }
+    html_out = render_outlook_html(payload)
+    assert "Team completed backend integration and unit tests." in html_out
+    assert "FEAT-2, FEAT-3, FEAT-4" in html_out
+
+
+def test_subtask_aggregation_plans_block():
+    """HTML shows AI aggregate_status with debug suffix in Plans block."""
+    payload = {
+        "meta": {"project": "ABC", "week_key": "26'w10", "week_start": "2026-03-02", "week_end": "2026-03-08"},
+        "titles": {},
+        "highlights": [],
+        "epics": [],
+        "next_week_plans": [
+            {
+                "epic_key": "EPIC-1",
+                "epic_name": "Epic One",
+                "items": [
+                    {
+                        "issue_key": "FEAT-1",
+                        "text": "Parent Feature",
+                        "status": "",
+                        "comment": "",
+                        "aggregate_status": "Will finalize remaining subtasks and run integration tests.",
+                        "aggregate_input": "Feature: Parent Feature. Tasks: Subtask Alpha; Subtask Beta; Subtask Gamma. Next week: Work in progress.",
+                        "subtask_keys_in_report": ["FEAT-2", "FEAT-3", "FEAT-4"],
+                        "subtasks": [],
+                    }
+                ],
+            }
+        ],
+        "summary_rows": [],
+        "summary_totals": {},
+        "vacations": [],
+        "project_bugs": {"in_progress": 0, "open": 0},
+    }
+    html_out = render_outlook_html(payload)
+    assert "Will finalize remaining subtasks and run integration tests." in html_out
+    assert "FEAT-2, FEAT-3, FEAT-4" in html_out
+
+
+def test_subtask_aggregation_ai_disabled_fallback():
+    """With AI disabled and 3 subtasks, aggregate_status stays empty → regular status shown, no debug suffix."""
+    week = _make_payload_week()
+    cfg = __import__("configparser").ConfigParser()
+    evidence = [
+        _make_parent_evidence("FEAT-1", "Parent Feature", status="In Progress"),
+        _make_subtask_evidence("FEAT-2", "FEAT-1", "Subtask Alpha", comment="Alpha completed."),
+        _make_subtask_evidence("FEAT-3", "FEAT-1", "Subtask Beta", comment="Beta completed."),
+        _make_subtask_evidence("FEAT-4", "FEAT-1", "Subtask Gamma", comment="Gamma completed."),
+    ]
+    payload = build_report_payload(
+        evidence,
+        week,
+        cfg,
+        "ABC",
+        labels_highlights=set(),
+        labels_report={"reportx"},
+        priority_high_values={"high"},
+    )
+    # aggregate_status starts empty (AI not run)
+    feature_items = [
+        item
+        for epic in payload.get("epics") or []
+        for item in (epic.get("feature_statuses") or [])
+    ]
+    assert feature_items
+    feat = feature_items[0]
+    assert feat.get("aggregate_status") == "", "aggregate_status must be empty when AI not run"
+
+    # Render HTML without AI — should use regular status, no debug suffix
+    payload["meta"] = {"project": "ABC", "week_key": "26'w10", "week_start": "2026-03-02", "week_end": "2026-03-08"}
+    payload.setdefault("titles", {})
+    payload.setdefault("highlights", [])
+    payload.setdefault("vacations", [])
+    payload.setdefault("project_bugs", {"in_progress": 0, "open": 0})
+    payload.setdefault("next_week_plans", [])
+    html_out = render_outlook_html(payload)
+    # No debug suffix since aggregate_status is empty
+    assert "FEAT-2, FEAT-3, FEAT-4" not in html_out
+    # Regular feature name still present
+    assert "Parent Feature" in html_out

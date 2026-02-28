@@ -998,6 +998,38 @@ def _build_compact_plan_status(feature: dict[str, Any]) -> str:
     return compact
 
 
+def _build_aggregate_input(feature: dict[str, Any], mode: str = "result") -> str:
+    """Build a text input for AI aggregation of multiple subtask contributions."""
+    parent_name = _normalize_text(feature.get("feature_name"))
+    subtask_keys = list(feature.get("subtask_issue_keys") or [])
+    subtask_summaries = feature.get("subtask_summaries") or {}
+
+    names = [_normalize_text(subtask_summaries.get(k, k)) for k in subtask_keys[:5]]
+    names_str = "; ".join(n for n in names if n)
+    if len(subtask_keys) > 5:
+        names_str += f"; +{len(subtask_keys) - 5} more"
+
+    points = feature.get("points") or []
+    classified = _classify_progress_points(points)
+
+    if mode == "plan":
+        action = (classified["plan"] + classified["misc"])[:4]
+        notes = "; ".join(action) if action else "Work in progress"
+        text = f"Feature: {parent_name}. Tasks: {names_str}. Next week: {notes}."
+    else:
+        done = (classified["done"] + classified["misc"])[:4]
+        notes = "; ".join(done)
+        if not notes:
+            closed = int(feature.get("closed_tasks") or 0)
+            notes = f"{closed} task(s) completed" if closed else "In progress"
+        text = f"Feature: {parent_name}. Tasks: {names_str}. Done: {notes}."
+
+    words = text.split()
+    if len(words) > 60:
+        text = " ".join(words[:60]).rstrip(".,;:") + "."
+    return text
+
+
 def _build_highlight_progress(entry: dict[str, Any], subtasks: list[dict[str, Any]]) -> str:
     if entry.get("Finished"):
         return "Finished this week."
@@ -1214,11 +1246,16 @@ def build_report_payload(
                 "closed_tasks": 0,
                 "in_progress_tasks": 0,
                 "blocked_tasks": 0,
+                "subtask_issue_keys": [],
+                "subtask_summaries": {},
             },
         )
 
         if issue_key:
             feature["issue_keys"].add(issue_key)
+        if entry.get("Subtask") and issue_key and issue_key not in feature["subtask_summaries"]:
+            feature["subtask_issue_keys"].append(issue_key)
+            feature["subtask_summaries"][issue_key] = _normalize_text(entry.get("Summary"))
         comment_points = _collect_comment_points(entry.get("Comments") or [])
         if comment_points:
             feature["points"].extend(comment_points)
@@ -1375,6 +1412,7 @@ def build_report_payload(
                 "closed_tasks": int(feature.get("closed_tasks") or 0),
                 "issue_keys": sorted(list(feature.get("issue_keys") or []), key=_normalize_key),
             }
+            subtask_keys = list(feature.get("subtask_issue_keys") or [])
             has_results = (
                 int(feature.get("closed_tasks") or 0) > 0
                 or len(feature.get("points") or []) > 0
@@ -1385,18 +1423,25 @@ def build_report_payload(
                 if is_always_show and not has_results:
                     feature_item["status"] = "No updates this week."
                     feature_item["comment"] = "No updates this week."
+                if len(subtask_keys) > 2:
+                    feature_item["aggregate_input"] = _build_aggregate_input(feature, mode="result")
+                    feature_item["subtask_keys_in_report"] = subtask_keys
+                    feature_item["aggregate_status"] = ""
                 feature_statuses.append(feature_item)
 
             if int(feature.get("in_progress_tasks") or 0) > 0:
-                next_week_items.append(
-                    {
-                        "issue_key": feature_key,
-                        "text": feature_item["text"],
-                        "status": plan_text,
-                        "comment": plan_text,
-                        "subtasks": [],
-                    }
-                )
+                plan_item: dict[str, Any] = {
+                    "issue_key": feature_key,
+                    "text": feature_item["text"],
+                    "status": plan_text,
+                    "comment": plan_text,
+                    "subtasks": [],
+                }
+                if len(subtask_keys) > 2:
+                    plan_item["aggregate_input"] = _build_aggregate_input(feature, mode="plan")
+                    plan_item["subtask_keys_in_report"] = subtask_keys
+                    plan_item["aggregate_status"] = ""
+                next_week_items.append(plan_item)
 
         epic["feature_statuses"] = feature_statuses
         epic["next_week_items"] = next_week_items
@@ -1649,11 +1694,17 @@ def _collect_text_targets(payload: dict[str, Any]) -> list[tuple[str, str]]:
     # SECTION: Key Results (epics) -> compact feature statuses
     for epic_idx, epic in enumerate(payload.get("epics") or []):
         for item_idx, item in enumerate(epic.get("feature_statuses") or []):
-            status_text = _normalize_text(item.get("status"))
-            if status_text and not _is_ai_skip_text(status_text):
-                targets.append((f"epics.{epic_idx}.feature_statuses.{item_idx}.status", status_text))
+            aggregate_input = _normalize_text(item.get("aggregate_input"))
+            if aggregate_input:
+                targets.append((f"epics.{epic_idx}.feature_statuses.{item_idx}.aggregate_status", aggregate_input))
+            else:
+                status_text = _normalize_text(item.get("status"))
+                if status_text and not _is_ai_skip_text(status_text):
+                    targets.append((f"epics.{epic_idx}.feature_statuses.{item_idx}.status", status_text))
 
         for item_idx, item in enumerate(epic.get("next_week_items") or []):
+            if item.get("aggregate_input"):
+                continue  # handled via next_week_plans path
             status_text = _normalize_text(item.get("status"))
             if status_text and not _is_ai_skip_text(status_text):
                 targets.append((f"epics.{epic_idx}.next_week_items.{item_idx}.status", status_text))
@@ -1680,12 +1731,16 @@ def _collect_text_targets(payload: dict[str, Any]) -> list[tuple[str, str]]:
     # SECTION: Plans (next_week_plans) -> only comments
     for epic_idx, plan_epic in enumerate(payload.get("next_week_plans") or []):
         for item_idx, item in enumerate(plan_epic.get("items") or []):
-            status_text = _normalize_text(item.get("status"))
-            if status_text and not _is_ai_skip_text(status_text):
-                targets.append((f"next_week_plans.{epic_idx}.items.{item_idx}.status", status_text))
-            comment = _normalize_text(item.get("comment"))
-            if comment and not _is_ai_skip_text(comment):
-                targets.append((f"next_week_plans.{epic_idx}.items.{item_idx}.comment", comment))
+            aggregate_input = _normalize_text(item.get("aggregate_input"))
+            if aggregate_input:
+                targets.append((f"next_week_plans.{epic_idx}.items.{item_idx}.aggregate_status", aggregate_input))
+            else:
+                status_text = _normalize_text(item.get("status"))
+                if status_text and not _is_ai_skip_text(status_text):
+                    targets.append((f"next_week_plans.{epic_idx}.items.{item_idx}.status", status_text))
+                comment = _normalize_text(item.get("comment"))
+                if comment and not _is_ai_skip_text(comment):
+                    targets.append((f"next_week_plans.{epic_idx}.items.{item_idx}.comment", comment))
 
             for subtask_idx, subtask in enumerate(item.get("subtasks") or []):
                 subtask_comment = _normalize_text(subtask.get("comment"))
@@ -1765,6 +1820,10 @@ def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) 
         return {}, ""
 
     def _intent_from_path(path: str) -> str:
+        if path.endswith(".aggregate_status"):
+            if "next_week" in path:
+                return "AGGREGATE_PLAN"
+            return "AGGREGATE"
         if path.startswith("next_week_plans.") or ".next_week_items." in path:
             return "PLAN"
         if path.startswith("highlights."):
@@ -1778,12 +1837,14 @@ def _build_rewrite_prompt(targets: list[tuple[str, str]], start_index: int = 1) 
         "",
         "Rules (follow exactly):",
         "- Output language: English only.",
-        "- Length: 1 compact line, up to 30 words.",
+        "- Length: 1 compact line, up to 35 words.",
         "- No links, no URLs, no commit/PR/MR hashes, no Jira ticket numbers (e.g. PROJ-123).",
         "- No markdown, no bullet markers, no code blocks.",
         "- RESULT item: state what was accomplished; add next step only if explicitly mentioned in input.",
         "- PLAN item: state what will be done next week based on input; use future tense.",
         "- HIGHLIGHT item: state progress only (title is shown separately, do not repeat it).",
+        "- AGGREGATE item: one English line (max 35 words) summarizing COLLECTIVE progress of all listed tasks. Do NOT list individual task names — describe the outcome.",
+        "- AGGREGATE_PLAN item: one English line (max 35 words) on what will be done COLLECTIVELY next week. Future tense. Do NOT list individual task names.",
         "- If input has real content: rewrite it concisely.",
         "- If input has no real content (e.g. only status words): return it unchanged.",
         "",
@@ -2804,11 +2865,18 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
             for item in feature_items:
                 text = html.escape(_normalize_text(item.get("text")))
                 issue_key = html.escape(_normalize_text(item.get("issue_key")))
-                status = html.escape(_normalize_text(item.get("status")))
+                aggregate_status = _normalize_text(item.get("aggregate_status"))
+                regular_status = _normalize_text(item.get("status"))
+                status = html.escape(aggregate_status or regular_status)
+                subtask_keys_r = list(item.get("subtask_keys_in_report") or [])
                 rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
                 if status:
                     rows.append("</ul><ul class='lvl3'>")
-                    rows.append(f"<li>{status}</li>")
+                    if aggregate_status and subtask_keys_r:
+                        debug = html.escape(f" ({', '.join(subtask_keys_r)})")
+                        rows.append(f"<li>{status}{debug}</li>")
+                    else:
+                        rows.append(f"<li>{status}</li>")
                     rows.append("</ul><ul class='lvl2'>")
             rows.append("</ul>")
         else:
@@ -2878,11 +2946,18 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
         for item in epic.get("items") or []:
             text = html.escape(_normalize_text(item.get("text")))
             issue_key = html.escape(_normalize_text(item.get("issue_key")))
-            status = html.escape(_normalize_text(item.get("status")))
+            aggregate_status = _normalize_text(item.get("aggregate_status"))
+            regular_status = _normalize_text(item.get("status"))
+            status = html.escape(aggregate_status or regular_status)
+            subtask_keys_p = list(item.get("subtask_keys_in_report") or [])
             rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
             if status:
                 rows.append("</ul><ul class='lvl3'>")
-                rows.append(f"<li>{status}</li>")
+                if aggregate_status and subtask_keys_p:
+                    debug = html.escape(f" ({', '.join(subtask_keys_p)})")
+                    rows.append(f"<li>{status}{debug}</li>")
+                else:
+                    rows.append(f"<li>{status}</li>")
                 rows.append("</ul><ul class='lvl2'>")
         rows.append("</ul>")
     if not (payload.get("next_week_plans") or []):
