@@ -1102,7 +1102,12 @@ def build_report_payload(
                 "closed_tasks": int(feature.get("closed_tasks") or 0),
                 "issue_keys": sorted(list(feature.get("issue_keys") or []), key=_normalize_key),
             }
-            feature_statuses.append(feature_item)
+            has_results = (
+                int(feature.get("closed_tasks") or 0) > 0
+                or len(feature.get("points") or []) > 0
+            )
+            if has_results:
+                feature_statuses.append(feature_item)
 
             if int(feature.get("in_progress_tasks") or 0) > 0:
                 next_week_items.append(
