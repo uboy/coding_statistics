@@ -3101,14 +3101,28 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
         rows.append("<li>No vacations found for the configured horizon.</li>")
     rows.append("</ul></td></tr>")
 
-    rows.append("</table>")
+    # footer_html as a content-table row (same blue-panel background)
     if footer_html.strip():
-        rows.append(f"<div class='footer-html'>{footer_html}</div>")
-    rows.append("</div>")  # close blue-panel only
+        rows.append(
+            "<tr><td colspan='2'"
+            " style='padding:10px 14px;background-color:rgb(23,88,98);'>"
+            f"{footer_html}"
+            "</td></tr>"
+        )
+
+    rows.append("</table>")
+    rows.append("</div>")  # close blue-panel
+
+    # Separator between blue-panel and risks block
+    rows.append(
+        "<div class='risk-separator'"
+        " style='background-color:#9C5600;height:8px;font-size:1px;line-height:1px;'>"
+        "</div>"
+    )
 
     risk_title = titles.get("risk_title", "Top Issues / Risks / For Help")
     risk_items = payload.get("risk_items") or []
-    rows.append(f"<div style='background-color:rgb(23,88,98);padding:10px 14px 14px;'>")
+    rows.append("<div class='risk-section' style='background-color:#706721;padding:10px 14px 14px;'>")
     rows.append(
         f"<table style='width:100%;border-collapse:collapse;font-size:11px;color:#ffffff;'>"
         f"<thead>"
@@ -3330,6 +3344,8 @@ _DOCX_STYLE_OVERRIDE = """
   .divider          { background-color: #cccccc !important; }
   .muted            { color: #555555 !important; }
   .title            { border-bottom: 1px solid #cccccc !important; }
+  .risk-separator   { background-color: #9C5600 !important; height: 8px !important; }
+  .risk-section     { background-color: #706721 !important; }
   table { width: 100% !important; }
 </style>
 """
