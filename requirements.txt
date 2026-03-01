@@ -32,3 +32,5 @@ tzdata==2025.2
 urllib3==2.4.0
 zope.interface==7.2
 pytest==8.3.4
+# Windows-only: required for outlook_draft output format
+pywin32==311; sys_platform == "win32"

@@ -3061,13 +3061,39 @@ def _check_soffice() -> bool:
 
 
 def _check_outlook_available() -> bool:
-    """Return True if win32com is importable and Outlook COM object is accessible."""
-    try:
-        import win32com.client  # noqa: F401 (optional dependency)
-        win32com.client.Dispatch("Outlook.Application")
-        return True
-    except Exception:
+    """Return True when Classic Outlook is installed and win32com is available.
+
+    Uses two lightweight checks without launching Outlook:
+    1. Windows registry — is the ``Outlook.Application`` COM class registered?
+    2. Python import  — is ``win32com`` (pywin32) installed?
+    """
+    if platform.system() != "Windows":
         return False
+    # Registry check: Classic Outlook registers its COM class here on install.
+    try:
+        import winreg
+        winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, "Outlook.Application")
+    except ImportError:
+        print("[jira_weekly_email] outlook_draft: winreg not available (not Windows?)")
+        return False
+    except (FileNotFoundError, OSError) as exc:
+        print(
+            "[jira_weekly_email] outlook_draft: Outlook.Application COM class not found in registry.\n"
+            "  This means Classic Outlook (Office 2016/2019/2021/2024 LTSC) is not installed.\n"
+            f"  Registry error: {exc}"
+        )
+        return False
+    # Dependency check: win32com must be available to create the draft.
+    try:
+        import win32com.client  # noqa: F401
+    except ImportError:
+        print(
+            "[jira_weekly_email] outlook_draft: pywin32 (win32com) is not installed in this Python environment.\n"
+            f"  Python: {__import__('sys').executable}\n"
+            "  Fix: pip install pywin32"
+        )
+        return False
+    return True
 
 
 def _prompt_user(message: str) -> bool:
@@ -3203,25 +3229,116 @@ def _prepare_html_for_docx(html_text: str) -> str:
 
 
 def _postprocess_docx_page(docx_path: Path) -> None:
-    """Use python-docx to set every section to A4 landscape with 1.5 cm margins.
+    """Set every section to A4 landscape and stretch all tables to the full text width.
 
-    This is more reliable than relying on LibreOffice to honour CSS ``@page`` rules
-    when converting to DOCX.
+    LibreOffice computes table widths at its own internal DPI/page assumption during
+    HTML import, then freezes those widths.  python-docx re-writing the page dimensions
+    afterwards does NOT reflow the table columns — they stay at the narrow widths
+    LibreOffice computed.  We therefore also patch every table's total width and
+    redistribute its column widths proportionally to fill the new text area.
     """
     try:
         from docx import Document  # type: ignore[import]
         from docx.shared import Mm  # type: ignore[import]
         from docx.enum.section import WD_ORIENT  # type: ignore[import]
+        from docx.oxml.ns import qn  # type: ignore[import]
+        from docx.oxml import OxmlElement  # type: ignore[import]
 
         doc = Document(str(docx_path))
+
+        # --- 1. Fix page size -------------------------------------------------
+        margin_mm = 15
         for section in doc.sections:
             section.orientation = WD_ORIENT.LANDSCAPE
             section.page_width = Mm(297)   # A4 landscape
             section.page_height = Mm(210)
-            section.left_margin = Mm(15)
-            section.right_margin = Mm(15)
-            section.top_margin = Mm(15)
-            section.bottom_margin = Mm(15)
+            section.left_margin = Mm(margin_mm)
+            section.right_margin = Mm(margin_mm)
+            section.top_margin = Mm(margin_mm)
+            section.bottom_margin = Mm(margin_mm)
+
+        # Text width in twips (dxa): A4 landscape minus margins on both sides.
+        # 1 mm = 1440/25.4 twips
+        page_w_dxa = round(297 / 25.4 * 1440)          # 16838 dxa
+        margin_dxa = round(margin_mm / 25.4 * 1440)    # 851 dxa each side
+        text_w_dxa = page_w_dxa - 2 * margin_dxa       # usable text width
+
+        # --- 2. Stretch every table to the full text width --------------------
+        def _set_tbl_width(tbl_elem, width_dxa: int) -> None:
+            tblPr = tbl_elem.find(qn("w:tblPr"))
+            if tblPr is None:
+                tblPr = OxmlElement("w:tblPr")
+                tbl_elem.insert(0, tblPr)
+            tblW = tblPr.find(qn("w:tblW"))
+            if tblW is None:
+                tblW = OxmlElement("w:tblW")
+                tblPr.append(tblW)
+            tblW.set(qn("w:w"), str(width_dxa))
+            tblW.set(qn("w:type"), "dxa")
+
+        def _stretch_grid(tbl_elem, text_w_dxa: int) -> None:
+            """Scale the tblGrid column definitions proportionally to fill *text_w_dxa*."""
+            tblGrid = tbl_elem.find(qn("w:tblGrid"))
+            if tblGrid is None:
+                return
+            cols = tblGrid.findall(qn("w:gridCol"))
+            if not cols:
+                return
+            old_total = sum(int(c.get(qn("w:w"), 0)) for c in cols)
+            if old_total == 0:
+                # Distribute evenly
+                per_col = text_w_dxa // len(cols)
+                for c in cols:
+                    c.set(qn("w:w"), str(per_col))
+                return
+            scale = text_w_dxa / old_total
+            # Scale each column and track the remainder to avoid rounding drift
+            new_total = 0
+            for i, c in enumerate(cols):
+                new_w = round(int(c.get(qn("w:w"), 0)) * scale)
+                c.set(qn("w:w"), str(new_w))
+                new_total += new_w
+            # Give any leftover twips to the last column
+            remainder = text_w_dxa - new_total
+            if remainder and cols:
+                last = cols[-1]
+                last.set(qn("w:w"), str(int(last.get(qn("w:w"), 0)) + remainder))
+
+        def _stretch_cells(tbl_elem, text_w_dxa: int) -> None:
+            """Scale every cell's tcW so rows add up to *text_w_dxa*."""
+            for tr in tbl_elem.findall(qn("w:tr")):
+                cells = tr.findall(qn("w:tc"))
+                old_row_w = 0
+                cell_widths = []
+                for tc in cells:
+                    tcPr = tc.find(qn("w:tcPr"))
+                    tcW = tcPr.find(qn("w:tcW")) if tcPr is not None else None
+                    w = int(tcW.get(qn("w:w"), 0)) if tcW is not None else 0
+                    cell_widths.append((tc, tcPr, tcW, w))
+                    old_row_w += w
+                if old_row_w == 0:
+                    continue
+                scale = text_w_dxa / old_row_w
+                new_total = 0
+                for i, (tc, tcPr, tcW, old_w) in enumerate(cell_widths):
+                    new_w = round(old_w * scale)
+                    new_total += new_w
+                    if tcW is not None:
+                        tcW.set(qn("w:w"), str(new_w))
+                        tcW.set(qn("w:type"), "dxa")
+                # Fix rounding drift on the last cell
+                if cell_widths:
+                    tc, tcPr, tcW, _ = cell_widths[-1]
+                    if tcW is not None:
+                        cur = int(tcW.get(qn("w:w"), 0))
+                        tcW.set(qn("w:w"), str(cur + (text_w_dxa - new_total)))
+
+        for table in doc.tables:
+            tbl = table._tbl
+            _set_tbl_width(tbl, text_w_dxa)
+            _stretch_grid(tbl, text_w_dxa)
+            _stretch_cells(tbl, text_w_dxa)
+
         doc.save(str(docx_path))
     except Exception as exc:
         logger.warning("Could not post-process DOCX page settings: %s", exc)
@@ -3303,25 +3420,71 @@ def _convert_html_to_docx(html_path: Path, output_dir: Path) -> Path | None:
             pass
 
 
+def _prepare_html_for_eml(html_text: str) -> str:
+    """Patch HTML for email-client rendering.
+
+    Email clients (Thunderbird, Outlook, Windows Mail) strip ``<style>`` tags,
+    so background colours and ``width`` on ``<div>`` elements are lost.
+    We add HTML attributes and inline styles that every client respects:
+
+    * ``<body>``            → add ``bgcolor`` attribute + inline ``style``
+      so the dark background is preserved outside the sheet.
+    * ``<div class='sheet'>`` → add inline ``style`` with explicit width, border,
+      and background so the 1040 px content column and its border are visible.
+    """
+    # 1. Patch <body>: add bgcolor attribute and inline style for background.
+    html_text = re.sub(
+        r"<body(\s[^>]*)?>",
+        (
+            "<body\\1"
+            " bgcolor='#0b0b0b'"
+            " style='background:#0b0b0b;margin:0;padding:24px;"
+            "font-family:Calibri,\"Segoe UI\",Arial,sans-serif;color:#ffffff;'>"
+        ),
+        html_text,
+        count=1,
+    )
+    # 2. Patch <div class='sheet'>: inline width, border, and background.
+    html_text = re.sub(
+        r"<div\s+class=['\"]sheet['\"](\s[^>]*)?>",
+        (
+            "<div class='sheet'\\1"
+            " style='width:1040px;max-width:100%;margin:0 auto;"
+            "border:2px solid #ffffff;background:#141414;'>"
+        ),
+        html_text,
+        count=1,
+    )
+    return html_text
+
+
 def _save_as_eml(html_text: str, subject: str, output_path: Path) -> None:
     """Write *html_text* as a standards-compliant ``.eml`` file."""
+    prepared = _prepare_html_for_eml(html_text)
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = "noreply@weekly-report"
-    msg.attach(MIMEText(html_text, "html", "utf-8"))
+    msg.attach(MIMEText(prepared, "html", "utf-8"))
     output_path.write_bytes(msg.as_bytes())
     logger.info("EML saved: %s", output_path)
 
 
 def _open_outlook_draft(html_text: str, subject: str) -> None:
     """Open a new Outlook MailItem window pre-filled with *html_text* (Windows only)."""
-    import win32com.client  # noqa: F401 — checked earlier by _check_outlook_available
-    outlook = win32com.client.Dispatch("Outlook.Application")
-    mail = outlook.CreateItem(0)  # 0 = olMailItem
-    mail.Subject = subject
-    mail.HTMLBody = html_text
-    mail.Display()  # opens composer window; user reviews and sends manually
-    logger.info("Outlook draft opened: subject=%r", subject)
+    import pythoncom  # part of pywin32
+    import win32com.client
+    # CoInitialize is required when COM is called from a non-main thread
+    # (e.g. inside tqdm context managers or progress wrappers).
+    pythoncom.CoInitialize()
+    try:
+        outlook = win32com.client.Dispatch("Outlook.Application")
+        mail = outlook.CreateItem(0)  # 0 = olMailItem
+        mail.Subject = subject
+        mail.HTMLBody = html_text
+        mail.Display()  # opens the composer window; user reviews and sends manually
+        logger.info("Outlook draft opened: subject=%r", subject)
+    finally:
+        pythoncom.CoUninitialize()
 
 
 @registry.register
