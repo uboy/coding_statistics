@@ -3116,7 +3116,7 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     # Separator between blue-panel and risks block
     rows.append(
         "<div class='risk-separator'"
-        " style='background-color:#9C5600;height:8px;font-size:1px;line-height:1px;'>"
+        " style='background-color:#9C5600;height:24px;font-size:1px;line-height:1px;'>"
         "</div>"
     )
 
@@ -3344,7 +3344,7 @@ _DOCX_STYLE_OVERRIDE = """
   .divider          { background-color: #cccccc !important; }
   .muted            { color: #555555 !important; }
   .title            { border-bottom: 1px solid #cccccc !important; }
-  .risk-separator   { background-color: #9C5600 !important; height: 8px !important; }
+  .risk-separator   { background-color: #9C5600 !important; height: 24px !important; }
   .risk-section     { background-color: #706721 !important; }
   table { width: 100% !important; }
 </style>
@@ -3390,7 +3390,22 @@ def _prepare_html_for_docx(html_text: str) -> str:
         " bgcolor='#ddeef2' style='background-color:#ddeef2;'>",
         1,
     )
-    # 7. Inject light-theme CSS block right before </head>.
+    # 7. Patch risk-separator and risk-section with explicit inline backgrounds for LibreOffice.
+    #    The _DOCX_STYLE_OVERRIDE has `body * { background-color: transparent !important }`
+    #    which can suppress these divs — direct inline styles are more reliable.
+    html_text = re.sub(
+        r"<div\s+class='risk-separator'[^>]*>",
+        "<div class='risk-separator'"
+        " style='background-color:#9C5600;height:24px;font-size:1px;line-height:1px;'>",
+        html_text,
+    )
+    html_text = re.sub(
+        r"<div\s+class='risk-section'[^>]*>",
+        "<div class='risk-section'"
+        " style='background-color:#706721;padding:10px 14px 14px;'>",
+        html_text,
+    )
+    # 8. Inject light-theme CSS block right before </head>.
     if "</head>" in html_text:
         return html_text.replace("</head>", f"{_DOCX_STYLE_OVERRIDE}</head>", 1)
     return _DOCX_STYLE_OVERRIDE + html_text
@@ -3660,6 +3675,42 @@ def _prepare_html_for_eml(html_text: str) -> str:
         "<table class='content' cellspacing='0' cellpadding='0'"
         " bgcolor='#175862' style='background-color:rgb(23,88,98);'>",
         1,
+    )
+    # 7. Convert risk-separator div to a table row — Outlook's Word engine ignores
+    #    background-color on div elements entirely.
+    html_text = re.sub(
+        r"<div\s+class='risk-separator'[^>]*>\s*</div>",
+        (
+            "<table role='presentation' width='100%' border='0' cellspacing='0' cellpadding='0'"
+            " bgcolor='#9C5600' style='background-color:#9C5600;'>"
+            "<tr><td height='24' bgcolor='#9C5600'"
+            " style='background-color:#9C5600;height:24px;font-size:1px;line-height:1px;'>"
+            "&nbsp;</td></tr></table>"
+        ),
+        html_text,
+        count=1,
+    )
+    # 8. Convert risk-section div opening to a bgcolor table for Outlook.
+    html_text = re.sub(
+        r"<div\s+class='risk-section'[^>]*>",
+        (
+            "<table role='presentation' width='100%' border='0' cellspacing='0' cellpadding='0'"
+            " bgcolor='#706721' style='background-color:#706721;'>"
+            "<tr><td bgcolor='#706721'"
+            " style='background-color:#706721;padding:10px 14px 14px;'>"
+        ),
+        html_text,
+        count=1,
+    )
+    # 9. Convert risk-section closing </div> to table close.
+    #    After step 4, the sheet is already a table, so the HTML ends:
+    #      ...risk-content...</div>\n</td></tr></table></body></html>
+    #    The leading </div> is now the risk-section cell close (step 8 made it a <td>).
+    html_text = re.sub(
+        r"</div>\s*</td></tr></table></body></html>",
+        "</td></tr></table>\n</td></tr></table></body></html>",
+        html_text,
+        count=1,
     )
     return html_text
 
