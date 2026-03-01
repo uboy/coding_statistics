@@ -3338,8 +3338,9 @@ _DOCX_STYLE_OVERRIDE = """
     max-width: 100% !important;
     border: 1px solid #cccccc !important;
   }
-  .label, .sec-label { background-color: #e8e8e8 !important; }
-  .value            { background-color: #f5f5f5 !important; }
+  .label     { background-color: rgb(63,78,0) !important; color: #ffffff !important; }
+  .sec-label { background-color: #e8e8e8 !important; }
+  .value     { background-color: #f5f5f5 !important; }
   .blue-panel       { background-color: #ddeef2 !important; }
   .divider          { background-color: #cccccc !important; }
   .muted            { color: #555555 !important; }
@@ -3405,7 +3406,36 @@ def _prepare_html_for_docx(html_text: str) -> str:
         " style='background-color:#706721;padding:10px 14px 14px;'>",
         html_text,
     )
-    # 8. Inject light-theme CSS block right before </head>.
+    # 8. Fix risk-section table for LibreOffice DOCX.
+    #    LibreOffice honors inline style attributes over !important stylesheet rules,
+    #    so we must patch the inline styles directly.
+    #    a) The risk table carries `color:#ffffff` inline — patch to black so text is readable.
+    html_text = html_text.replace(
+        "font-size:11px;color:#ffffff;",
+        "font-size:11px;color:#000000;",
+    )
+    #    b) Column-header row uses rgba(0,0,0,.3) which LibreOffice renders as solid black
+    #       (it ignores the alpha channel) → replace with a readable solid grey.
+    html_text = html_text.replace(
+        "background:rgba(0,0,0,.3);font-weight:700;",
+        "background-color:#cccccc;font-weight:700;",
+    )
+    #    c) Data-row backgrounds use rgba(0,0,0,.12) / rgba(0,0,0,.04) — same black-rendering
+    #       issue → strip them so LibreOffice uses its default (white) background.
+    html_text = re.sub(r"\bbackground:rgba\(0,0,0,\.(?:12|04)\);", "", html_text)
+    #    d) Patch .label cells directly: LibreOffice may not honour the !important CSS rule
+    #       for classes, so set the olive-green background and white text inline.
+    html_text = re.sub(
+        r"<td\s+class='label'([^>]*)>",
+        r"<td class='label'\1 style='background-color:rgb(63,78,0);color:#ffffff;'>",
+        html_text,
+    )
+    html_text = re.sub(
+        r"<td\s+class='label small'([^>]*)>",
+        r"<td class='label small'\1 style='background-color:rgb(63,78,0);color:#ffffff;'>",
+        html_text,
+    )
+    # 9. Inject light-theme CSS block right before </head>.
     if "</head>" in html_text:
         return html_text.replace("</head>", f"{_DOCX_STYLE_OVERRIDE}</head>", 1)
     return _DOCX_STYLE_OVERRIDE + html_text
