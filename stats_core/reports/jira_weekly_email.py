@@ -1165,7 +1165,9 @@ def build_report_payload(
 
         resolution_key = _normalize_key(entry.get("Resolution"))
         if entry.get("Finished") and resolution_key and resolution_key not in _REPORT_CLOSED_RESOLUTION_VALUES:
-            continue
+            # HP tasks bypass the resolution filter — they go to high_priority_items regardless of resolution
+            if priority_key not in priority_high_values:
+                continue
 
         epic_identifier = _epic_id(entry)
         epic_labels_norm = {_normalize_key(label) for label in (entry.get("Epic_Labels") or [])}
@@ -1209,6 +1211,10 @@ def build_report_payload(
                 epic_bucket["bugs"]["in_progress"] += 1
 
         if priority_key in priority_high_values and not entry.get("Subtask"):
+            logger.debug(
+                "HP_ITEM: issue_key=%s priority=%s is_bug=%s resolution=%s finished=%s",
+                issue_key, priority_key, is_bug, resolution_key, entry.get("Finished"),
+            )
             high_status = "Finished" if entry.get("Finished") else (
                 _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution"))
             )
@@ -1438,6 +1444,10 @@ def build_report_payload(
             )
             is_high_priority = _normalize_key(feature_key) in hp_issue_keys
             is_always_show = bool(feature.get("always_show"))
+            logger.debug(
+                "FEATURE_CLASSIFY: feature_key=%s has_results=%s is_high_priority=%s is_always_show=%s hp_issue_keys=%s",
+                feature_key, has_results, is_high_priority, is_always_show, hp_issue_keys,
+            )
             if (has_results or is_always_show) and not is_high_priority:
                 if is_always_show and not has_results:
                     feature_item["status"] = "No updates this week."

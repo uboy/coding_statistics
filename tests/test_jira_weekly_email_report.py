@@ -3717,3 +3717,90 @@ def test_highest_bug_stays_in_key_results_not_hp_block(mock_jira_source_cls, tmp
     assert "Highest priority bug (ABC-103)" in text
     # NOT in HP section (no HP block should exist since no High-priority tasks)
     assert "High priority items" not in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_hp_task_with_non_standard_resolution_appears_in_hp_block(mock_jira_source_cls, tmp_path: Path):
+    """HP task closed with non-standard resolution (Duplicate, Won't Fix, etc.) must still appear in HP block."""
+    hp_task_duplicate = _make_issue(
+        "ABC-110",
+        summary="HP task duplicate resolution",
+        issue_type="Task",
+        status="Closed",
+        resolution="Duplicate",
+        labels=["reportx"],
+        priority="High",
+        epic_link="EPIC-1",
+        comment_body="Closed as duplicate of ABC-5.",
+    )
+    hp_bug_wontfix = _make_issue(
+        "ABC-111",
+        summary="HP bug wont fix",
+        issue_type="Bug",
+        status="Done",
+        resolution="Won't Fix",
+        labels=["reportx"],
+        priority="High",
+        epic_link="EPIC-1",
+        comment_body="Not a bug, design intent.",
+    )
+
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_str = str(jql)
+        if "issuekey in (EPIC-1)" in jql_str:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "issuekey in (ABC-110)" in jql_str:
+            return [hp_task_duplicate]
+        if "issuekey in (ABC-111)" in jql_str:
+            return [hp_bug_wontfix]
+        if "statusCategory = 'In Progress'" in jql_str:
+            return []
+        if 'priority in ("high")' in jql_str and "resolution = Unresolved" in jql_str:
+            return []
+        if "updated >=" in jql_str:
+            return [hp_task_duplicate, hp_bug_wontfix]
+        return []
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    text = (tmp_path / "jira_weekly_email_ABC_26'w10.html").read_text(encoding="utf-8")
+    # Both HP tasks must appear in HP block regardless of resolution
+    assert "High priority items" in text
+    assert "HP task duplicate resolution (ABC-110)" in text
+    assert "HP bug wont fix (ABC-111)" in text
+    # Neither must appear as standalone Key Results items
+    key_results_idx = text.find("Key Results")
+    hp_idx = text.find("High priority items")
+    if key_results_idx != -1 and hp_idx != -1:
+        key_results_section = text[key_results_idx:hp_idx]
+        assert "HP task duplicate resolution (ABC-110)" not in key_results_section
+        assert "HP bug wont fix (ABC-111)" not in key_results_section
