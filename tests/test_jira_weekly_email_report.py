@@ -3513,3 +3513,207 @@ def test_highest_subtask_in_always_show_evidence_grouped_under_parent(mock_jira_
     assert "High priority items" not in text
     # Subtask must NOT appear as standalone feature
     assert "Highest subtask (ABC-95)" not in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_hp_bug_in_weekly_evidence_appears_in_hp_block(mock_jira_source_cls, tmp_path: Path):
+    """HP (High) bug closed with Done resolution should appear in high_priority_items, not Key Results."""
+    hp_bug = _make_issue(
+        "ABC-101",
+        summary="High priority bug",
+        issue_type="Bug",
+        status="Done",
+        resolution="Done",
+        labels=["reportx"],
+        priority="High",
+        epic_link="EPIC-1",
+        comment_body="Fixed root cause.",
+    )
+
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_str = str(jql)
+        if "issuekey in (EPIC-1)" in jql_str:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "statusCategory = 'In Progress'" in jql_str:
+            return []
+        if 'priority in ("high")' in jql_str and "resolution = Unresolved" in jql_str:
+            return []  # no open HP tasks for always-show
+        if "updated <" in jql_str:
+            return []
+        # main weekly evidence query
+        return [hp_bug]
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    text = (tmp_path / "jira_weekly_email_ABC_26'w10.html").read_text(encoding="utf-8")
+    # HP bug must appear in HP block
+    assert "High priority items" in text
+    assert "High priority bug (ABC-101)" in text
+    # Must NOT appear as a standalone feature in Key Results
+    key_results_idx = text.find("Key Results")
+    hp_idx = text.find("High priority items")
+    if key_results_idx != -1 and hp_idx != -1:
+        key_results_section = text[key_results_idx:hp_idx]
+        assert "High priority bug (ABC-101)" not in key_results_section
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_hp_bug_in_hp_always_evidence_appears_in_hp_block(mock_jira_source_cls, tmp_path: Path):
+    """HP (High) bug from always-show query with no weekly activity should appear in HP block with 'No updates this week.'"""
+    hp_bug = _make_issue(
+        "ABC-102",
+        summary="Always-show HP bug",
+        issue_type="Bug",
+        status="In Progress",
+        resolution="",
+        labels=["reportx"],
+        priority="High",
+        epic_link="EPIC-1",
+        comment_body="",  # no weekly comments
+    )
+
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_str = str(jql)
+        if "issuekey in (EPIC-1)" in jql_str:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "statusCategory = 'In Progress'" in jql_str:
+            return []
+        if 'priority in ("high")' in jql_str and "resolution = Unresolved" in jql_str:
+            return [hp_bug]  # HP always-show query
+        if "updated <" in jql_str:
+            return []
+        return []
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    text = (tmp_path / "jira_weekly_email_ABC_26'w10.html").read_text(encoding="utf-8")
+    assert "High priority items" in text
+    assert "Always-show HP bug (ABC-102)" in text
+    assert "No updates this week." in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_highest_bug_stays_in_key_results_not_hp_block(mock_jira_source_cls, tmp_path: Path):
+    """Highest priority bug should appear in Key Results (feature_statuses), NOT in high_priority_items."""
+    highest_bug = _make_issue(
+        "ABC-103",
+        summary="Highest priority bug",
+        issue_type="Bug",
+        status="Done",
+        resolution="Done",
+        labels=["reportx"],
+        priority="Highest",
+        epic_link="EPIC-1",
+        comment_body="Critical fix applied.",
+    )
+
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_str = str(jql)
+        if "issuekey in (EPIC-1)" in jql_str:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "issuekey in (ABC-103)" in jql_str:
+            return [highest_bug]
+        if "statusCategory = 'In Progress'" in jql_str:
+            return []
+        if 'priority in ("high")' in jql_str:
+            return []
+        if 'priority in ("highest")' in jql_str:
+            return []  # always_show_evidence skips bugs anyway; return nothing
+        if "updated >=" in jql_str:  # main weekly evidence query
+            return [highest_bug]
+        return []
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    text = (tmp_path / "jira_weekly_email_ABC_26'w10.html").read_text(encoding="utf-8")
+    # Highest bug appears in Key Results
+    assert "Highest priority bug (ABC-103)" in text
+    # NOT in HP section (no HP block should exist since no High-priority tasks)
+    assert "High priority items" not in text

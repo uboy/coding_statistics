@@ -1208,7 +1208,7 @@ def build_report_payload(
             elif _is_in_progress_status(entry.get("Status")):
                 epic_bucket["bugs"]["in_progress"] += 1
 
-        if priority_key in priority_high_values and not is_bug and not entry.get("Subtask"):
+        if priority_key in priority_high_values and not entry.get("Subtask"):
             high_status = "Finished" if entry.get("Finished") else (
                 _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution"))
             )
@@ -1281,8 +1281,6 @@ def build_report_payload(
         _hp_ik = _normalize_text(_hp_entry.get("Issue_Key"))
         _hp_ik_norm = _normalize_key(_hp_ik)
         if _normalize_key(_hp_entry.get("Priority")) not in priority_high_values:
-            continue
-        if bool(_hp_entry.get("Bug")):
             continue
         if bool(_hp_entry.get("Subtask")):
             continue
