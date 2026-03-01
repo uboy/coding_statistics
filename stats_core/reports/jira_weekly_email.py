@@ -8,10 +8,17 @@ import difflib
 import html
 import json
 import logging
+import platform
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 from configparser import ConfigParser
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -32,6 +39,9 @@ logger = logging.getLogger(__name__)
 _DONE_VALUES = {"done", "resolved", "closed"}
 _REPORT_CLOSED_RESOLUTION_VALUES = {"done", "resolved"}
 _IN_PROGRESS_VALUES = {"in progress", "in-progress"}
+
+_SOFFICE_DOWNLOAD_URL = "https://www.libreoffice.org/download/download-libreoffice/"
+_OUTLOOK_INFO_URL = "https://www.microsoft.com/en-us/microsoft-365/outlook/email-and-calendar-software-microsoft-outlook"
 
 
 @dataclass(frozen=True)
@@ -3024,6 +3034,296 @@ def save_snapshot(path: Path, payload: dict[str, Any], week: WeekWindow) -> None
     path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Output format dependency checks and format-specific renderers
+# ---------------------------------------------------------------------------
+
+_SOFFICE_WINDOWS_PATHS = [
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+]
+
+
+def _find_soffice() -> str | None:
+    """Return the full path to the soffice binary, or None if not found."""
+    found = shutil.which("soffice")
+    if found:
+        return found
+    for candidate in _SOFFICE_WINDOWS_PATHS:
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def _check_soffice() -> bool:
+    """Return True if the soffice binary is findable."""
+    return _find_soffice() is not None
+
+
+def _check_outlook_available() -> bool:
+    """Return True if win32com is importable and Outlook COM object is accessible."""
+    try:
+        import win32com.client  # noqa: F401 (optional dependency)
+        win32com.client.Dispatch("Outlook.Application")
+        return True
+    except Exception:
+        return False
+
+
+def _prompt_user(message: str) -> bool:
+    """Print *message* and ask the user to confirm (y/N).  Returns True for 'y'."""
+    try:
+        answer = input(f"{message} [y/N] ").strip().lower()
+        return answer == "y"
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def _resolve_output_format_deps(output_formats: list[str]) -> list[str]:
+    """Validate runtime dependencies for requested output formats.
+
+    * ``docx``  — requires LibreOffice ``soffice`` binary.
+    * ``outlook_draft`` — requires Windows + Microsoft Outlook (COM).
+
+    Interactive prompts guide the user when a dependency is missing.
+    If the user refuses to continue, the process exits immediately.
+    Adjusted format list is returned (e.g. ``outlook_draft`` replaced by ``eml``).
+    """
+    # Normalize: split comma-separated values so both "html docx" and "html,docx" work.
+    formats: list[str] = [
+        part.strip()
+        for token in output_formats
+        for part in token.split(",")
+        if part.strip()
+    ]
+
+    if "docx" in formats:
+        if not _check_soffice():
+            print(
+                "\n[jira_weekly_email] 'docx' output requires LibreOffice (soffice).\n"
+                f"  Download and install from: {_SOFFICE_DOWNLOAD_URL}\n"
+                "  After installation, restart the script to enable DOCX export.\n"
+            )
+            if _prompt_user("Continue without DOCX conversion?"):
+                formats.remove("docx")
+                logger.info("DOCX conversion skipped: soffice not found.")
+            else:
+                logger.error("Aborted by user: soffice not available.")
+                sys.exit(1)
+
+    if "outlook_draft" in formats:
+        if platform.system() != "Windows":
+            print(
+                "\n[jira_weekly_email] 'outlook_draft' requires Windows + Microsoft Outlook.\n"
+                f"  More info: {_OUTLOOK_INFO_URL}\n"
+                "  An EML file can be opened in any email client instead.\n"
+            )
+            if _prompt_user("Generate EML file instead?"):
+                formats[formats.index("outlook_draft")] = "eml"
+                logger.info("Falling back to EML: not running on Windows.")
+            else:
+                logger.error("Aborted by user: Outlook not available on this platform.")
+                sys.exit(1)
+        elif not _check_outlook_available():
+            print(
+                "\n[jira_weekly_email] 'outlook_draft' requires Microsoft Outlook to be installed.\n"
+                f"  Download from: {_OUTLOOK_INFO_URL}\n"
+                "  An EML file can be opened in Outlook once installed.\n"
+            )
+            if _prompt_user("Generate EML file instead?"):
+                formats[formats.index("outlook_draft")] = "eml"
+                logger.info("Falling back to EML: Outlook COM not accessible.")
+            else:
+                logger.error("Aborted by user: Outlook COM not accessible.")
+                sys.exit(1)
+
+    return formats
+
+
+# CSS injected into the HTML before DOCX conversion to produce a light,
+# print-friendly document instead of the dark-themed email layout.
+_DOCX_STYLE_OVERRIDE = """
+<style id='docx-override'>
+  @page { size: A4 landscape; margin: 1.5cm; }
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+  /* Reset all dark backgrounds and white text to black-on-white */
+  body *, .sheet, .sheet * {
+    color: #000000 !important;
+    background-color: transparent !important;
+    background-image: none !important;
+    box-shadow: none !important;
+  }
+  /* Restore light structural backgrounds */
+  .sheet {
+    width: 100% !important;
+    max-width: 100% !important;
+    border: 1px solid #cccccc !important;
+  }
+  .label, .sec-label { background-color: #e8e8e8 !important; }
+  .value            { background-color: #f5f5f5 !important; }
+  .blue-panel       { background-color: #ddeef2 !important; }
+  .divider          { background-color: #cccccc !important; }
+  .muted            { color: #555555 !important; }
+  .title            { border-bottom: 1px solid #cccccc !important; }
+  table { width: 100% !important; }
+</style>
+"""
+
+
+def _prepare_html_for_docx(html_text: str) -> str:
+    """Return a light-themed variant of *html_text* suitable for LibreOffice DOCX conversion.
+
+    LibreOffice's HTML importer does not implement CSS cascade like a browser.
+    ``!important`` overrides in an injected stylesheet are ignored for page-layout
+    decisions.  We therefore patch the HTML source directly:
+      - replace the fixed ``.sheet`` pixel width with 100 %
+      - strip ``margin:0 auto`` centering (irrelevant / harmful in DOCX)
+      - remove the ``class='sheet'`` attribute so LibreOffice does not create a
+        fixed-width text frame for that div (the main cause of the narrow column)
+      - inject the light-theme CSS block (colours)
+    Page size / orientation is handled separately via python-docx post-processing.
+    """
+    # 1. Remove the fixed pixel width from the CSS rule.
+    html_text = re.sub(r'\bwidth\s*:\s*1040px\b', 'width:100%', html_text)
+    # 2. Remove centering that is meaningless in DOCX layout.
+    html_text = re.sub(r';\s*margin\s*:\s*0\s+auto\b', '', html_text)
+    # 3. Strip class='sheet' from the outer container div so LibreOffice does not
+    #    treat it as a named, width-constrained text frame.
+    html_text = re.sub(r"<div\s+class=['\"]sheet['\"]>", "<div>", html_text)
+    # 4. Inject light-theme CSS block right before </head>.
+    if "</head>" in html_text:
+        return html_text.replace("</head>", f"{_DOCX_STYLE_OVERRIDE}</head>", 1)
+    return _DOCX_STYLE_OVERRIDE + html_text
+
+
+def _postprocess_docx_page(docx_path: Path) -> None:
+    """Use python-docx to set every section to A4 landscape with 1.5 cm margins.
+
+    This is more reliable than relying on LibreOffice to honour CSS ``@page`` rules
+    when converting to DOCX.
+    """
+    try:
+        from docx import Document  # type: ignore[import]
+        from docx.shared import Mm  # type: ignore[import]
+        from docx.enum.section import WD_ORIENT  # type: ignore[import]
+
+        doc = Document(str(docx_path))
+        for section in doc.sections:
+            section.orientation = WD_ORIENT.LANDSCAPE
+            section.page_width = Mm(297)   # A4 landscape
+            section.page_height = Mm(210)
+            section.left_margin = Mm(15)
+            section.right_margin = Mm(15)
+            section.top_margin = Mm(15)
+            section.bottom_margin = Mm(15)
+        doc.save(str(docx_path))
+    except Exception as exc:
+        logger.warning("Could not post-process DOCX page settings: %s", exc)
+
+
+def _convert_html_to_docx(html_path: Path, output_dir: Path) -> Path | None:
+    """Convert *html_path* to DOCX via LibreOffice headless.
+
+    A light-themed version of the HTML is written to a temp file first so the
+    dark email stylesheet does not carry over into the document.
+    Returns the resulting ``.docx`` path on success, or ``None`` on failure.
+    """
+    soffice_bin = _find_soffice()
+    if not soffice_bin:
+        logger.error("soffice binary not found; cannot convert to DOCX.")
+        return None
+
+    # Write a light-themed temp copy of the HTML so the dark email CSS
+    # does not produce invisible white-on-white text in the DOCX.
+    original_html = html_path.read_text(encoding="utf-8")
+    prepared_html = _prepare_html_for_docx(original_html)
+    tmp_file = tempfile.NamedTemporaryFile(
+        suffix=".html", dir=output_dir, delete=False, mode="w", encoding="utf-8"
+    )
+    tmp_file.write(prepared_html)
+    tmp_file.close()
+    tmp_path = Path(tmp_file.name)
+    try:
+        result = subprocess.run(
+            [
+                soffice_bin,
+                "--headless",
+                "--norestore",          # skip crash-recovery dialog
+                "--nocrashreport",      # suppress crash reporter
+                "--infilter=HTML (StarWriter)",          # explicit HTML import filter
+                "--convert-to", "docx:MS Word 2007 XML",  # explicit export filter
+                "--outdir", str(output_dir),
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        # LibreOffice writes informational lines to stderr even on success;
+        # treat rc != 0 as failure only when output mentions a real error.
+        stderr_lc = result.stderr.strip().lower()
+        has_error = result.returncode != 0 and (
+            "error" in stderr_lc or "failed" in stderr_lc or not result.stderr.strip()
+        )
+        if has_error:
+            logger.error(
+                "soffice conversion failed (rc=%s): %s",
+                result.returncode,
+                result.stderr.strip() or result.stdout.strip(),
+            )
+            return None
+        # soffice names the output after the *input* stem (i.e. the temp file stem).
+        tmp_docx = output_dir / (tmp_path.stem + ".docx")
+        desired_docx = output_dir / (html_path.stem + ".docx")
+        if tmp_docx.exists():
+            # Path.replace() overwrites the destination on Windows (unlike Path.rename()).
+            tmp_docx.replace(desired_docx)
+        elif not desired_docx.exists():
+            logger.error("soffice ran successfully but DOCX output not found at %s", tmp_docx)
+            return None
+        _postprocess_docx_page(desired_docx)
+        return desired_docx
+    except subprocess.TimeoutExpired:
+        logger.error("soffice conversion timed out after 120 s.")
+        return None
+    except Exception as exc:
+        logger.error("soffice conversion error: %s", exc)
+        return None
+    finally:
+        # Always remove the temporary light-themed HTML file.
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _save_as_eml(html_text: str, subject: str, output_path: Path) -> None:
+    """Write *html_text* as a standards-compliant ``.eml`` file."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = "noreply@weekly-report"
+    msg.attach(MIMEText(html_text, "html", "utf-8"))
+    output_path.write_bytes(msg.as_bytes())
+    logger.info("EML saved: %s", output_path)
+
+
+def _open_outlook_draft(html_text: str, subject: str) -> None:
+    """Open a new Outlook MailItem window pre-filled with *html_text* (Windows only)."""
+    import win32com.client  # noqa: F401 — checked earlier by _check_outlook_available
+    outlook = win32com.client.Dispatch("Outlook.Application")
+    mail = outlook.CreateItem(0)  # 0 = olMailItem
+    mail.Subject = subject
+    mail.HTMLBody = html_text
+    mail.Display()  # opens composer window; user reviews and sends manually
+    logger.info("Outlook draft opened: subject=%r", subject)
+
+
 @registry.register
 class JiraWeeklyEmailReport:
     name = "jira_weekly_email"
@@ -3036,9 +3336,15 @@ class JiraWeeklyEmailReport:
         extra_params: dict | None = None,
     ) -> None:
         extra_params = extra_params or {}
+        # Also accept output_formats from --params (e.g. output_formats=html,docx).
+        # When passed via --params it arrives as a string in extra_params instead of the
+        # output_formats list argument — merge both sources before dependency checks.
+        params_formats_raw = str(extra_params.get("output_formats") or "")
+        if params_formats_raw:
+            output_formats = list(output_formats) + [params_formats_raw]
+        # Check output-format dependencies first — before progress bar, config parsing, or Jira I/O.
+        output_formats = _resolve_output_format_deps(output_formats)
         progress = _get_progress(extra_params, total_steps=4)
-        if "html" not in output_formats:
-            logger.info("jira_weekly_email outputs HTML only; proceeding with HTML output.")
 
         if not config.has_section("jira"):
             logger.error(
@@ -3309,6 +3615,29 @@ class JiraWeeklyEmailReport:
                 exc,
             )
             return
+
+        # --- Optional extra output formats ---
+        email_subject = f"Weekly Report {project} {week.key}"
+
+        if "docx" in output_formats:
+            docx_result = _convert_html_to_docx(output_path, output_path.parent)
+            if docx_result:
+                logger.info("DOCX saved: %s", docx_result)
+            else:
+                logger.warning("DOCX conversion failed; HTML output is still available at %s", output_path)
+
+        if "eml" in output_formats:
+            eml_path = output_path.with_suffix(".eml")
+            try:
+                _save_as_eml(html_text, email_subject, eml_path)
+            except Exception as exc:
+                logger.error("jira_weekly_email: failed to write EML output %s (%s).", eml_path, exc)
+
+        if "outlook_draft" in output_formats:
+            try:
+                _open_outlook_draft(html_text, email_subject)
+            except Exception as exc:
+                logger.error("jira_weekly_email: failed to open Outlook draft (%s).", exc)
 
         snapshot_path = snapshot_base / f"jira_weekly_email_{project}_{week.key}.json"
         try:
