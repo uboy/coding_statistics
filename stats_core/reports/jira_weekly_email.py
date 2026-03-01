@@ -1208,7 +1208,7 @@ def build_report_payload(
             elif _is_in_progress_status(entry.get("Status")):
                 epic_bucket["bugs"]["in_progress"] += 1
 
-        if priority_key in priority_high_values and not is_bug:
+        if priority_key in priority_high_values and not is_bug and not entry.get("Subtask"):
             high_status = "Finished" if entry.get("Finished") else (
                 _normalize_text(entry.get("Status")) or _normalize_text(entry.get("Resolution"))
             )
@@ -1284,6 +1284,8 @@ def build_report_payload(
             continue
         if bool(_hp_entry.get("Bug")):
             continue
+        if bool(_hp_entry.get("Subtask")):
+            continue
         if _hp_ik_norm in _existing_hp_keys:
             # Already present — set "No updates this week." if comment is empty
             for _epic in epics.values():
@@ -1357,14 +1359,31 @@ def build_report_payload(
         )
         report_epic_ids.add(_as_epic_id)
         _as_fmap = _as_bucket["_feature_map"]
-        _as_feat_key = _as_ik or _normalize_text(_as_entry.get("Summary")) or "feature"
+        _as_is_subtask = bool(_as_entry.get("Subtask"))
+        _as_parent_key = _normalize_text(_as_entry.get("Parent_Key"))
+        _as_feat_key = (
+            (_as_parent_key if _as_parent_key else _as_ik)
+            if _as_is_subtask
+            else _as_ik
+        ) or _normalize_text(_as_entry.get("Summary")) or "feature"
+        _as_feat_name = (
+            (_normalize_text(_as_entry.get("Parent_Summary")) or _as_parent_key or _as_feat_key)
+            if _as_is_subtask and _as_parent_key
+            else (_normalize_text(_as_entry.get("Summary")) or _as_feat_key)
+        )
         if _as_feat_key in _as_fmap:
             _as_fmap[_as_feat_key]["always_show"] = True
+            if _as_is_subtask and _as_ik:
+                _as_fmap[_as_feat_key]["issue_keys"].add(_as_ik)
+                _as_subtask_summaries = _as_fmap[_as_feat_key].setdefault("subtask_summaries", {})
+                if _as_ik not in _as_subtask_summaries:
+                    _as_fmap[_as_feat_key].setdefault("subtask_issue_keys", []).append(_as_ik)
+                    _as_subtask_summaries[_as_ik] = _normalize_text(_as_entry.get("Summary"))
         else:
             _as_comment_points = _collect_comment_points(_as_entry.get("Comments") or [])
             _as_fmap[_as_feat_key] = {
                 "feature_key": _as_feat_key,
-                "feature_name": _normalize_text(_as_entry.get("Summary")) or _as_feat_key,
+                "feature_name": _as_feat_name,
                 "issue_keys": {_as_ik} if _as_ik else set(),
                 "points": _as_comment_points,
                 "comments_count": len(_as_entry.get("Comments") or []),
@@ -1372,6 +1391,8 @@ def build_report_payload(
                 "in_progress_tasks": 1 if not _as_entry.get("Finished") and _is_in_progress_status(_as_entry.get("Status")) else 0,
                 "blocked_tasks": 0,
                 "always_show": True,
+                "subtask_issue_keys": [_as_ik] if _as_is_subtask and _as_ik else [],
+                "subtask_summaries": {_as_ik: _normalize_text(_as_entry.get("Summary"))} if _as_is_subtask and _as_ik else {},
             }
 
     epic_entries: list[dict[str, Any]] = []

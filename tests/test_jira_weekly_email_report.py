@@ -3262,3 +3262,254 @@ def test_subtask_aggregation_ai_disabled_fallback():
     assert "FEAT-2, FEAT-3, FEAT-4" not in html_out
     # Regular feature name still present
     assert "Parent Feature" in html_out
+
+
+# ---------------------------------------------------------------------------
+# Subtask-not-standalone fix tests
+# ---------------------------------------------------------------------------
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_hp_subtask_in_weekly_evidence_not_standalone_in_hp_section(mock_jira_source_cls, tmp_path: Path):
+    """HP subtask in weekly evidence must NOT appear as standalone in HP section.
+    Parent (also High) should appear once in HP section with subtask comment aggregated."""
+    parent = _make_issue(
+        "ABC-90",
+        summary="HP parent task",
+        issue_type="Task",
+        status="In Progress",
+        resolution="",
+        labels=["reportx"],
+        priority="High",
+        epic_link="EPIC-1",
+        comment_body="Parent weekly update.",
+    )
+    subtask = _make_issue(
+        "ABC-91",
+        summary="HP subtask",
+        issue_type="Sub-task",
+        status="In Progress",
+        resolution="",
+        labels=["reportx"],
+        priority="High",
+        epic_link="EPIC-1",
+        parent_key="ABC-90",
+        comment_body="Subtask weekly update.",
+        issue_is_subtask=True,
+    )
+
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_str = str(jql)
+        if "issuekey in (EPIC-1)" in jql_str:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "issuekey in (ABC-90)" in jql_str:
+            return [parent]
+        if "resolution = Unresolved" in jql_str:
+            return []
+        if "statusCategory = 'In Progress'" in jql_str:
+            return []
+        return [parent, subtask]
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    text = (tmp_path / "jira_weekly_email_ABC_26'w10.html").read_text(encoding="utf-8")
+    # Parent appears in HP block
+    assert "High priority items" in text
+    assert "HP parent task (ABC-90)" in text
+    # Subtask must NOT appear as a standalone item anywhere
+    assert "HP subtask (ABC-91)" not in text
+    # Both comments aggregated into parent's HP entry
+    assert "Subtask weekly update." in text
+    assert "Parent weekly update." in text
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_hp_subtask_in_hp_always_evidence_is_skipped(mock_jira_source_cls, tmp_path: Path):
+    """HP subtask in hp_always_evidence must be skipped; only the parent appears in HP section."""
+    parent_hp = _make_issue(
+        "ABC-92",
+        summary="HP parent always-show",
+        issue_type="Task",
+        status="In Progress",
+        resolution="",
+        labels=["reportx"],
+        priority="High",
+        epic_link="EPIC-1",
+        comment_body="",
+    )
+    subtask_hp = _make_issue(
+        "ABC-93",
+        summary="HP subtask always-show",
+        issue_type="Sub-task",
+        status="In Progress",
+        resolution="",
+        labels=["reportx"],
+        priority="High",
+        epic_link="EPIC-1",
+        parent_key="ABC-92",
+        comment_body="",
+        issue_is_subtask=True,
+    )
+
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_str = str(jql)
+        if "issuekey in (EPIC-1)" in jql_str:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "issuekey in (ABC-92)" in jql_str:
+            return [parent_hp]
+        if 'priority in ("high")' in jql_str and "resolution = Unresolved" in jql_str:
+            return [parent_hp, subtask_hp]
+        if "statusCategory = 'In Progress'" in jql_str:
+            return []
+        if "updated <" in jql_str:
+            return []
+        return []
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    text = (tmp_path / "jira_weekly_email_ABC_26'w10.html").read_text(encoding="utf-8")
+    # Parent appears in HP section
+    assert "High priority items" in text
+    assert "HP parent always-show (ABC-92)" in text
+    # Subtask must NOT appear as standalone HP item
+    assert "HP subtask always-show (ABC-93)" not in text
+    # There must be exactly one HP entry (parent only)
+    assert text.count("No updates this week.") == 1
+
+
+@patch("stats_core.reports.jira_weekly_email.JiraSource")
+def test_highest_subtask_in_always_show_evidence_grouped_under_parent(mock_jira_source_cls, tmp_path: Path):
+    """Highest subtask in always_show_evidence must be grouped under parent, not appear standalone."""
+    parent_highest = _make_issue(
+        "ABC-94",
+        summary="Highest parent task",
+        issue_type="Task",
+        status="In Progress",
+        resolution="",
+        labels=["reportx"],
+        priority="Highest",
+        epic_link="EPIC-1",
+        comment_body="",
+    )
+    subtask_highest = _make_issue(
+        "ABC-95",
+        summary="Highest subtask",
+        issue_type="Sub-task",
+        status="In Progress",
+        resolution="",
+        labels=["reportx"],
+        priority="Highest",
+        epic_link="EPIC-1",
+        parent_key="ABC-94",
+        comment_body="",
+        issue_is_subtask=True,
+    )
+
+    fake_jira = Mock()
+
+    def _fake_search_issues(jql, *args, **kwargs):
+        jql_str = str(jql)
+        if "issuekey in (EPIC-1)" in jql_str:
+            return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if "issuekey in (ABC-94)" in jql_str:
+            return [parent_highest]
+        if 'priority in ("highest")' in jql_str and "resolution = Unresolved" in jql_str:
+            return [parent_highest, subtask_highest]
+        if "statusCategory = 'In Progress'" in jql_str:
+            return []
+        if "updated <" in jql_str:
+            return []
+        return []
+
+    fake_jira.search_issues.side_effect = _fake_search_issues
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.fetch_epic_names.return_value = {"EPIC-1": "Epic One"}
+    mock_jira_source_cls.return_value = fake_source
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+            "ollama": {"enabled": "false"},
+            "jira_weekly_email": {"labels_report": "reportx"},
+        }
+    )
+
+    report = JiraWeeklyEmailReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["html"],
+        extra_params={
+            "project": "ABC",
+            "week_date": "2026-03-03",
+            "labels_report": "reportx",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    text = (tmp_path / "jira_weekly_email_ABC_26'w10.html").read_text(encoding="utf-8")
+    # Parent appears in Key Results (Highest → feature_statuses, not HP section)
+    assert "Highest parent task (ABC-94)" in text
+    assert "High priority items" not in text
+    # Subtask must NOT appear as standalone feature
+    assert "Highest subtask (ABC-95)" not in text
