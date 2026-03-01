@@ -3985,3 +3985,45 @@ def test_html_section_separator_rows():
     html_out = render_outlook_html(payload)
     sep_count = html_out.count("colspan='2'")
     assert sep_count >= 3, f"Expected at least 3 separator rows, found {sep_count}"
+
+
+def test_risk_table_headers_shown_when_empty():
+    """render_outlook_html must show the risk table column headers even when risk_items is empty."""
+    from configparser import ConfigParser
+    cfg = ConfigParser()
+    cfg.read_dict({"jira_weekly_email": {}})
+    week = _make_payload_week()
+    payload = build_report_payload(
+        [],
+        week,
+        cfg,
+        "ABC",
+        labels_highlights=set(),
+        labels_report={"reportx"},
+        priority_high_values={"high"},
+        risk_evidence=[],
+    )
+    html_out = render_outlook_html(payload)
+    assert "Risk/Issue" in html_out, "Risk table column header must be present even with no risk items"
+    assert "Assignee" in html_out, "Risk table 'Assignee' column header must be present even with no risk items"
+    assert "No open risks or issues." in html_out, "Empty-state row text must be present when risk_items is empty"
+
+
+def test_eml_sheet_width_table_approach():
+    """_prepare_html_for_eml must replace the sheet div with a 1040px table for email clients."""
+    html_input = (
+        "<!doctype html><html><head></head>"
+        "<body>"
+        "<div class='sheet'>"
+        "<div class='blue-panel'>"
+        "<table class='content' cellspacing='0' cellpadding='0'></table>"
+        "</div>"
+        "</div>"
+        "</body></html>"
+    )
+    result = _prepare_html_for_eml(html_input)
+    assert "width='1040'" in result, "EML output must contain a 1040px-wide table for the sheet"
+    assert "bgcolor='#141414'" in result, "EML output must have bgcolor='#141414' on the sheet table"
+    assert "bgcolor='#0b0b0b'" in result, "EML output must have dark outer bgcolor on body/centering table"
+    # The sheet div itself must be gone, replaced by a table element
+    assert "<div class='sheet'" not in result, "Original sheet div must be replaced by a table"

@@ -3101,23 +3101,30 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
         rows.append("<li>No vacations found for the configured horizon.</li>")
     rows.append("</ul></td></tr>")
 
-    rows.append(_SEP_ROW)
-    rows.append("<tr>")
-    rows.append(f"<td class='sec-label'>{titles.get('risk_title', 'Top Issues / Risks / For Help')}</td>")
-    rows.append("<td class='sec-body'>")
+    rows.append("</table>")
+    if footer_html.strip():
+        rows.append(f"<div class='footer-html'>{footer_html}</div>")
+    rows.append("</div>")  # close blue-panel only
+
+    risk_title = titles.get("risk_title", "Top Issues / Risks / For Help")
     risk_items = payload.get("risk_items") or []
+    rows.append(f"<div style='background-color:rgb(23,88,98);padding:10px 14px 14px;'>")
+    rows.append(
+        f"<table style='width:100%;border-collapse:collapse;font-size:11px;color:#ffffff;'>"
+        f"<thead>"
+        f"<tr><th colspan='6' style='padding:6px 8px 10px;font-size:14pt;font-weight:700;"
+        f"text-align:left;background:none;border-bottom:1px solid rgba(255,255,255,.3);'>"
+        f"{html.escape(risk_title)}</th></tr>"
+        f"<tr style='background:rgba(0,0,0,.3);font-weight:700;'>"
+        f"<th style='padding:4px 8px;text-align:left;'>Risk/Issue</th>"
+        f"<th style='padding:4px 8px;text-align:left;'>Assignee</th>"
+        f"<th style='padding:4px 8px;text-align:left;'>Created</th>"
+        f"<th style='padding:4px 8px;text-align:left;'>Status</th>"
+        f"<th style='padding:4px 8px;text-align:left;'>Action points / Comments</th>"
+        f"<th style='padding:4px 8px;text-align:left;'>Created by</th>"
+        f"</tr></thead><tbody>"
+    )
     if risk_items:
-        rows.append(
-            "<table style='width:100%;border-collapse:collapse;font-size:11px;color:#ffffff;'>"
-            "<thead><tr style='background:rgba(0,0,0,.3);font-weight:700;'>"
-            "<th style='padding:4px 8px;text-align:left;'>Risk/Issue</th>"
-            "<th style='padding:4px 8px;text-align:left;'>Assignee</th>"
-            "<th style='padding:4px 8px;text-align:left;'>Created</th>"
-            "<th style='padding:4px 8px;text-align:left;'>Status</th>"
-            "<th style='padding:4px 8px;text-align:left;'>Action points / Comments</th>"
-            "<th style='padding:4px 8px;text-align:left;'>Created by</th>"
-            "</tr></thead><tbody>"
-        )
         for i, item in enumerate(risk_items):
             bg = "rgba(0,0,0,.12)" if i % 2 == 0 else "rgba(0,0,0,.04)"
             key_esc  = html.escape(item.get("issue_key") or "")
@@ -3133,15 +3140,14 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
                 f"<td style='padding:4px 8px;'>{html.escape(item.get('reporter') or '')}</td>"
                 f"</tr>"
             )
-        rows.append("</tbody></table>")
     else:
-        rows.append("<span class='muted'>No open risks or issues.</span>")
-    rows.append("</td></tr>")
-
-    rows.append("</table>")
-    if footer_html.strip():
-        rows.append(f"<div class='footer-html'>{footer_html}</div>")
-    rows.append("</div></div></body></html>")
+        rows.append(
+            "<tr><td colspan='6' style='padding:8px;color:rgba(255,255,255,.7);'>"
+            "No open risks or issues.</td></tr>"
+        )
+    rows.append("</tbody></table>")
+    rows.append("</div>")  # close risks section div
+    rows.append("</div></body></html>")  # close sheet only
     return "\n".join(rows)
 
 
@@ -3361,7 +3367,14 @@ def _prepare_html_for_docx(html_text: str) -> str:
         "<hr style='border:none;border-top:1px solid #aaaaaa;margin:6px 0;'>",
         html_text,
     )
-    # 6. Inject light-theme CSS block right before </head>.
+    # 6. Add bgcolor to the content table so LibreOffice shows the blue-panel background.
+    html_text = html_text.replace(
+        "<table class='content' cellspacing='0' cellpadding='0'>",
+        "<table class='content' cellspacing='0' cellpadding='0'"
+        " bgcolor='#ddeef2' style='background-color:#ddeef2;'>",
+        1,
+    )
+    # 7. Inject light-theme CSS block right before </head>.
     if "</head>" in html_text:
         return html_text.replace("</head>", f"{_DOCX_STYLE_OVERRIDE}</head>", 1)
     return _DOCX_STYLE_OVERRIDE + html_text
@@ -3562,39 +3575,59 @@ def _convert_html_to_docx(html_path: Path, output_dir: Path) -> Path | None:
 def _prepare_html_for_eml(html_text: str) -> str:
     """Patch HTML for email-client rendering.
 
-    Email clients (Thunderbird, Outlook, Windows Mail) strip ``<style>`` tags,
-    so background colours and ``width`` on ``<div>`` elements are lost.
-    We add HTML attributes and inline styles that every client respects:
+    Email clients (Thunderbird, Outlook, Windows Mail) strip ``<style>`` tags
+    and ignore CSS background-color on div elements and CSS width on divs.
+    We therefore use HTML attributes and table-based layout that all clients respect:
 
-    * ``<body>``            → add ``bgcolor`` attribute + inline ``style``
-      so the dark background is preserved outside the sheet.
-    * ``<div class='sheet'>`` → add inline ``style`` with explicit width, border,
-      and background so the 1040 px content column and its border are visible.
+    * ``<body>``             → bgcolor + no padding (outer table handles spacing)
+    * Outer centering table  → width=100%, bgcolor=#0b0b0b
+    * Sheet table (1040px)   → replaces the div, provides width constraint + border + bgcolor
+    * ``<div class='blue-panel'>`` → inline background-color
+    * ``<table class='content'>``  → bgcolor so cells show blue, not white
     """
-    # 1. Patch <body>: add bgcolor attribute and inline style for background.
+    # 1. Patch <body>: dark bgcolor, no padding (outer table handles spacing).
     html_text = re.sub(
         r"<body(\s[^>]*)?>",
         (
             "<body\\1"
             " bgcolor='#0b0b0b'"
-            " style='background:#0b0b0b;margin:0;padding:24px;"
+            " style='background:#0b0b0b;margin:0;padding:0;"
             "font-family:Calibri,\"Segoe UI\",Arial,sans-serif;color:#ffffff;'>"
+            # Outer 100%-wide centering table with dark background
+            "<table role='presentation' border='0' cellspacing='0' cellpadding='0'"
+            " width='100%' bgcolor='#0b0b0b'"
+            " style='background:#0b0b0b;'><tr>"
+            "<td align='center' valign='top'"
+            " style='padding:24px 12px;background:#0b0b0b;' bgcolor='#0b0b0b'>"
         ),
         html_text,
         count=1,
     )
-    # 2. Patch <div class='sheet'>: inline width, border, and background.
+    # 2. Close the outer centering table before </body>.
+    html_text = html_text.replace("</body>", "</td></tr></table></body>", 1)
+    # 3. Replace <div class='sheet'> with a width-1040 table (reliable in all email clients).
     html_text = re.sub(
         r"<div\s+class=['\"]sheet['\"](\s[^>]*)?>",
         (
-            "<div class='sheet'\\1"
-            " style='width:1040px;max-width:100%;margin:0 auto;"
-            "border:2px solid #ffffff;background:#141414;'>"
+            "<table role='presentation' border='0' cellspacing='0' cellpadding='0'"
+            " width='1040' align='center' bgcolor='#141414'"
+            " style='max-width:1040px;width:1040px;background:#141414;"
+            "border:2px solid #ffffff;'>"
+            "<tr><td bgcolor='#141414' style='background:#141414;'>"
         ),
         html_text,
         count=1,
     )
-    # 3. Patch <div class='blue-panel'>: inline background so email clients preserve it.
+    # 4. Replace the sheet div's closing tag with a table close.
+    #    After restructuring, the HTML ends with: ...risks-div... </div></body></html>
+    #    where the final </div> is ONLY the sheet closing div (blue-panel and risks-div
+    #    both close before it).
+    html_text = html_text.replace(
+        "</div></body></html>",
+        "</td></tr></table></body></html>",
+        1,
+    )
+    # 5. Patch <div class='blue-panel'>: inline background for email clients.
     html_text = re.sub(
         r"<div\s+class=['\"]blue-panel['\"](\s[^>]*)?>",
         (
@@ -3603,6 +3636,14 @@ def _prepare_html_for_eml(html_text: str) -> str:
         ),
         html_text,
         count=1,
+    )
+    # 6. Add bgcolor to the content table so email clients show the blue background
+    #    (table cells don't inherit background from parent div in email clients).
+    html_text = html_text.replace(
+        "<table class='content' cellspacing='0' cellpadding='0'>",
+        "<table class='content' cellspacing='0' cellpadding='0'"
+        " bgcolor='#175862' style='background-color:rgb(23,88,98);'>",
+        1,
     )
     return html_text
 
@@ -3949,7 +3990,7 @@ class JiraWeeklyEmailReport:
 
         if "outlook_draft" in output_formats:
             try:
-                _open_outlook_draft(html_text, email_subject)
+                _open_outlook_draft(_prepare_html_for_eml(html_text), email_subject)
             except Exception as exc:
                 logger.error("jira_weekly_email: failed to open Outlook draft (%s).", exc)
 
