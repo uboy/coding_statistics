@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from stats_core.reports.jira_weekly_email import (
     JiraWeeklyEmailReport,
     _comment_hints_joined,
+    _prepare_html_for_eml,
     build_report_payload,
     load_previous_snapshot,
     parse_vacations_excel,
@@ -2408,6 +2409,8 @@ def test_jira_weekly_email_excludes_closed_items_with_non_done_resolution(mock_j
     def _fake_search_issues(jql, *args, **kwargs):
         if "issuekey in (EPIC-1)" in str(jql):
             return [_make_epic_issue("EPIC-1", "Epic One", ["reportx"])]
+        if 'labels in ("risk", "issue")' in str(jql):
+            return []
         return issues
 
     fake_jira.search_issues.side_effect = _fake_search_issues
@@ -3804,3 +3807,181 @@ def test_hp_task_with_non_standard_resolution_appears_in_hp_block(mock_jira_sour
         key_results_section = text[key_results_idx:hp_idx]
         assert "HP task duplicate resolution (ABC-110)" not in key_results_section
         assert "HP bug wont fix (ABC-111)" not in key_results_section
+
+
+# ---------------------------------------------------------------------------
+# Part 5 / Part 6 / Part 1 / Part 3 — risk/issue label exclusion + risk_items
+# ---------------------------------------------------------------------------
+
+def _make_risk_evidence_entry(
+    key: str = "ABC-R1",
+    *,
+    summary: str = "Risk task",
+    labels: list[str] | None = None,
+    epic_key: str = "EPIC-1",
+    epic_name: str = "Epic One",
+    epic_labels: list[str] | None = None,
+    comment: str = "Risk comment.",
+    priority: str = "Medium",
+) -> dict:
+    """Build an evidence dict that looks like output of collect_weekly_comment_evidence."""
+    return {
+        "Issue_Key": key,
+        "Summary": summary,
+        "Epic_Key": epic_key,
+        "Epic_Name": epic_name,
+        "Parent_Key": None,
+        "Type": "Task",
+        "Status": "In Progress",
+        "Resolution": "",
+        "Priority": priority,
+        "Labels": labels if labels is not None else ["risk", "reportx"],
+        "Epic_Labels": epic_labels if epic_labels is not None else ["reportx"],
+        "Epic_Labels_Known": True,
+        "Comments": [comment],
+        "Finished": False,
+        "Bug": False,
+        "Subtask": False,
+        "Parent_Finished": False,
+        "Parent_Summary": "",
+        "Parent_Status": "",
+        "Parent_Resolution": "",
+        "Parent_Labels": [],
+    }
+
+
+def test_risk_label_excluded_from_existing_sections():
+    """Issue with label 'risk' must not appear in epics or highlights."""
+    week = _make_payload_week()
+    cfg = __import__("configparser").ConfigParser()
+    cfg.read_dict({"jira_weekly_email": {}})
+
+    normal_entry = _make_parent_evidence("FEAT-1", "Normal Feature")
+    risk_entry = _make_risk_evidence_entry("RISK-1", summary="Open Risk", labels=["risk", "reportx"])
+
+    payload = build_report_payload(
+        [normal_entry, risk_entry],
+        week,
+        cfg,
+        "ABC",
+        labels_highlights={"highlights"},
+        labels_report={"reportx"},
+        priority_high_values={"high"},
+    )
+
+    all_feature_keys = [
+        item.get("issue_key")
+        for epic in payload.get("epics") or []
+        for item in (epic.get("feature_statuses") or [])
+    ]
+    assert "RISK-1" not in all_feature_keys, "risk-labeled issue must not appear in feature_statuses"
+    highlight_keys = [h.get("issue_key") for h in payload.get("highlights") or []]
+    assert "RISK-1" not in highlight_keys, "risk-labeled issue must not appear in highlights"
+
+
+def test_issue_label_excluded_from_existing_sections():
+    """Issue with label 'issue' must not appear in any existing section."""
+    week = _make_payload_week()
+    cfg = __import__("configparser").ConfigParser()
+    cfg.read_dict({"jira_weekly_email": {}})
+
+    issue_entry = _make_risk_evidence_entry("ISSUE-1", summary="Open Issue", labels=["issue", "reportx"])
+
+    payload = build_report_payload(
+        [issue_entry],
+        week,
+        cfg,
+        "ABC",
+        labels_highlights={"highlights"},
+        labels_report={"reportx"},
+        priority_high_values={"high"},
+    )
+
+    all_feature_keys = [
+        item.get("issue_key")
+        for epic in payload.get("epics") or []
+        for item in (epic.get("feature_statuses") or [])
+    ]
+    assert "ISSUE-1" not in all_feature_keys, "issue-labeled entry must not appear in feature_statuses"
+    hp_keys = [
+        item.get("issue_key")
+        for epic in payload.get("epics") or []
+        for item in (epic.get("high_priority_items") or [])
+    ]
+    assert "ISSUE-1" not in hp_keys, "issue-labeled entry must not appear in high_priority_items"
+
+
+def test_risk_items_built_in_payload():
+    """build_report_payload with risk_evidence produces correct risk_items list."""
+    week = _make_payload_week()
+    cfg = __import__("configparser").ConfigParser()
+    cfg.read_dict({"jira_weekly_email": {}})
+
+    risk_ev = [
+        {
+            "Issue_Key": "RISK-10",
+            "Summary": "Critical risk item",
+            "Status": "Open",
+            "Assignee": "Alice Smith",
+            "Reporter": "Bob Jones",
+            "Created": "2026-01-15",
+            "Comments": ["Action taken.", "Follow-up scheduled."],
+        }
+    ]
+
+    payload = build_report_payload(
+        [],
+        week,
+        cfg,
+        "ABC",
+        labels_highlights=set(),
+        labels_report={"reportx"},
+        priority_high_values={"high"},
+        risk_evidence=risk_ev,
+    )
+
+    risk_items = payload.get("risk_items") or []
+    assert len(risk_items) == 1
+    item = risk_items[0]
+    assert item["issue_key"] == "RISK-10"
+    assert item["text"] == "Critical risk item"
+    assert item["assignee"] == "Alice Smith"
+    assert item["reporter"] == "Bob Jones"
+    assert item["created"] == "2026-01-15"
+    assert item["status"] == "Open"
+    assert "Action taken." in item["action_points"]
+    assert "Follow-up scheduled." in item["action_points"]
+
+
+def test_eml_blue_panel_background_inline():
+    """_prepare_html_for_eml must inject inline background-color on .blue-panel div."""
+    html_input = (
+        "<html><body>"
+        "<div class='blue-panel'><p>Content</p></div>"
+        "</body></html>"
+    )
+    result = _prepare_html_for_eml(html_input)
+    assert "background-color:rgb(23,88,98)" in result, (
+        "EML output must have inline background-color on blue-panel"
+    )
+    assert "<div class='blue-panel'" in result
+
+
+def test_html_section_separator_rows():
+    """render_outlook_html must include at least 3 separator rows between sections."""
+    from configparser import ConfigParser
+    cfg = ConfigParser()
+    cfg.read_dict({"jira_weekly_email": {}})
+    week = _make_payload_week()
+    payload = build_report_payload(
+        [],
+        week,
+        cfg,
+        "ABC",
+        labels_highlights=set(),
+        labels_report={"reportx"},
+        priority_high_values={"high"},
+    )
+    html_out = render_outlook_html(payload)
+    sep_count = html_out.count("colspan='2'")
+    assert sep_count >= 3, f"Expected at least 3 separator rows, found {sep_count}"

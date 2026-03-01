@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 _DONE_VALUES = {"done", "resolved", "closed"}
 _REPORT_CLOSED_RESOLUTION_VALUES = {"done", "resolved"}
 _IN_PROGRESS_VALUES = {"in progress", "in-progress"}
+_RISK_LABELS = frozenset({"risk", "issue"})
 
 _SOFFICE_DOWNLOAD_URL = "https://www.libreoffice.org/download/download-libreoffice/"
 _OUTLOOK_INFO_URL = "https://www.microsoft.com/en-us/microsoft-365/outlook/email-and-calendar-software-microsoft-outlook"
@@ -764,6 +765,72 @@ def collect_priority_always_evidence(
     return evidence
 
 
+def collect_risk_evidence(
+    jira_source: JiraSource,
+    project: str,
+    week: WeekWindow,
+) -> list[dict[str, Any]]:
+    """Fetch all risk/issue-labeled Jira issues: open ones and those updated within the week period.
+
+    Returns a simplified evidence list with key, summary, status, assignee,
+    reporter, created date, and comments filtered to the week window.
+    """
+    jira = jira_source.jira
+    project_key = _safe_project_key(project)
+    start_value = week.start.strftime("%Y-%m-%d")
+    end_exclusive = (week.end + timedelta(days=1)).strftime("%Y-%m-%d")
+    jql = (
+        f"project = {project_key} "
+        'AND labels in ("risk", "issue") '
+        "AND (statusCategory != Done "
+        f"    OR (updated >= '{start_value}' AND updated < '{end_exclusive}')) "
+        "ORDER BY created ASC"
+    )
+    fields = ["key", "summary", "status", "labels",
+              "assignee", "reporter", "created", "comment"]
+    all_issues: list[Any] = []
+    start_at = 0
+    max_results = 100
+    while True:
+        issues = jira.search_issues(jql, startAt=start_at, maxResults=max_results, fields=fields)
+        all_issues.extend(issues)
+        if len(issues) < max_results:
+            break
+        start_at += max_results
+
+    results: list[dict[str, Any]] = []
+    for issue in all_issues:
+        assignee_obj = getattr(issue.fields, "assignee", None)
+        assignee = _normalize_text(getattr(assignee_obj, "displayName", "") or "") if assignee_obj else ""
+        reporter_obj = getattr(issue.fields, "reporter", None)
+        reporter = _normalize_text(getattr(reporter_obj, "displayName", "") or "") if reporter_obj else ""
+        created_raw = getattr(issue.fields, "created", None)
+        created_str = str(created_raw)[:10] if created_raw else ""
+        comments_in_week: list[str] = []
+        comment_block = getattr(getattr(issue.fields, "comment", None), "comments", []) or []
+        for comment in comment_block:
+            created_dt = _parse_jira_date(getattr(comment, "created", ""))
+            if not created_dt or not (week.start <= created_dt <= week.end):
+                continue
+            body_text = _normalize_text(_comment_body_to_text(getattr(comment, "body", "")))
+            if body_text:
+                comments_in_week.append(body_text)
+        results.append({
+            "Issue_Key": issue.key,
+            "Summary":   getattr(issue.fields, "summary", "") or "",
+            "Status":    getattr(issue.fields.status, "name", "") if issue.fields.status else "",
+            "Assignee":  assignee,
+            "Reporter":  reporter,
+            "Created":   created_str,
+            "Comments":  comments_in_week,
+        })
+    logger.info(
+        "RISK EVIDENCE: project=%s week=%s issues=%s",
+        project, week.key, len(results),
+    )
+    return results
+
+
 def collect_project_bug_stats(jira_source: JiraSource, project: str) -> dict[str, int]:
     jira = jira_source.jira
     project_key = _safe_project_key(project)
@@ -1133,6 +1200,7 @@ def build_report_payload(
     hp_always_evidence: list[dict[str, Any]] | None = None,
     always_show_evidence: list[dict[str, Any]] | None = None,
     project_bug_stats: dict[str, int] | None = None,
+    risk_evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     highlights: list[dict[str, str]] = []
     epics: dict[str, dict[str, Any]] = {}
@@ -1153,6 +1221,8 @@ def build_report_payload(
     for entry in evidence:
         issue_key = _normalize_text(entry.get("Issue_Key"))
         labels_norm = {_normalize_key(label) for label in (entry.get("Labels") or [])}
+        if labels_norm & _RISK_LABELS:
+            continue  # handled exclusively by the Top Issues/Risks section
         epic_name = _normalize_text(entry.get("Epic_Name")) or "No Epic"
         epic_key = _normalize_text(entry.get("Epic_Key"))
 
@@ -1556,6 +1626,20 @@ def build_report_payload(
         "epics_covered": len(summary_rows),
     }
 
+    risk_items: list[dict[str, Any]] = []
+    for _re in (risk_evidence or []):
+        _re_comments = _re.get("Comments") or []
+        _re_action = "; ".join(_normalize_text(c) for c in _re_comments[:3] if c) or ""
+        risk_items.append({
+            "issue_key":     _normalize_text(_re.get("Issue_Key")),
+            "text":          _normalize_text(_re.get("Summary")),
+            "assignee":      _normalize_text(_re.get("Assignee")),
+            "created":       _normalize_text(_re.get("Created")),
+            "status":        _normalize_text(_re.get("Status")),
+            "action_points": _re_action,
+            "reporter":      _normalize_text(_re.get("Reporter")),
+        })
+
     logger.info(
         "PAYLOAD SUMMARY: project=%s week=%s evidence=%s epics_total=%s epics_in_report=%s highlights=%s this_week_features=%s next_week_features=%s closed_tasks=%s bugs_closed=%s bugs_in_progress=%s project_bugs_in_progress=%s project_bugs_open=%s",
         project,
@@ -1591,6 +1675,7 @@ def build_report_payload(
             "open": int(project_bug_stats.get("open") or 0),
         },
         "vacations": [],
+        "risk_items": risk_items,
         "titles": {
             "main": config.get("jira_weekly_email", "title_main", fallback="Weekly Report"),
             "highlights": config.get("jira_weekly_email", "chapter_highlights_title", fallback="Highlights"),
@@ -2875,6 +2960,8 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     rows.append("<div class='blue-panel'>")
     rows.append("<table class='content' cellspacing='0' cellpadding='0'>")
 
+    _SEP_ROW = "<tr><td colspan='2' style='height:3px;background:rgba(255,255,255,.45);padding:0;'></td></tr>"
+
     rows.append("<tr>")
     rows.append(f"<td class='sec-label'>{highlights_title}</td><td class='sec-body'><ul class='lvl1'>")
     for item in payload.get("highlights") or []:
@@ -2890,6 +2977,7 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
         rows.append("<li>No highlight updates in this week.</li>")
     rows.append("</ul></td></tr>")
 
+    rows.append(_SEP_ROW)
     rows.append("<tr>")
     rows.append(f"<td class='sec-label'>{results_title}</td><td class='sec-body'>")
     for epic_idx, epic in enumerate(payload.get("epics") or []):
@@ -2973,6 +3061,7 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
         )
     rows.append("</td></tr>")
 
+    rows.append(_SEP_ROW)
     rows.append("<tr>")
     rows.append(f"<td class='sec-label'>{plans_title}</td><td class='sec-body'>")
     for epic in payload.get("next_week_plans") or []:
@@ -3003,6 +3092,7 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
         rows.append("<p class='muted'>No in-progress plans collected for next week.</p>")
     rows.append("</td></tr>")
 
+    rows.append(_SEP_ROW)
     rows.append("<tr>")
     rows.append(f"<td class='sec-label'>{vacations_title}</td><td class='sec-body'><ul class='lvl1'>")
     for item in payload.get("vacations") or []:
@@ -3010,6 +3100,43 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
     if not (payload.get("vacations") or []):
         rows.append("<li>No vacations found for the configured horizon.</li>")
     rows.append("</ul></td></tr>")
+
+    rows.append(_SEP_ROW)
+    rows.append("<tr>")
+    rows.append(f"<td class='sec-label'>{titles.get('risk_title', 'Top Issues / Risks / For Help')}</td>")
+    rows.append("<td class='sec-body'>")
+    risk_items = payload.get("risk_items") or []
+    if risk_items:
+        rows.append(
+            "<table style='width:100%;border-collapse:collapse;font-size:11px;color:#ffffff;'>"
+            "<thead><tr style='background:rgba(0,0,0,.3);font-weight:700;'>"
+            "<th style='padding:4px 8px;text-align:left;'>Risk/Issue</th>"
+            "<th style='padding:4px 8px;text-align:left;'>Assignee</th>"
+            "<th style='padding:4px 8px;text-align:left;'>Created</th>"
+            "<th style='padding:4px 8px;text-align:left;'>Status</th>"
+            "<th style='padding:4px 8px;text-align:left;'>Action points / Comments</th>"
+            "<th style='padding:4px 8px;text-align:left;'>Created by</th>"
+            "</tr></thead><tbody>"
+        )
+        for i, item in enumerate(risk_items):
+            bg = "rgba(0,0,0,.12)" if i % 2 == 0 else "rgba(0,0,0,.04)"
+            key_esc  = html.escape(item.get("issue_key") or "")
+            text_esc = html.escape(item.get("text") or "")
+            rows.append(
+                f"<tr style='background:{bg};'>"
+                f"<td style='padding:4px 8px;white-space:nowrap;'>{key_esc}</td>"
+                f"<td style='padding:4px 8px;'>{html.escape(item.get('assignee') or '')}</td>"
+                f"<td style='padding:4px 8px;white-space:nowrap;'>{html.escape(item.get('created') or '')}</td>"
+                f"<td style='padding:4px 8px;'>{html.escape(item.get('status') or '')}</td>"
+                f"<td style='padding:4px 8px;'>{html.escape(item.get('action_points') or '')} "
+                f"<span class='muted'>{text_esc}</span></td>"
+                f"<td style='padding:4px 8px;'>{html.escape(item.get('reporter') or '')}</td>"
+                f"</tr>"
+            )
+        rows.append("</tbody></table>")
+    else:
+        rows.append("<span class='muted'>No open risks or issues.</span>")
+    rows.append("</td></tr>")
 
     rows.append("</table>")
     if footer_html.strip():
@@ -3222,7 +3349,19 @@ def _prepare_html_for_docx(html_text: str) -> str:
     # 3. Strip class='sheet' from the outer container div so LibreOffice does not
     #    treat it as a named, width-constrained text frame.
     html_text = re.sub(r"<div\s+class=['\"]sheet['\"]>", "<div>", html_text)
-    # 4. Inject light-theme CSS block right before </head>.
+    # 4. Patch <div class='blue-panel'>: light-blue inline background for DOCX.
+    html_text = re.sub(
+        r"<div\s+class=['\"]blue-panel['\"](\s[^>]*)?>",
+        "<div class='blue-panel'\\1 style='background-color:#ddeef2;padding:14px;'>",
+        html_text,
+    )
+    # 5. Convert .divider divs to <hr> — LibreOffice renders <hr> natively as a line.
+    html_text = re.sub(
+        r"<div\s+class=['\"]divider['\"][^>]*>\s*</div>",
+        "<hr style='border:none;border-top:1px solid #aaaaaa;margin:6px 0;'>",
+        html_text,
+    )
+    # 6. Inject light-theme CSS block right before </head>.
     if "</head>" in html_text:
         return html_text.replace("</head>", f"{_DOCX_STYLE_OVERRIDE}</head>", 1)
     return _DOCX_STYLE_OVERRIDE + html_text
@@ -3455,6 +3594,16 @@ def _prepare_html_for_eml(html_text: str) -> str:
         html_text,
         count=1,
     )
+    # 3. Patch <div class='blue-panel'>: inline background so email clients preserve it.
+    html_text = re.sub(
+        r"<div\s+class=['\"]blue-panel['\"](\s[^>]*)?>",
+        (
+            "<div class='blue-panel'\\1"
+            " style='background-color:rgb(23,88,98);padding:14px 14px 18px;color:#ffffff;'>"
+        ),
+        html_text,
+        count=1,
+    )
     return html_text
 
 
@@ -3607,6 +3756,7 @@ class JiraWeeklyEmailReport:
                 always_show_evidence = collect_priority_always_evidence(
                     jira_source, project, week, priority_always_show_values
                 )
+                risk_evidence = collect_risk_evidence(jira_source, project, week)
             except Exception as exc:
                 logger.error(
                     "jira_weekly_email: failed to fetch Jira data (%s). "
@@ -3628,6 +3778,7 @@ class JiraWeeklyEmailReport:
                 hp_always_evidence=hp_always_evidence,
                 always_show_evidence=always_show_evidence,
                 project_bug_stats=project_bug_stats,
+                risk_evidence=risk_evidence,
             )
 
         vacation_file = _strip_wrapping_quotes(
