@@ -4,6 +4,7 @@
 - Mode: Default
 - Status: Resumed; need to fix progress bar stability (bars held at bottom) and wire child bars into parallel execution.
 - Status: Analyzed weekly email target screenshots and current jira_weekly_email implementation; preparing gap analysis and weak-model AI strategy.
+- Status: Completed deep docs audit + weekly-email status/noise bugfix (image `!` artifact + localized status normalization) with tests green.
 - Notes:
   - Repo lacked coordination/ and state files; created them.
   - team-lead-orchestrator policy file not found.
@@ -108,3 +109,10 @@
   - Removed summary section from weekly email HTML; now summary prints as a console table block only.
   - Strengthened deterministic comment cleanup (jira markup/json blobs/ids/noise) and tightened compact status fallbacks to reduce garbage text.
   - Revalidated tests after rollback/cleanup: 113 passed, 1 warning (openpyxl CF).
+  - New request addressed: deep analysis for AI-agent docs coverage + weekly-email bug where some statuses were blank and one line showed lone `!`.
+  - Root cause confirmed in `jira_weekly_email`: markdown image text cleanup could leave `!`; strict status normalization (`done/resolved/closed`, `in progress`) missed localized/non-standard workflow states.
+  - Implemented fix in `stats_core/reports/jira_weekly_email.py`: strip `![...](...)`, drop punctuation-only sanitized comments, broaden finished/in-progress heuristics, add safe fallback status for subtask-only features.
+  - Added regression tests in `tests/test_jira_weekly_email_report.py` for image artifact cleanup and status classification heuristics.
+  - Updated docs for AI agents/maintainers: `README.md`, `docs/specs/common/SPEC.md`, `docs/agents/knowledge-base.md`.
+  - Verification run: `pytest tests/test_jira_weekly_email_report.py` -> 72 passed, 1 warning.
+  - Added .agent-memory entry: `weekly-email-status-image-artifact-and-localized-states-2026-03-06` and indexed it.

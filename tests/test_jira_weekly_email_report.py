@@ -11,7 +11,10 @@ from openpyxl import Workbook
 
 from stats_core.reports.jira_weekly_email import (
     JiraWeeklyEmailReport,
+    _clean_comment_for_report,
     _comment_hints_joined,
+    _is_finished,
+    _is_in_progress_status,
     _prepare_html_for_eml,
     build_report_payload,
     load_previous_snapshot,
@@ -2947,6 +2950,18 @@ def test_comment_hints_joined_aggregates_all_weekly_comments_and_keeps_english()
     assert "Implemented renderer update and fixed 2 regressions." in text
     assert "https://example.com/build/123" not in text
     assert "Progress update recorded in Jira comments." in text
+
+
+def test_clean_comment_for_report_drops_markdown_image_artifacts():
+    assert _clean_comment_for_report("![screenshot](https://jira.local/secure/attachment/1/image.png)") == ""
+    assert _comment_hints_joined(["![screenshot](https://jira.local/secure/attachment/1/image.png)"]) == ""
+
+
+def test_status_classification_supports_localized_and_review_states():
+    assert _is_finished("Закрыто", "")
+    assert _is_finished("", "Выполнено")
+    assert _is_in_progress_status("Code Review")
+    assert not _is_in_progress_status("To Do")
 
 
 @patch("stats_core.reports.jira_weekly_email.JiraSource")

@@ -1,0 +1,17 @@
+{
+  "id": "webui-json-null-guard-and-retry-log-noise-2026-02-27",
+  "technology": "python",
+  "skills": ["developer"],
+  "applies_to_systems": ["codex"],
+  "summary": "Guard AI WebUI response JSON type before .get access; downgrade retry-timeout logs to DEBUG to preserve progress-bar readability.",
+  "source_links": ["user-report: NoneType.get error in webui and progress bar broken by timeout warnings"],
+  "recorded_on": "2026-02-27",
+  "last_verified_on": "2026-02-27",
+  "verify_after_days": 60,
+  "status": "active",
+  "details": [
+    "Treat non-dict response.json() as invalid response and fallback without crashing.",
+    "In chat-completions parsing, verify choices/message node types before calling .get.",
+    "Use DEBUG for retry timeout logs to avoid interrupting user progress display."
+  ]
+}

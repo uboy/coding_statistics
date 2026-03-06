@@ -68,6 +68,8 @@ python stats_main.py run \
 - `jira_weekly_email` строит HTML для Outlook, хранит weekly snapshot в том же каталоге, что и HTML (по умолчанию `reports`) с именем `jira_weekly_email_<PROJECT>_<WEEK>.json`, и выводит diff только в консоль.
 - Labels для глав настраиваются через `labels_highlights` и `labels_report`.
 - Для `labels_report` можно указать `@all`, чтобы отключить label-фильтр и включать эпики/задачи с любыми метками.
+- Статус в `Key Results` и `Next Week Plans` строится по агрегированным данным parent + subtask (включая subtask-only активность), а не только по комментариям родительской задачи.
+- Комментарии в weekly email очищаются от markdown/link/image шума (включая `![image](...)`), чтобы в итоговом тексте не появлялись артефакты вроде одиночного `!`.
 - Для Ollama можно задать `ollama_api_key` (CLI param) или `[ollama].api_key` в конфиге.
 - Для WebUI можно выбрать `ai_provider=webui` и задать `webui_url`, `webui_endpoint`, `webui_model`, `webui_api_key` (или секцию `[webui]`).
 - Для `vacation_file`: абсолютный путь используется как есть, относительный резолвится от parent-каталога проекта.

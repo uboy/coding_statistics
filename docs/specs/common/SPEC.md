@@ -30,6 +30,8 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
   - Week selector supports `week_date`, or `week` (+ optional `year`), or same-week `start/end`.
   - Keeps Epic/task order using previous snapshots and prints red/green/white diff to console only.
   - Supports configurable labels (`labels_highlights`, `labels_report`) and optional vacations from Excel.
+  - Feature status is derived from aggregated parent/subtask evidence (status/resolution + weekly comments), so parent items can still have a status when only subtasks were updated.
+  - Weekly comment cleanup removes links/attachments/markdown-image markers before formatting report text.
 - **unified_review** (`stats_core/reports/unified_review.py`):
   - Processes links from `report_inputs/input.txt` (or config override), auto-detects platform by URL, and exports summary tables.
 
@@ -110,6 +112,7 @@ python stats_main.py run \
   - Requires Jira comment activity in selected week; empty week produces mostly empty chapters.
   - Ollama is optional; if unavailable, deterministic text is used.
   - Vacation extraction depends on workbook structure (date row + marker cells) and configured markers.
+  - Status normalization includes common non-standard/localized Jira state names (for example Done/Closed equivalents) and review/in-progress states.
 - **Unified review**:
   - Only processes URLs matching known platform patterns.
   - Private repository data requires valid tokens.

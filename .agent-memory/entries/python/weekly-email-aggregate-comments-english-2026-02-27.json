@@ -1,0 +1,18 @@
+{
+  "id": "weekly-email-aggregate-comments-english-2026-02-27",
+  "technology": "python",
+  "skills": ["developer"],
+  "applies_to_systems": ["codex"],
+  "summary": "Weekly email status quality improves when all comments from the selected week are aggregated (not only latest), with deterministic cleanup and English-safe fallback.",
+  "source_links": ["user-feedback: report must be closer to dense weekly status format and in English"],
+  "recorded_on": "2026-02-27",
+  "last_verified_on": "2026-02-27",
+  "verify_after_days": 60,
+  "status": "active",
+  "details": [
+    "Use all in-week comments to build status context; deduplicate points and cap size.",
+    "Strip links/Jira keys/formatting before AI rewrite so weak models focus on semantics.",
+    "When comments are non-English and AI cannot rewrite, return English fallback text.",
+    "Ensure custom output_file path still writes HTML and weekly snapshot."
+  ]
+}

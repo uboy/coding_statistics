@@ -49,6 +49,8 @@ sources -> stats.collector -> reports -> export
 - Inputs: `--params project=KEY week_date=YYYY-MM-DD` (or `week=WWwYYYY`)
 - Outputs: HTML only, stores weekly snapshot JSON in `reports/`
 - Key params: `labels_highlights`, `labels_report`, `vacation_file`, `ai_provider`
+- Status logic: chapter item status is built from aggregated parent+subtask evidence (not parent comments only).
+- Comment hygiene: markdown links/images/attachment-like text are stripped before composing report lines.
 
 ### unified_review
 - Purpose: consolidated review report from links (PRs/commits), auto-detects sources.
@@ -95,6 +97,7 @@ Cache file default: `data/cache/cache.json`.
 - Empty reports often come from wrong period, project key, or missing config.
 - Make sure `report_inputs/input.txt` exists for `unified_review` default flow.
 - Progress bar is enabled by default; verbose logs will appear above it.
+- `jira_weekly_email`: if source comments are mostly attachments/screenshots, sanitized comment text may be empty; rely on status fields and subtask aggregation.
 
 ## Operational Constraints
 - No secrets/tokens/credentials in repo or logs.

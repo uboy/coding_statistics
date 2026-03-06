@@ -36,9 +36,34 @@ from ..utils.progress import NoopProgressManager
 logger = logging.getLogger(__name__)
 
 
-_DONE_VALUES = {"done", "resolved", "closed"}
+_DONE_VALUES = {
+    "done",
+    "resolved",
+    "closed",
+    "fixed",
+    "complete",
+    "completed",
+    "ready",
+    "готово",
+    "выполнено",
+    "закрыто",
+    "решено",
+}
 _REPORT_CLOSED_RESOLUTION_VALUES = {"done", "resolved"}
-_IN_PROGRESS_VALUES = {"in progress", "in-progress"}
+_IN_PROGRESS_VALUES = {
+    "in progress",
+    "in-progress",
+    "wip",
+    "code review",
+    "in review",
+    "review",
+    "in development",
+    "testing",
+    "qa",
+    "verification",
+    "в работе",
+    "на проверке",
+}
 _RISK_LABELS = frozenset({"risk", "issue"})
 
 _SOFFICE_DOWNLOAD_URL = "https://www.libreoffice.org/download/download-libreoffice/"
@@ -119,7 +144,8 @@ def _clean_comment_for_report(value: Any) -> str:
     # Remove inline JSON-like fragments and long key/value blobs.
     cleaned = re.sub(r"\[[\{\[][^][]{20,}[\}\]]\]", " ", cleaned)
     cleaned = re.sub(r"\{[^{}]{20,}\}", " ", cleaned)
-    cleaned = re.sub(r"\[[^\]]+\]\([^)]+\)", "", cleaned)
+    cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", cleaned)
+    cleaned = re.sub(r"\[[^\]]+\]\([^)]+\)", " ", cleaned)
     cleaned = re.sub(r"(?:https?://|ftp://|file://|www\.)\S+", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b[A-Z]+-\d+\b", "", cleaned)
     cleaned = re.sub(r"@\w+", " ", cleaned)
@@ -127,7 +153,11 @@ def _clean_comment_for_report(value: Any) -> str:
     cleaned = re.sub(r"\b[A-Za-z0-9+/=_-]{20,}\b", " ", cleaned)
     cleaned = re.sub(r"[`*_>#]+", " ", cleaned)
     cleaned = re.sub(r"\s*[\[\]{}|]+\s*", " ", cleaned)
-    cleaned = _normalize_text(cleaned.strip(" -,:;"))
+    cleaned = _normalize_text(cleaned.strip(" -,:;!?"))
+    if cleaned and not re.search(r"[A-Za-zА-Яа-я0-9]", cleaned):
+        cleaned = ""
+    if _normalize_key(cleaned) in {"results", "result", "plan", "update"}:
+        cleaned = ""
     if not cleaned:
         return ""
     # Keep final weekly email report English-only even when source comments are non-English.
@@ -291,12 +321,40 @@ def _comment_body_to_text(body: Any) -> str:
     return str(body)
 
 
+def _looks_done(value: Any) -> bool:
+    marker = _normalize_key(value)
+    if not marker:
+        return False
+    if marker in _DONE_VALUES:
+        return True
+    if re.search(r"\b(done|resolved|closed|fixed|complete(?:d)?|ready)\b", marker):
+        return True
+    if re.search(r"(готов|выполн|закрыт|решен|исправлен)", marker):
+        return True
+    return False
+
+
 def _is_finished(status: str, resolution: str) -> bool:
-    return _normalize_key(status) in _DONE_VALUES or _normalize_key(resolution) in _DONE_VALUES
+    return _looks_done(status) or _looks_done(resolution)
 
 
 def _is_in_progress_status(status: Any) -> bool:
-    return _normalize_key(status) in _IN_PROGRESS_VALUES
+    marker = _normalize_key(status)
+    if not marker:
+        return False
+    if marker in _IN_PROGRESS_VALUES:
+        return True
+    if _looks_done(marker):
+        return False
+    if marker in {"todo", "to do", "open", "backlog", "new", "selected for development", "reopened"}:
+        return False
+    return bool(
+        re.search(
+            r"\b(progress|develop|review|verify|test|qa|implement|work)\b",
+            marker,
+        )
+        or re.search(r"(в работе|проверк|тестир|разработк)", marker)
+    )
 
 
 def _safe_project_key(project: str) -> str:
@@ -1039,6 +1097,10 @@ def _build_compact_feature_status(feature: dict[str, Any]) -> str:
         if int(feature.get("closed_tasks") or 0) > 0:
             return "Completed."
         if int(feature.get("in_progress_tasks") or 0) > 0:
+            return "In progress."
+        if int(feature.get("comments_count") or 0) > 0:
+            return "Updated this week."
+        if feature.get("subtask_issue_keys"):
             return "In progress."
         return ""
 
