@@ -31,6 +31,7 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
   - Keeps Epic/task order using previous snapshots and prints red/green/white diff to console only.
   - Supports configurable labels (`labels_highlights`, `labels_report`) and optional vacations from Excel.
   - Feature status is derived from aggregated parent/subtask evidence (status/resolution + weekly comments), so parent items can still have a status when only subtasks were updated.
+  - For features with active subtasks, `Key Results` preserves named per-subtask weekly detail lines (done/progress/risk/plan) under the feature summary instead of relying only on flattened feature comment points.
   - Weekly comment cleanup removes links/attachments/markdown-image markers before formatting report text.
 - **unified_review** (`stats_core/reports/unified_review.py`):
   - Processes links from `report_inputs/input.txt` (or config override), auto-detects platform by URL, and exports summary tables.

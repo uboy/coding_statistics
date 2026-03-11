@@ -69,6 +69,7 @@ python stats_main.py run \
 - Labels для глав настраиваются через `labels_highlights` и `labels_report`.
 - Для `labels_report` можно указать `@all`, чтобы отключить label-фильтр и включать эпики/задачи с любыми метками.
 - Статус в `Key Results` и `Next Week Plans` строится по агрегированным данным parent + subtask (включая subtask-only активность), а не только по комментариям родительской задачи.
+- Для фич с активными подзадачами `Key Results` теперь сохраняет named subtask progress: под feature summary выводятся отдельные строки по подзадачам с тем, что сделано, рисками и следующими шагами за выбранную неделю.
 - Комментарии в weekly email очищаются от markdown/link/image шума (включая `![image](...)`), чтобы в итоговом тексте не появлялись артефакты вроде одиночного `!`.
 - Для Ollama можно задать `ollama_api_key` (CLI param) или `[ollama].api_key` в конфиге.
 - Для WebUI можно выбрать `ai_provider=webui` и задать `webui_url`, `webui_endpoint`, `webui_model`, `webui_api_key` (или секцию `[webui]`).
@@ -94,6 +95,7 @@ The `jira_weekly_email` report produces an Outlook-friendly HTML email with fixe
 2. **Key Results and Achievements** — grouped by Epic, including:
    - report-labeled completed items first
    - other completed task/feature/improvement items
+   - for subtask-driven features: compact feature summary plus named active-subtask detail lines
    - high-priority paragraph inside each epic
    - bugs summary paragraph inside each epic
 3. **Next Week Plans** — in-progress items grouped by Epic

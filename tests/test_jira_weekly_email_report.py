@@ -3282,6 +3282,122 @@ def test_subtask_aggregation_ai_disabled_fallback():
     assert "Parent Feature" in html_out
 
 
+def test_key_results_subtask_detail_lines_preserve_named_done_risk_and_plan():
+    week = _make_payload_week()
+    cfg = __import__("configparser").ConfigParser()
+    evidence = [
+        _make_parent_evidence("FEAT-1", "Parent Feature", status="In Progress"),
+        _make_subtask_evidence(
+            "FEAT-2",
+            "FEAT-1",
+            "Backend API",
+            comment="Implemented API contract. Next week finish integration tests.",
+        ),
+        _make_subtask_evidence(
+            "FEAT-3",
+            "FEAT-1",
+            "Schema sync",
+            comment="Blocked by backend schema review.",
+        ),
+    ]
+    payload = build_report_payload(
+        evidence,
+        week,
+        cfg,
+        "ABC",
+        labels_highlights=set(),
+        labels_report={"reportx"},
+        priority_high_values={"high"},
+    )
+
+    feature_items = [
+        item
+        for epic in payload.get("epics") or []
+        for item in (epic.get("feature_statuses") or [])
+    ]
+    assert feature_items
+    feat = feature_items[0]
+    detail_lines = feat.get("detail_lines") or []
+
+    assert any("Backend API" in line and "Implemented API contract." in line for line in detail_lines)
+    assert any("Backend API" in line and "finish integration tests" in line for line in detail_lines)
+    assert any("Schema sync" in line and "Blocked by backend schema review." in line for line in detail_lines)
+    assert "Risk:" in feat.get("status", "")
+    assert "Next:" in feat.get("status", "")
+
+
+def test_key_results_subtask_detail_lines_use_status_fallback_when_comments_missing():
+    week = _make_payload_week()
+    cfg = __import__("configparser").ConfigParser()
+    subtask = _make_subtask_evidence(
+        "FEAT-2",
+        "FEAT-1",
+        "Review task",
+        comment="",
+    )
+    subtask["Status"] = "Code Review"
+    subtask["Comments"] = []
+    evidence = [
+        _make_parent_evidence("FEAT-1", "Parent Feature", status="In Progress"),
+        subtask,
+    ]
+    payload = build_report_payload(
+        evidence,
+        week,
+        cfg,
+        "ABC",
+        labels_highlights=set(),
+        labels_report={"reportx"},
+        priority_high_values={"high"},
+    )
+
+    feature_items = [
+        item
+        for epic in payload.get("epics") or []
+        for item in (epic.get("feature_statuses") or [])
+    ]
+    assert feature_items
+    feat = feature_items[0]
+    detail_lines = feat.get("detail_lines") or []
+    assert any("Review task" in line and "review" in line.lower() for line in detail_lines)
+
+
+def test_render_outlook_html_renders_key_results_detail_lines():
+    payload = {
+        "meta": {"project": "ABC", "week_key": "26'w10", "week_start": "2026-03-02", "week_end": "2026-03-08"},
+        "titles": {},
+        "highlights": [],
+        "epics": [
+            {
+                "epic_key": "EPIC-1",
+                "epic_name": "Epic One",
+                "feature_statuses": [
+                    {
+                        "issue_key": "FEAT-1",
+                        "text": "Parent Feature",
+                        "status": "In progress. Risk: Backend review pending. Next: Finish integration tests.",
+                        "comment": "In progress. Risk: Backend review pending. Next: Finish integration tests.",
+                        "detail_lines": [
+                            "Backend API (FEAT-2): Done: Implemented API contract. Next: Finish integration tests.",
+                            "Schema sync (FEAT-3): Risk: Blocked by backend schema review.",
+                        ],
+                    }
+                ],
+                "next_week_items": [],
+                "high_priority_items": [],
+                "bugs": {"closed": 0, "in_progress": 0},
+            }
+        ],
+        "next_week_plans": [],
+        "summary_table": {"rows": [], "totals": {}},
+        "vacations": [],
+        "project_bugs": {"in_progress": 0, "open": 0},
+    }
+    html_out = render_outlook_html(payload)
+    assert "Backend API (FEAT-2): Done: Implemented API contract. Next: Finish integration tests." in html_out
+    assert "Schema sync (FEAT-3): Risk: Blocked by backend schema review." in html_out
+
+
 # ---------------------------------------------------------------------------
 # Subtask-not-standalone fix tests
 # ---------------------------------------------------------------------------

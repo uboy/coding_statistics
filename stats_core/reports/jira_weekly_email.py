@@ -30,6 +30,14 @@ from openpyxl.utils.datetime import from_excel
 
 from ..sources.jira import JiraSource
 from . import registry
+from .jira_weekly_email_key_results import (
+    build_feature_aggregate_input,
+    build_feature_detail_lines,
+    build_feature_plan_summary,
+    build_feature_progress,
+    build_feature_result_summary,
+    has_feature_result_activity,
+)
 from ..utils.ai_retry import retry_ai_call
 from ..utils.progress import NoopProgressManager
 
@@ -1003,6 +1011,42 @@ def _collect_comment_points(comments: Any) -> list[str]:
     return unique_points
 
 
+def _collect_structured_comment_points(comments: Any) -> list[str]:
+    values = comments if isinstance(comments, list) else [comments]
+    raw_points: list[str] = []
+    for value in values:
+        cleaned = _clean_comment_for_report(value)
+        if not cleaned:
+            continue
+        split_points = _split_progress_points(cleaned)
+        for point in (split_points or [cleaned]):
+            sentences = re.split(r"(?<=[.!?])\s+", _normalize_text(point))
+            for sentence in sentences:
+                sentence = _normalize_text(sentence)
+                if not sentence:
+                    continue
+                marker = _normalize_key(sentence)
+                if re.search(r"\b(weekly report|h2|h3|chapter|results summary)\b", marker):
+                    continue
+                if len(sentence.split()) < 2:
+                    continue
+                if len(re.findall(r"[^A-Za-z0-9\s.,;:!?()/-]", sentence)) > 4:
+                    continue
+                if sentence[-1] not in ".!?":
+                    sentence += "."
+                raw_points.append(sentence)
+
+    unique_points: list[str] = []
+    seen: set[str] = set()
+    for point in raw_points:
+        marker = _normalize_key(point)
+        if not marker or marker in seen:
+            continue
+        seen.add(marker)
+        unique_points.append(point)
+    return unique_points
+
+
 def _truncate_words(text: str, max_words: int = 12) -> str:
     words = _normalize_text(text).split()
     if not words:
@@ -1390,12 +1434,14 @@ def build_report_payload(
                 "feature_name": feature_name,
                 "issue_keys": set(),
                 "points": [],
+                "parent_points": [],
                 "comments_count": 0,
                 "closed_tasks": 0,
                 "in_progress_tasks": 0,
                 "blocked_tasks": 0,
                 "subtask_issue_keys": [],
                 "subtask_summaries": {},
+                "subtask_updates": {},
             },
         )
 
@@ -1404,12 +1450,27 @@ def build_report_payload(
         if entry.get("Subtask") and issue_key and issue_key not in feature["subtask_summaries"]:
             feature["subtask_issue_keys"].append(issue_key)
             feature["subtask_summaries"][issue_key] = _normalize_text(entry.get("Summary"))
+        status_key = _normalize_key(entry.get("Status"))
         comment_points = _collect_comment_points(entry.get("Comments") or [])
+        structured_comment_points = _collect_structured_comment_points(entry.get("Comments") or [])
         if comment_points:
             feature["points"].extend(comment_points)
+        if entry.get("Subtask") and issue_key:
+            feature["subtask_updates"][issue_key] = {
+                "issue_key": issue_key,
+                "summary": _normalize_text(entry.get("Summary")) or issue_key,
+                "status": _normalize_text(entry.get("Status")),
+                "resolution": _normalize_text(entry.get("Resolution")),
+                "finished": bool(entry.get("Finished")),
+                "in_progress": _is_in_progress_status(entry.get("Status")),
+                "blocked": status_key in blocked_status_values,
+                "comments_count": len(entry.get("Comments") or []),
+                "points": structured_comment_points,
+            }
+        elif structured_comment_points:
+            feature["parent_points"].extend(structured_comment_points)
         feature["comments_count"] += len(entry.get("Comments") or [])
 
-        status_key = _normalize_key(entry.get("Status"))
         if entry.get("Finished"):
             feature["closed_tasks"] += 1
             epic_bucket["closed_tasks"] += 1
@@ -1532,13 +1593,15 @@ def build_report_payload(
                 "feature_name": _as_feat_name,
                 "issue_keys": {_as_ik} if _as_ik else set(),
                 "points": _as_comment_points,
+                "parent_points": [],
                 "comments_count": len(_as_entry.get("Comments") or []),
                 "closed_tasks": 1 if _as_entry.get("Finished") else 0,
                 "in_progress_tasks": 1 if not _as_entry.get("Finished") and _is_in_progress_status(_as_entry.get("Status")) else 0,
-                "blocked_tasks": 0,
+                "blocked_tasks": 1 if _normalize_key(_as_entry.get("Status")) in blocked_status_values else 0,
                 "always_show": True,
                 "subtask_issue_keys": [_as_ik] if _as_is_subtask and _as_ik else [],
                 "subtask_summaries": {_as_ik: _normalize_text(_as_entry.get("Summary"))} if _as_is_subtask and _as_ik else {},
+                "subtask_updates": {},
             }
 
     epic_entries: list[dict[str, Any]] = []
@@ -1567,9 +1630,19 @@ def build_report_payload(
                 seen.add(marker)
                 dedup_points.append(point)
             feature["points"] = dedup_points
-
-            status_text = _build_compact_feature_status(feature)
-            plan_text = _build_compact_plan_status(feature)
+            feature_progress = build_feature_progress(feature)
+            use_structured_results = feature_progress.has_active_subtasks
+            status_text = (
+                build_feature_result_summary(feature_progress)
+                if use_structured_results
+                else _build_compact_feature_status(feature)
+            )
+            plan_text = (
+                build_feature_plan_summary(feature_progress)
+                if use_structured_results
+                else _build_compact_plan_status(feature)
+            )
+            detail_lines = build_feature_detail_lines(feature_progress) if use_structured_results else []
 
             feature_item = {
                 "issue_key": feature_key,
@@ -1579,10 +1652,15 @@ def build_report_payload(
                 "closed_tasks": int(feature.get("closed_tasks") or 0),
                 "issue_keys": sorted(list(feature.get("issue_keys") or []), key=_normalize_key),
             }
+            if use_structured_results:
+                feature_item["subtask_updates"] = [item.to_payload() for item in feature_progress.active_subtasks]
+            if detail_lines:
+                feature_item["detail_lines"] = detail_lines
             subtask_keys = list(feature.get("subtask_issue_keys") or [])
             has_results = (
                 int(feature.get("closed_tasks") or 0) > 0
                 or len(feature.get("points") or []) > 0
+                or has_feature_result_activity(feature_progress)
             )
             is_high_priority = _normalize_key(feature_key) in hp_issue_keys
             is_always_show = bool(feature.get("always_show"))
@@ -1595,7 +1673,11 @@ def build_report_payload(
                     feature_item["status"] = "No updates this week."
                     feature_item["comment"] = "No updates this week."
                 if len(subtask_keys) > 2:
-                    feature_item["aggregate_input"] = _build_aggregate_input(feature, mode="result")
+                    feature_item["aggregate_input"] = (
+                        build_feature_aggregate_input(feature_progress, mode="result")
+                        if use_structured_results
+                        else _build_aggregate_input(feature, mode="result")
+                    )
                     feature_item["subtask_keys_in_report"] = subtask_keys
                     feature_item["aggregate_status"] = ""
                 feature_statuses.append(feature_item)
@@ -1609,7 +1691,11 @@ def build_report_payload(
                     "subtasks": [],
                 }
                 if len(subtask_keys) > 2:
-                    plan_item["aggregate_input"] = _build_aggregate_input(feature, mode="plan")
+                    plan_item["aggregate_input"] = (
+                        build_feature_aggregate_input(feature_progress, mode="plan")
+                        if use_structured_results
+                        else _build_aggregate_input(feature, mode="plan")
+                    )
                     plan_item["subtask_keys_in_report"] = subtask_keys
                     plan_item["aggregate_status"] = ""
                 next_week_items.append(plan_item)
@@ -2627,6 +2713,8 @@ def _payload_to_lines(payload: dict[str, Any]) -> list[str]:
         lines.append(f"EPIC {epic.get('epic_name')} ({epic.get('epic_key')})")
         for item in epic.get("feature_statuses") or []:
             lines.append(f"feature:{item.get('issue_key')} {item.get('text')} status={item.get('status')}")
+            for detail in item.get("detail_lines") or []:
+                lines.append(f"feature_detail:{item.get('issue_key')} {detail}")
         for item in epic.get("next_week_items") or []:
             lines.append(f"next_week:{item.get('issue_key')} {item.get('text')} status={item.get('status')}")
         for section in ("report_items", "completed_items", "progress_items", "high_priority_items"):
@@ -3057,16 +3145,25 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
                 aggregate_status = _normalize_text(item.get("aggregate_status"))
                 regular_status = _normalize_text(item.get("status"))
                 status = html.escape(aggregate_status or regular_status)
+                detail_lines = [html.escape(_normalize_text(line)) for line in (item.get("detail_lines") or []) if _normalize_text(line)]
                 subtask_keys_r = list(item.get("subtask_keys_in_report") or [])
                 rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
-                if status:
-                    rows.append("</ul><ul class='lvl3'>")
-                    if aggregate_status and subtask_keys_r:
-                        debug = html.escape(f" ({', '.join(subtask_keys_r)})")
-                        rows.append(f"<li>{status}{debug}</li>")
-                    else:
-                        rows.append(f"<li>{status}</li>")
-                    rows.append("</ul><ul class='lvl2'>")
+                if status or detail_lines:
+                    rows.append("</ul>")
+                    if status:
+                        rows.append("<ul class='lvl3'>")
+                        if aggregate_status and subtask_keys_r:
+                            debug = html.escape(f" ({', '.join(subtask_keys_r)})")
+                            rows.append(f"<li>{status}{debug}</li>")
+                        else:
+                            rows.append(f"<li>{status}</li>")
+                        rows.append("</ul>")
+                    if detail_lines:
+                        rows.append("<ul class='lvl4'>")
+                        for detail_line in detail_lines:
+                            rows.append(f"<li>{detail_line}</li>")
+                        rows.append("</ul>")
+                    rows.append("<ul class='lvl2'>")
             rows.append("</ul>")
         else:
             rows.append("<p class='muted'>No feature updates in selected period.</p>")

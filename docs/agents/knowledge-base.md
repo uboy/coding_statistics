@@ -50,6 +50,7 @@ sources -> stats.collector -> reports -> export
 - Outputs: HTML only, stores weekly snapshot JSON in `reports/`
 - Key params: `labels_highlights`, `labels_report`, `vacation_file`, `ai_provider`
 - Status logic: chapter item status is built from aggregated parent+subtask evidence (not parent comments only).
+- Key Results detail logic: features with active subtasks now render named subtask detail lines from structured weekly evidence, so done/progress/risk/plan can stay attached to the subtask that produced it.
 - Comment hygiene: markdown links/images/attachment-like text are stripped before composing report lines.
 
 ### unified_review

@@ -21,3 +21,18 @@
 {"id":"ai-comments-impl","title":"Implement AI comments prompt/fallback changes","status":"done"}
 {"id":"ai-comments-tests-green","title":"Run tests (GREEN)","status":"done"}
 {"id":"ai-comments-review","title":"Reviewer handoff and verdict","status":"done"}
+{"id":"weekly-email-research","title":"Research current weekly email report implementation and improvement gaps","status":"done"}
+{"id":"weekly-email-plan","title":"Prepare weekly email improvement plan for user review","status":"done"}
+{"id":"weekly-email-docs","title":"Document approved weekly email changes if implementation proceeds","status":"done"}
+{"id":"weekly-email-verify","title":"Run verification for weekly email changes if implementation proceeds","status":"done"}
+{"id":"weekly-email-review","title":"Independent review report for weekly email changes if implementation proceeds","status":"done"}
+{"id":"weekly-email-refactor-spec","title":"Design spec for weekly email refactor and key-results subtask aggregation","status":"done"}
+{"id":"weekly-email-refactor-annotation","title":"User review/annotation cycle for weekly email refactor spec","status":"done"}
+{"id":"weekly-email-refactor-plan","title":"Implementation checklist planning after spec approval","status":"done"}
+{"id":"weekly-email-refactor-tests-red","title":"Add RED tests for subtask-aware weekly email key results","status":"done"}
+{"id":"weekly-email-refactor-extract","title":"Extract jira_weekly_email helpers without intended behavior change","status":"done"}
+{"id":"weekly-email-refactor-impl","title":"Implement structured subtask-aware key results aggregation and rendering","status":"done"}
+{"id":"weekly-email-refactor-docs","title":"Update weekly email docs after implementation","status":"done"}
+{"id":"weekly-email-refactor-security","title":"Verify sanitization, AI prompt safety, and snapshot compatibility","status":"done"}
+{"id":"weekly-email-refactor-verify","title":"Run focused and full verification for weekly email refactor","status":"done"}
+{"id":"weekly-email-refactor-review","title":"Independent review report for weekly email refactor","status":"done"}

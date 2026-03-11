@@ -2,6 +2,42 @@
 
 - Session: 2026-02-26
 - Mode: Default
+- Session: 2026-03-11
+- Mode: Team Lead Orchestrator
+- Status: Startup ritual completed for weekly email analysis; loaded coordination/tasks.jsonl and coordination/state/codex.md.
+- Status: New non-trivial task registered: research current weekly email report and prepare improvement plan for user review.
+- Status: Startup ritual refreshed for a new trivial read-only trace request about `jira_weekly_email` entry points and maintenance files.
+- Status: Loaded `large-codebase-context` skill; proceeding with bounded repo search across CLI/registry/config/docs/tests/templates.
+- Status: Read-only trace complete for `jira_weekly_email`: execution entry chain confirmed as `stats_main.py` -> `stats_core/cli.py` -> `stats_core/reports/__init__.py` -> `stats_core/reports/registry.py` -> `JiraWeeklyEmailReport.run()`.
+- Status: Direct runtime support files confirmed: `stats_core/config.py`, `stats_core/sources/jira.py`, `stats_core/utils/ai_retry.py`, `stats_core/utils/progress.py`, plus config templates under `configs/`.
+- Status: Maintenance surface confirmed in `README.md`, `docs/specs/common/SPEC.md`, `docs/agents/knowledge-base.md`, `docs/specs/jira_weekly_email/jira-weekly-email-ollama-v1.md`, and `tests/test_jira_weekly_email_report.py`.
+- Status: No standalone weekly-email template file found outside report code; only generic placeholder dirs/files exist under `templates/word/.gitkeep` and `templates/excel/.gitkeep`.
+- Status: Spawned architect agent for weekly email improvement spec and explorer agent for external touch points.
+- Status: Completed first-pass analysis of jira_weekly_email flow, payload shape, HTML rendering, and test coverage; findings stored in .scratchpad/research.md.
+- Status: Weekly email research finalized; task status moved to done and research notes updated with docs drift and snapshot-compatibility concerns.
+- Status: Wrote .scratchpad/plan.md with recommended incremental refactor + content-quality plan; waiting for user review checkpoint before implementation.
+- Status: New non-trivial follow-up accepted: plan weekly-email refactor plus functional change for Week Key Results subtask aggregation.
+- Status: Inspecting current compact feature-status logic to identify where subtask progress is lost before writing the spec.
+- Status: Wrote design spec at docs/design/jira-weekly-email-refactor-subtask-key-results-v1.md and moved workflow to annotation/approval checkpoint.
+- Status: User approved spec (`APPROVED:v1`).
+- Status: Wrote implementation plan at docs/plans/jira_weekly_email/jira-weekly-email-refactor-subtask-key-results-plan-v1.md and expanded coordination checklist for execution/verification/security/review.
+- Status: Approval recorded inside spec file; entering developer execution flow with RED tests first.
+- Status: Added RED tests covering named subtask detail lines, preserved done/risk/plan, and HTML rendering for Key Results.
+- Status: RED phase confirmed with 3 failures: no payload detail_lines, status-only subtask feature dropped from Key Results, and renderer ignores detail lines.
+- Status: Moving to implementation: extract subtask-aware key-results summary logic into a helper module, then wire payload/render integration.
+- Status: Implemented structured subtask-aware key results via new helper module `stats_core/reports/jira_weekly_email_key_results.py` and wiring in `stats_core/reports/jira_weekly_email.py`.
+- Status: Verification complete: targeted RED tests now pass, `pytest tests/test_jira_weekly_email_report.py` passed (75), and `pytest tests` passed (139).
+- Status: Independent reviewer verdict PASS; review artifact saved to coordination/reviews/weekly-email-refactor-subtask-key-results-review-v1.md.
+- Notes:
+  - Process gap: expected review template/validator files were not present in the repo, so the review report used a minimal local structure.
+  - Reviewer SHOULD-FIX remains open: observability logs described in spec §10 were not implemented in this pass.
+- Status: Created design spec docs/design/jira-weekly-email-refactor-subtask-key-results-v1.md for weekly-email refactor and structured subtask-aware Key Results.
+- Status: Workflow is now at the annotation/review checkpoint; waiting for user approval or requested changes to the spec.
+- Notes:
+  - `policy/team-lead-orchestrator.md` not found in repo.
+  - `cycle-contract.json` not found in repo.
+  - README/common spec still describe a simpler weekly-email structure than the current HTML implementation, which now also renders a dedicated risks/issues block.
+  - Future refactors should preserve or explicitly version snapshot/payload compatibility because ordering and diff output depend on the current payload shape.
 - Status: Resumed; need to fix progress bar stability (bars held at bottom) and wire child bars into parallel execution.
 - Status: Analyzed weekly email target screenshots and current jira_weekly_email implementation; preparing gap analysis and weak-model AI strategy.
 - Status: Completed deep docs audit + weekly-email status/noise bugfix (image `!` artifact + localized status normalization) with tests green.
