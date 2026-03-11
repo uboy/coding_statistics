@@ -36,3 +36,7 @@
 {"id":"weekly-email-refactor-security","title":"Verify sanitization, AI prompt safety, and snapshot compatibility","status":"done"}
 {"id":"weekly-email-refactor-verify","title":"Run focused and full verification for weekly email refactor","status":"done"}
 {"id":"weekly-email-refactor-review","title":"Independent review report for weekly email refactor","status":"done"}
+{"id":"weekly-email-subtask-inline-fix-red","title":"Confirm regression: subtasks rendered as standalone items in weekly email key results","status":"done"}
+{"id":"weekly-email-subtask-inline-fix-impl","title":"Inline subtask evidence into parent feature status without separate rendered subtask items","status":"done"}
+{"id":"weekly-email-subtask-inline-fix-verify","title":"Run focused and full verification for inline subtask key results fix","status":"done"}
+{"id":"weekly-email-subtask-inline-fix-review","title":"Independent review for inline subtask key results fix","status":"done"}

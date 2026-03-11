@@ -3282,7 +3282,7 @@ def test_subtask_aggregation_ai_disabled_fallback():
     assert "Parent Feature" in html_out
 
 
-def test_key_results_subtask_detail_lines_preserve_named_done_risk_and_plan():
+def test_key_results_subtask_status_preserves_named_done_risk_and_plan_without_detail_lines():
     week = _make_payload_week()
     cfg = __import__("configparser").ConfigParser()
     evidence = [
@@ -3317,16 +3317,15 @@ def test_key_results_subtask_detail_lines_preserve_named_done_risk_and_plan():
     ]
     assert feature_items
     feat = feature_items[0]
-    detail_lines = feat.get("detail_lines") or []
+    status = feat.get("status", "")
 
-    assert any("Backend API" in line and "Implemented API contract." in line for line in detail_lines)
-    assert any("Backend API" in line and "finish integration tests" in line for line in detail_lines)
-    assert any("Schema sync" in line and "Blocked by backend schema review." in line for line in detail_lines)
-    assert "Risk:" in feat.get("status", "")
-    assert "Next:" in feat.get("status", "")
+    assert not (feat.get("detail_lines") or [])
+    assert "Backend API" in status and "Implemented API contract." in status
+    assert "Backend API" in status and "finish integration tests" in status
+    assert "Schema sync" in status and "Blocked by backend schema review." in status
 
 
-def test_key_results_subtask_detail_lines_use_status_fallback_when_comments_missing():
+def test_key_results_status_uses_named_subtask_fallback_when_comments_missing():
     week = _make_payload_week()
     cfg = __import__("configparser").ConfigParser()
     subtask = _make_subtask_evidence(
@@ -3358,11 +3357,12 @@ def test_key_results_subtask_detail_lines_use_status_fallback_when_comments_miss
     ]
     assert feature_items
     feat = feature_items[0]
-    detail_lines = feat.get("detail_lines") or []
-    assert any("Review task" in line and "review" in line.lower() for line in detail_lines)
+    status = feat.get("status", "")
+    assert "Review task" in status
+    assert "review" in status.lower()
 
 
-def test_render_outlook_html_renders_key_results_detail_lines():
+def test_render_outlook_html_does_not_render_key_results_detail_lines_as_separate_items():
     payload = {
         "meta": {"project": "ABC", "week_key": "26'w10", "week_start": "2026-03-02", "week_end": "2026-03-08"},
         "titles": {},
@@ -3375,8 +3375,14 @@ def test_render_outlook_html_renders_key_results_detail_lines():
                     {
                         "issue_key": "FEAT-1",
                         "text": "Parent Feature",
-                        "status": "In progress. Risk: Backend review pending. Next: Finish integration tests.",
-                        "comment": "In progress. Risk: Backend review pending. Next: Finish integration tests.",
+                        "status": (
+                            "In progress. Backend API: Done: Implemented API contract. Next: Finish integration tests. "
+                            "Schema sync: Risk: Blocked by backend schema review."
+                        ),
+                        "comment": (
+                            "In progress. Backend API: Done: Implemented API contract. Next: Finish integration tests. "
+                            "Schema sync: Risk: Blocked by backend schema review."
+                        ),
                         "detail_lines": [
                             "Backend API (FEAT-2): Done: Implemented API contract. Next: Finish integration tests.",
                             "Schema sync (FEAT-3): Risk: Blocked by backend schema review.",
@@ -3394,8 +3400,10 @@ def test_render_outlook_html_renders_key_results_detail_lines():
         "project_bugs": {"in_progress": 0, "open": 0},
     }
     html_out = render_outlook_html(payload)
-    assert "Backend API (FEAT-2): Done: Implemented API contract. Next: Finish integration tests." in html_out
-    assert "Schema sync (FEAT-3): Risk: Blocked by backend schema review." in html_out
+    assert "Backend API: Done: Implemented API contract. Next: Finish integration tests." in html_out
+    assert "Schema sync: Risk: Blocked by backend schema review." in html_out
+    assert "Backend API (FEAT-2): Done: Implemented API contract. Next: Finish integration tests." not in html_out
+    assert "Schema sync (FEAT-3): Risk: Blocked by backend schema review." not in html_out
 
 
 # ---------------------------------------------------------------------------

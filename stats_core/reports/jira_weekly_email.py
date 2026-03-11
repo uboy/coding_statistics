@@ -32,7 +32,6 @@ from ..sources.jira import JiraSource
 from . import registry
 from .jira_weekly_email_key_results import (
     build_feature_aggregate_input,
-    build_feature_detail_lines,
     build_feature_plan_summary,
     build_feature_progress,
     build_feature_result_summary,
@@ -1642,7 +1641,6 @@ def build_report_payload(
                 if use_structured_results
                 else _build_compact_plan_status(feature)
             )
-            detail_lines = build_feature_detail_lines(feature_progress) if use_structured_results else []
 
             feature_item = {
                 "issue_key": feature_key,
@@ -1654,8 +1652,6 @@ def build_report_payload(
             }
             if use_structured_results:
                 feature_item["subtask_updates"] = [item.to_payload() for item in feature_progress.active_subtasks]
-            if detail_lines:
-                feature_item["detail_lines"] = detail_lines
             subtask_keys = list(feature.get("subtask_issue_keys") or [])
             has_results = (
                 int(feature.get("closed_tasks") or 0) > 0
@@ -2713,8 +2709,6 @@ def _payload_to_lines(payload: dict[str, Any]) -> list[str]:
         lines.append(f"EPIC {epic.get('epic_name')} ({epic.get('epic_key')})")
         for item in epic.get("feature_statuses") or []:
             lines.append(f"feature:{item.get('issue_key')} {item.get('text')} status={item.get('status')}")
-            for detail in item.get("detail_lines") or []:
-                lines.append(f"feature_detail:{item.get('issue_key')} {detail}")
         for item in epic.get("next_week_items") or []:
             lines.append(f"next_week:{item.get('issue_key')} {item.get('text')} status={item.get('status')}")
         for section in ("report_items", "completed_items", "progress_items", "high_priority_items"):
@@ -3145,10 +3139,9 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
                 aggregate_status = _normalize_text(item.get("aggregate_status"))
                 regular_status = _normalize_text(item.get("status"))
                 status = html.escape(aggregate_status or regular_status)
-                detail_lines = [html.escape(_normalize_text(line)) for line in (item.get("detail_lines") or []) if _normalize_text(line)]
                 subtask_keys_r = list(item.get("subtask_keys_in_report") or [])
                 rows.append(f"<li>{text}{f' ({issue_key})' if issue_key else ''}</li>")
-                if status or detail_lines:
+                if status:
                     rows.append("</ul>")
                     if status:
                         rows.append("<ul class='lvl3'>")
@@ -3157,11 +3150,6 @@ def render_outlook_html(payload: dict[str, Any]) -> str:
                             rows.append(f"<li>{status}{debug}</li>")
                         else:
                             rows.append(f"<li>{status}</li>")
-                        rows.append("</ul>")
-                    if detail_lines:
-                        rows.append("<ul class='lvl4'>")
-                        for detail_line in detail_lines:
-                            rows.append(f"<li>{detail_line}</li>")
                         rows.append("</ul>")
                     rows.append("<ul class='lvl2'>")
             rows.append("</ul>")

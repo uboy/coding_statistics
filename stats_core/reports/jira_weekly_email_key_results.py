@@ -103,6 +103,8 @@ def _fallback_note(*, status: str, resolution: str, finished: bool, in_progress:
         return "Blocked."
     if in_progress:
         return _ensure_terminal_punctuation(status or resolution or "In progress")
+    if status or resolution:
+        return _ensure_terminal_punctuation(status or resolution)
     if comments_count > 0:
         return "Updated this week."
     return "No textual update."
@@ -254,40 +256,23 @@ def has_feature_result_activity(progress: FeatureWeeklyProgress) -> bool:
     )
 
 
-def build_feature_result_summary(progress: FeatureWeeklyProgress) -> str:
-    parts: list[str] = []
-    done_part = _limit_points(
-        _flatten_unique([progress.parent_done_points] + [item.done_points for item in progress.active_subtasks]),
-        max_items=2,
-        max_words_per_item=12,
-    )
-    progress_part = _limit_points(
-        _flatten_unique([progress.parent_progress_points] + [item.progress_points for item in progress.active_subtasks]),
-        max_items=1,
-        max_words_per_item=14,
-    )
-    plan_part = _limit_points(
-        _flatten_unique([progress.parent_plan_points] + [item.plan_points for item in progress.active_subtasks]),
-        max_items=2,
-        max_words_per_item=12,
-    )
-    risk_part = _limit_points(
-        _flatten_unique([progress.parent_risk_points] + [item.risk_points for item in progress.active_subtasks]),
-        max_items=1,
-        max_words_per_item=14,
-    )
-    dependency_part = _limit_points(
-        _flatten_unique([progress.parent_dependency_points] + [item.dependency_points for item in progress.active_subtasks]),
-        max_items=1,
-        max_words_per_item=14,
-    )
-
+def _build_status_lead(progress: FeatureWeeklyProgress) -> str:
     if progress.blocked_tasks > 0 and progress.in_progress_tasks <= 0 and progress.closed_tasks <= 0:
-        parts.append("Blocked")
-    elif progress.in_progress_tasks > 0 and progress.closed_tasks <= 0:
-        parts.append("In progress")
-    elif progress.closed_tasks > 0 and progress.in_progress_tasks <= 0:
-        parts.append("Completed")
+        return "Blocked."
+    if progress.in_progress_tasks > 0 and progress.closed_tasks <= 0:
+        return "In progress."
+    if progress.closed_tasks > 0 and progress.in_progress_tasks <= 0:
+        return "Completed."
+    return ""
+
+
+def _build_parent_result_sentence(progress: FeatureWeeklyProgress) -> str:
+    parts: list[str] = []
+    done_part = _limit_points(progress.parent_done_points, max_items=2, max_words_per_item=12)
+    progress_part = _limit_points(progress.parent_progress_points, max_items=1, max_words_per_item=14)
+    plan_part = _limit_points(progress.parent_plan_points, max_items=2, max_words_per_item=12)
+    risk_part = _limit_points(progress.parent_risk_points, max_items=1, max_words_per_item=14)
+    dependency_part = _limit_points(progress.parent_dependency_points, max_items=1, max_words_per_item=14)
 
     if done_part:
         parts.append(f"Done: {done_part}")
@@ -297,12 +282,100 @@ def build_feature_result_summary(progress: FeatureWeeklyProgress) -> str:
         parts.append(f"Next: {plan_part}")
     if risk_part:
         parts.append(f"Risk: {risk_part}")
-    elif progress.blocked_tasks > 0 and has_feature_result_activity(progress):
+    elif progress.blocked_tasks > 0 and not progress.active_subtasks and has_feature_result_activity(progress):
         parts.append("Blocked; requires follow-up")
     if dependency_part:
         parts.append(f"Depends on: {dependency_part}")
 
     if not parts:
+        return ""
+    return _ensure_terminal_punctuation("; ".join(parts))
+
+
+def _build_parent_plan_sentence(progress: FeatureWeeklyProgress) -> str:
+    parts: list[str] = []
+    plan_part = _limit_points(progress.parent_plan_points, max_items=2, max_words_per_item=12)
+    progress_part = _limit_points(progress.parent_progress_points, max_items=1, max_words_per_item=14)
+    risk_part = _limit_points(progress.parent_risk_points, max_items=1, max_words_per_item=14)
+    dependency_part = _limit_points(progress.parent_dependency_points, max_items=1, max_words_per_item=14)
+
+    if plan_part:
+        parts.append(f"Next: {plan_part}")
+    elif progress_part:
+        parts.append(f"Progress: {progress_part}")
+    if risk_part:
+        parts.append(f"Risk: {risk_part}")
+    if dependency_part:
+        parts.append(f"Depends on: {dependency_part}")
+
+    if not parts:
+        return ""
+    return _ensure_terminal_punctuation("; ".join(parts))
+
+
+def _build_named_subtask_sentences(
+    progress: FeatureWeeklyProgress,
+    *,
+    mode: str = "result",
+    max_items: int = 3,
+) -> list[str]:
+    sentences: list[str] = []
+    for item in progress.active_subtasks[:max_items]:
+        parts: list[str] = []
+        done_part = _limit_points(item.done_points, max_items=2, max_words_per_item=12)
+        progress_part = _limit_points(item.progress_points, max_items=1, max_words_per_item=14)
+        plan_part = _limit_points(item.plan_points, max_items=1, max_words_per_item=14)
+        risk_part = _limit_points(item.risk_points, max_items=1, max_words_per_item=14)
+        dependency_part = _limit_points(item.dependency_points, max_items=1, max_words_per_item=14)
+
+        if mode == "plan":
+            if plan_part:
+                parts.append(f"Next: {plan_part}")
+            elif progress_part:
+                parts.append(f"Progress: {progress_part}")
+            if risk_part:
+                parts.append(f"Risk: {risk_part}")
+            if dependency_part:
+                parts.append(f"Depends on: {dependency_part}")
+        else:
+            if done_part:
+                parts.append(f"Done: {done_part}")
+            if progress_part:
+                parts.append(f"Progress: {progress_part}")
+            if plan_part:
+                parts.append(f"Next: {plan_part}")
+            if risk_part:
+                parts.append(f"Risk: {risk_part}")
+            if dependency_part:
+                parts.append(f"Depends on: {dependency_part}")
+
+        if not parts and item.fallback_note:
+            parts.append(item.fallback_note.rstrip("."))
+        if not parts:
+            continue
+
+        label = item.summary or item.issue_key or "Subtask"
+        sentences.append(_ensure_terminal_punctuation(f"{label}: {'; '.join(parts)}"))
+
+    remaining = len(progress.active_subtasks) - len(sentences)
+    if remaining > 0:
+        sentences.append(f"+{remaining} more subtasks updated.")
+    return sentences
+
+
+def build_feature_result_summary(progress: FeatureWeeklyProgress) -> str:
+    sentences: list[str] = []
+    lead = _build_status_lead(progress)
+    if lead:
+        sentences.append(lead)
+
+    parent_sentence = _build_parent_result_sentence(progress)
+    if parent_sentence:
+        sentences.append(parent_sentence)
+
+    sentences.extend(_build_named_subtask_sentences(progress, mode="result"))
+
+    if not sentences:
         if progress.blocked_tasks > 0:
             return "Blocked."
         if progress.closed_tasks > 0:
@@ -313,96 +386,26 @@ def build_feature_result_summary(progress: FeatureWeeklyProgress) -> str:
             return "Updated this week."
         return ""
 
-    return _ensure_terminal_punctuation("; ".join(parts))
+    return " ".join(_ensure_terminal_punctuation(sentence) for sentence in sentences if sentence)
 
 
 def build_feature_plan_summary(progress: FeatureWeeklyProgress) -> str:
-    plan_part = _limit_points(
-        _flatten_unique([progress.parent_plan_points] + [item.plan_points for item in progress.active_subtasks]),
-        max_items=2,
-        max_words_per_item=12,
-    )
-    progress_part = _limit_points(
-        _flatten_unique([progress.parent_progress_points] + [item.progress_points for item in progress.active_subtasks]),
-        max_items=1,
-        max_words_per_item=14,
-    )
-    risk_part = _limit_points(
-        _flatten_unique([progress.parent_risk_points] + [item.risk_points for item in progress.active_subtasks]),
-        max_items=1,
-        max_words_per_item=14,
-    )
-    dependency_part = _limit_points(
-        _flatten_unique([progress.parent_dependency_points] + [item.dependency_points for item in progress.active_subtasks]),
-        max_items=1,
-        max_words_per_item=14,
-    )
+    sentences: list[str] = []
+    parent_sentence = _build_parent_plan_sentence(progress)
+    if parent_sentence:
+        sentences.append(parent_sentence)
 
-    parts: list[str] = []
-    if plan_part:
-        parts.append(plan_part)
-    elif progress_part:
-        parts.append(progress_part)
-    if risk_part:
-        parts.append(f"Risk: {risk_part}")
-    if dependency_part:
-        parts.append(f"Depends on: {dependency_part}")
+    sentences.extend(_build_named_subtask_sentences(progress, mode="plan"))
 
-    if not parts:
+    if not sentences:
         return ""
-    return _ensure_terminal_punctuation("; ".join(parts))
-
-
-def build_feature_detail_lines(progress: FeatureWeeklyProgress, *, max_lines: int = 4) -> list[str]:
-    lines: list[str] = []
-    for item in progress.active_subtasks[:max_lines]:
-        parts: list[str] = []
-        done_part = _limit_points(item.done_points, max_items=2, max_words_per_item=12)
-        progress_part = _limit_points(item.progress_points, max_items=1, max_words_per_item=14)
-        plan_part = _limit_points(item.plan_points, max_items=1, max_words_per_item=14)
-        risk_part = _limit_points(item.risk_points, max_items=1, max_words_per_item=14)
-        dependency_part = _limit_points(item.dependency_points, max_items=1, max_words_per_item=14)
-
-        if done_part:
-            parts.append(f"Done: {done_part}")
-        if progress_part:
-            parts.append(f"Progress: {progress_part}")
-        if plan_part:
-            parts.append(f"Next: {plan_part}")
-        if risk_part:
-            parts.append(f"Risk: {risk_part}")
-        if dependency_part:
-            parts.append(f"Depends on: {dependency_part}")
-        if not parts and item.fallback_note:
-            parts.append(item.fallback_note.rstrip("."))
-
-        if not parts:
-            continue
-
-        label = item.summary or item.issue_key or "Subtask"
-        suffix = f" ({item.issue_key})" if item.issue_key else ""
-        lines.append(_ensure_terminal_punctuation(f"{label}{suffix}: {'; '.join(parts)}"))
-
-    remaining = len(progress.active_subtasks) - len(lines)
-    if remaining > 0:
-        lines.append(f"+{remaining} more subtasks updated.")
-    return lines
+    return " ".join(_ensure_terminal_punctuation(sentence) for sentence in sentences if sentence)
 
 
 def build_feature_aggregate_input(progress: FeatureWeeklyProgress, *, mode: str = "result") -> str:
-    detail_lines = build_feature_detail_lines(progress, max_lines=4)
-    if mode == "plan":
-        lines = [line for line in detail_lines if "Next:" in line or "Progress:" in line or "Risk:" in line]
-        prefix = "Next week:"
-    else:
-        lines = detail_lines
-        prefix = "Weekly progress:"
-
-    if not lines:
-        fallback = build_feature_plan_summary(progress) if mode == "plan" else build_feature_result_summary(progress)
-        lines = [fallback] if fallback else ["In progress."]
-
-    text = f"Feature: {progress.feature_name or progress.feature_key}. {prefix} {' '.join(lines)}"
+    summary = build_feature_plan_summary(progress) if mode == "plan" else build_feature_result_summary(progress)
+    prefix = "Next week:" if mode == "plan" else "Weekly progress:"
+    text = f"Feature: {progress.feature_name or progress.feature_key}. {prefix} {summary or 'In progress.'}"
     words = text.split()
     if len(words) > 90:
         text = " ".join(words[:90]).rstrip(".,;:") + "."

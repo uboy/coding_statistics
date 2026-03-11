@@ -38,6 +38,17 @@
   - `cycle-contract.json` not found in repo.
   - README/common spec still describe a simpler weekly-email structure than the current HTML implementation, which now also renders a dedicated risks/issues block.
   - Future refactors should preserve or explicitly version snapshot/payload compatibility because ordering and diff output depend on the current payload shape.
+- Status: User reported follow-up regression in weekly email: subtask updates started rendering as standalone visible items instead of enriching the parent feature narrative.
+- Status: Confirmed RED on 2026-03-11 with 3 failures in focused pytest: payload still emits `detail_lines`, HTML still renders them, and status fallback for comment-less subtask omits the subtask name.
+- Status: Entering corrective implementation to inline subtask evidence into parent feature status and suppress separate detail-line rendering.
+- Status: Reviewer stage started for the inline subtask fix after GREEN evidence was provided; checking scoped diff, approved design intent, process consistency, and targeted regression coverage.
+- Status: Reviewer verification rerun succeeded for `pytest tests/test_jira_weekly_email_report.py -k "subtask_status or detail_lines or named_subtask_fallback"` (`3 passed`).
+- Status: Review verdict for the inline subtask fix is PASS with no MUST-FIX defects.
+- Status: Corrective implementation completed on 2026-03-11: Key Results no longer emit/render separate `detail_lines`; named subtask evidence now stays inline in the parent feature `status`.
+- Status: Verification finalized for the inline subtask fix: focused pytest PASS (3), `pytest tests/test_jira_weekly_email_report.py` PASS (75), full `pytest` PASS (139).
+- Notes:
+  - Reviewer-reported process inconsistency in `coordination/tasks.jsonl` was closed after review by marking implementation and verification as done.
+  - Approved spec `jira-weekly-email-refactor-subtask-key-results-v1.md` still describes named subtask detail-line rendering, while the follow-up diff intentionally inlines subtask evidence into feature status text instead.
 - Status: Resumed; need to fix progress bar stability (bars held at bottom) and wire child bars into parallel execution.
 - Status: Analyzed weekly email target screenshots and current jira_weekly_email implementation; preparing gap analysis and weak-model AI strategy.
 - Status: Completed deep docs audit + weekly-email status/noise bugfix (image `!` artifact + localized status normalization) with tests green.
