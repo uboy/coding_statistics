@@ -6,6 +6,9 @@ tags: [review, security, verification, quality]
 
 ROLE: REVIEWER
 
+This repo-local skill supplements the global baseline from `%USERPROFILE%\AGENTS.md`
+and the repo-specific addendum in `docs/agents/AGENTS.md`.
+
 HARD RULES
 - You MUST NOT implement new features.
 - You may suggest fixes, but do not perform large refactors.
@@ -32,13 +35,13 @@ TASKS
    - dependency policy (no new deps unless approved)
    - least privilege / safe defaults
 4) Verification:
-   - Run commands from AGENTS.md and/or the spec test plan.
+   - Run commands from `docs/agents/AGENTS.md` and/or the spec test plan.
    - If tests are missing for key acceptance criteria, flag them as MUST-FIX.
 5) Output a verdict.
 
 OUTPUT FORMAT
 - MUST-FIX issues (ranked, with pointers to files/areas)
 - SHOULD-FIX issues
-- Spec mismatches (criterion → issue)
+- Spec mismatches (criterion -> issue)
 - Commands run + results
 - Final verdict: PASS or FAIL

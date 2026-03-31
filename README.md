@@ -66,6 +66,10 @@ python stats_main.py run \
 - Для `jira_weekly_email` формат `--output-formats` можно не указывать: отчёт всегда генерируется в HTML.
 - Для `jira_weekly_email` неделю можно задать через `week_date=YYYY-MM-DD` или `week=WWwYY` / `week=WWwYYYY` / `week=WW`.
 - `jira_weekly_email` строит HTML для Outlook, хранит weekly snapshot в том же каталоге, что и HTML (по умолчанию `reports`) с именем `jira_weekly_email_<PROJECT>_<WEEK>.json`, и выводит diff только в консоль.
+- `jira_weekly` Excel теперь создаёт workbook с листами `Weekly_Grid` и `Developer_Activity`.
+- `Developer_Activity` содержит только задачи, где разработчик оставил Jira comment в выбранный период, и показывает колонки `Developer`, `Issue`, `Title`, `Logged_Hours`, `Worklog`, `Comments`.
+- Если передан `member_list_file`, лист `Developer_Activity` фильтруется по этому списку так же, как Word-секция `Engineer Weekly Activity`.
+- Для `member_list_file` в `members.xlsx` предпочтительны колонки с именем, затем fallback по login; legacy fallback column `E` всё ещё поддерживается.
 - Labels для глав настраиваются через `labels_highlights` и `labels_report`.
 - Для `labels_report` можно указать `@all`, чтобы отключить label-фильтр и включать эпики/задачи с любыми метками.
 - Статус в `Key Results` и `Next Week Plans` строится по агрегированным данным parent + subtask (включая subtask-only активность), а не только по комментариям родительской задачи.
@@ -120,7 +124,9 @@ Worklog-driven attribution: if time is logged on an issue within the selected pe
 
 `Summary` AI processing in `jira_weekly` supports the same providers/options as `jira_weekly_email` (`ai_provider=ollama|webui`, plus `[ollama]` / `[webui]` settings).
 
-Each view is generated as a separate section in the Word document. Excel export contains a pivot table grouped by assignee and week.
+Each view is generated as a separate section in the Word document. Excel export contains:
+- `Weekly_Grid` - grouped by assignee and week
+- `Developer_Activity` - one row per developer and issue where that developer commented in the selected period, with task link, title, logged hours, worklog details, and comments
 
 # Caching
 

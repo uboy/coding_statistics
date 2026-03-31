@@ -34,8 +34,12 @@ sources -> stats.collector -> reports -> export
 - Purpose: weekly activity & progress summary from Jira, including worklog-driven
   attribution and epic progress.
 - Inputs: `--start`, `--end`, `--params project=KEY`
-- Outputs: Word + Excel (table/list/engineer weekly activity/epic progress/summary)
+- Outputs: Word + Excel
+- Excel sheets:
+  - `Weekly_Grid`
+  - `Developer_Activity` for comment-driven developer rows with task link, title, logged hours, worklog details, and comments
 - Key params: `include_empty_weeks`, `member_list_file`
+- Notes: `Developer_Activity` is filtered by `member_list_file` when provided and only includes issues where the developer added a Jira comment in period.
 
 ### jira_comprehensive
 - Purpose: comprehensive Jira export to Excel, includes issue details and comments.

@@ -1,7 +1,3 @@
-[policy]
-approval_policy = "on-request"
-
-[workflow]
-source_of_truth = "AGENTS.md"
-roles = ["architect", "developer", "reviewer"]
-notes = "Architect produces design spec -> user approves -> Developer implements -> Reviewer verifies and security-checks."
+# Repo-local Codex overrides for coding_statistics.
+# Keep this file minimal; fast-moving defaults live in
+# %USERPROFILE%\.codex-94o\config.toml.

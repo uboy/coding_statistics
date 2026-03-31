@@ -45,6 +45,176 @@ def _comment_body_to_text(body: Any) -> str:
     return str(body)
 
 
+_ILLEGAL_EXCEL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]")
+
+
+def _sanitize_excel_text(value: Any) -> str:
+    text = _comment_body_to_text(value)
+    if not text:
+        return ""
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    cleaned_lines = [" ".join(line.split()) for line in text.split("\n")]
+    cleaned_text = "\n".join(line for line in cleaned_lines if line)
+    return _ILLEGAL_EXCEL_CHARS_RE.sub("", cleaned_text).strip()
+
+
+def _format_hours_value(seconds: int | float | None) -> float:
+    if not seconds:
+        return 0.0
+    return round(float(seconds) / 3600.0, 2)
+
+
+def _format_hours_label(seconds: int | float | None) -> str:
+    hours = _format_hours_value(seconds)
+    if hours == 0:
+        return "0h"
+    return f"{hours:.2f}".rstrip("0").rstrip(".") + "h"
+
+
+def _empty_developer_activity_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "Developer",
+            "Issue",
+            "Title",
+            "Logged_Hours",
+            "Worklog",
+            "Comments",
+            "Issue_Url",
+        ]
+    )
+
+
+def build_developer_activity_df(
+    comments_df: pd.DataFrame,
+    worklogs_df: pd.DataFrame,
+    jira_url: str,
+) -> pd.DataFrame:
+    """Build comment-driven developer activity rows for weekly Excel export."""
+    if comments_df is None or comments_df.empty:
+        return _empty_developer_activity_df()
+
+    comments_df = comments_df.copy()
+    worklogs_df = worklogs_df.copy() if worklogs_df is not None else pd.DataFrame()
+
+    if "CommentAuthor_norm" not in comments_df.columns:
+        comments_df["CommentAuthor_norm"] = comments_df.get("CommentAuthor", "").map(norm_name)
+    if "Assignee_norm" not in worklogs_df.columns:
+        worklogs_df["Assignee_norm"] = worklogs_df.get("Assignee", "").map(norm_name)
+
+    if "Is_Worklog_Comment" in comments_df.columns:
+        issue_comments_df = comments_df[~comments_df["Is_Worklog_Comment"].fillna(False).astype(bool)].copy()
+    else:
+        issue_comments_df = comments_df
+
+    if issue_comments_df.empty:
+        return _empty_developer_activity_df()
+
+    sort_columns = [column for column in ("CommentAuthor_norm", "Issue_key", "CommentDate", "CommentId") if column in issue_comments_df.columns]
+    if sort_columns:
+        issue_comments_df = issue_comments_df.sort_values(by=sort_columns, kind="mergesort")
+
+    rows: list[dict[str, Any]] = []
+    grouped = issue_comments_df.groupby(["CommentAuthor_norm", "Issue_key"], sort=True, dropna=False)
+
+    for (developer_norm, issue_key), issue_comments in grouped:
+        issue_key = str(issue_key or "").strip()
+        developer_norm = str(developer_norm or "").strip()
+        if not issue_key or not developer_norm:
+            continue
+
+        developer = next(
+            (
+                str(value).strip()
+                for value in issue_comments.get("CommentAuthor", pd.Series(dtype=object)).tolist()
+                if str(value).strip()
+            ),
+            "",
+        )
+        title = next(
+            (
+                str(value).strip()
+                for value in issue_comments.get("Summary", pd.Series(dtype=object)).tolist()
+                if str(value).strip()
+            ),
+            "",
+        )
+
+        comment_lines: list[str] = []
+        for _, comment_row in issue_comments.iterrows():
+            body = _sanitize_excel_text(comment_row.get("CommentBody", ""))
+            if not body:
+                continue
+            comment_date = str(
+                comment_row.get("CommentDateStr")
+                or comment_row.get("CommentUpdated")
+                or comment_row.get("CommentCreated")
+                or ""
+            ).strip()
+            if comment_date:
+                comment_lines.append(f"{comment_date} | {body}")
+            else:
+                comment_lines.append(body)
+
+        if not comment_lines:
+            continue
+
+        issue_worklogs = worklogs_df[
+            (worklogs_df.get("Assignee_norm", pd.Series(dtype=object)).fillna("").astype(str) == developer_norm)
+            & (worklogs_df.get("Issue_key", pd.Series(dtype=object)).fillna("").astype(str) == issue_key)
+        ].copy()
+
+        if not title and not issue_worklogs.empty:
+            title = next(
+                (
+                    str(value).strip()
+                    for value in issue_worklogs.get("Summary", pd.Series(dtype=object)).tolist()
+                    if str(value).strip()
+                ),
+                "",
+            )
+
+        worklog_lines: list[str] = []
+        total_seconds = 0
+        if not issue_worklogs.empty:
+            worklog_sort_columns = [column for column in ("WorklogDate", "WorklogDateStr") if column in issue_worklogs.columns]
+            if worklog_sort_columns:
+                issue_worklogs = issue_worklogs.sort_values(by=worklog_sort_columns, kind="mergesort")
+
+            total_seconds = int(pd.to_numeric(issue_worklogs.get("WorklogSeconds", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+
+            for _, worklog_row in issue_worklogs.iterrows():
+                seconds = int(float(worklog_row.get("WorklogSeconds") or 0))
+                date_str = str(worklog_row.get("WorklogDateStr") or "").strip()
+                worklog_comment = _sanitize_excel_text(worklog_row.get("WorklogComment", ""))
+                parts = [part for part in (date_str, _format_hours_label(seconds), worklog_comment) if part]
+                if parts:
+                    worklog_lines.append(" | ".join(parts))
+
+        rows.append(
+            {
+                "Developer": developer,
+                "Issue": issue_key,
+                "Title": _sanitize_excel_text(title),
+                "Logged_Hours": _format_hours_value(total_seconds),
+                "Worklog": "\n".join(worklog_lines),
+                "Comments": "\n".join(comment_lines),
+                "Issue_Url": f"{str(jira_url).rstrip('/')}/browse/{issue_key}" if jira_url else "",
+            }
+        )
+
+    if not rows:
+        return _empty_developer_activity_df()
+
+    result = pd.DataFrame(rows)
+    result = result.sort_values(
+        by=["Developer", "Issue"],
+        key=lambda series: series.fillna("").astype(str).str.casefold(),
+        kind="mergesort",
+    ).reset_index(drop=True)
+    return result
+
+
 def _extract_last_comment_in_period(
     jira_source: JiraSource,
     issue_key: str,
@@ -377,6 +547,7 @@ def fetch_jira_activity_data(
             if start_dt <= log_date <= end_dt:
                 week = log_date.strftime("%G-W%V")
                 time_spent = log.get("timeSpentSeconds") or 0
+                comment_text = _comment_body_to_text(log.get("comment"))
                 worklog_rows.append({
                     "Issue_key": key,
                     "Summary": summary,
@@ -384,6 +555,9 @@ def fetch_jira_activity_data(
                     "Assignee_norm": norm_name(author),
                     "Week": week,
                     "WorklogSeconds": int(time_spent),
+                    "WorklogDate": log_date,
+                    "WorklogDateStr": log_date.strftime("%Y-%m-%d"),
+                    "WorklogComment": comment_text,
                     "Status": status,
                     "Resolution": resolution,
                     "Epic_Link": epic_link,
@@ -393,13 +567,12 @@ def fetch_jira_activity_data(
                     "Type": issue_type_name,
                 })
 
-                comment_text = log.get("comment")
                 if comment_text and str(comment_text).strip():
                     worklog_comment_rows.append({
                         "Issue_key": key,
                         "Summary": summary,
                         "CommentId": "",
-                        "CommentBody": str(comment_text),
+                        "CommentBody": comment_text,
                         "CommentAuthor": author,
                         "CommentAuthor_norm": norm_name(author),
                         "CommentCreated": log_date.strftime("%Y-%m-%d"),

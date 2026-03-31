@@ -20,7 +20,9 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
   - Builds weekly Jira views based on worklogs + resolutions.
   - Produces Word sections (table view, list view, engineer activity, epic progress, summary, resolved tasks).
   - `Summary` section is epic-grouped and supports AI rewriting through Ollama/Open WebUI (`ai_provider` + provider settings).
-  - Produces Excel grouped by assignee/week.
+  - Produces Excel workbook with:
+    - `Weekly_Grid` grouped by assignee/week
+    - `Developer_Activity` with one row per developer+issue where that developer added a Jira comment in period; includes issue hyperlink, title, logged hours, worklog details, and comments
 - **jira_comprehensive** (`stats_core/reports/jira_comprehensive.py`):
   - Generates multi-sheet Excel: Issues, Links, Engineer/QA/PM metrics, Worklog activity, Worklog entries.
   - Adds Comments_Period sheet with issues that have comment activity in period and AI_Comments summary (AI off by default; enable with `ai_comments_enabled=true`).
@@ -103,6 +105,8 @@ python stats_main.py run \
   - Requires `project`, `start`, `end`.
   - Uses worklogs for attribution; issues without worklogs may be absent unless resolved within range.
   - Can synthesize empty weeks per member when enabled.
+  - `Developer_Activity` is comment-driven: issue appears only if the developer added a Jira comment in period; worklog-only activity does not create a row.
+  - `member_list_file` filtering applies to the detailed developer sheet too.
 - **Jira comprehensive**:
   - Excel-only; no Word/CSV output.
   - Requires JQL or project+dates or version/epic filters.

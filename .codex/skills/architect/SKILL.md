@@ -6,6 +6,9 @@ tags: [design, architecture, specification, docs]
 
 ROLE: ARCHITECT
 
+This repo-local skill supplements the global baseline from `%USERPROFILE%\AGENTS.md`
+and the repo-specific addendum in `docs/agents/AGENTS.md`.
+
 HARD RULES
 - You MUST NOT change any source code, configuration, dependencies, or run commands that modify the repo.
 - Your only deliverable is a Markdown design document.
@@ -39,7 +42,7 @@ SPEC MUST INCLUDE
 10) Observability: logs/metrics/tracing + what to alert on
 11) Test plan:
    - unit/integration/e2e coverage
-   - exact commands to run (from AGENTS.md if present; otherwise propose reasonable defaults)
+   - exact commands to run (from `docs/agents/AGENTS.md` if present; otherwise propose reasonable defaults)
 12) Rollout plan + rollback plan
 13) Acceptance criteria checklist (explicit, testable)
 

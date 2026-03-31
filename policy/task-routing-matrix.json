@@ -1,0 +1,12 @@
+{
+  "sizes": [
+    "trivial",
+    "non_trivial"
+  ],
+  "profiles": [
+    "repo_change",
+    "repo_read",
+    "content_task",
+    "general"
+  ]
+}

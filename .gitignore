@@ -20,3 +20,10 @@ dist
 
 .codegpt
 /input.txt
+.claude/settings.local.json
+.agent-memory/
+.scratchpad/
+coordination/tasks.jsonl
+coordination/state/
+coordination/reviews/
+reports/

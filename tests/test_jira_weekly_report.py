@@ -8,6 +8,7 @@ from configparser import ConfigParser
 from unittest.mock import Mock, MagicMock, patch
 import pandas as pd
 from docx import Document
+from openpyxl import load_workbook
 
 from stats_core.reports.jira_utils import (
     fetch_jira_data,
@@ -549,3 +550,270 @@ def test_jira_weekly_report_word_contains_summary_section(
     assert any("Implemented weekly summary section and finalized delivery." in text for text in texts)
     assert any("Resolved 1 planned tasks on time." in text for text in texts)
     assert any("Resolved 1 reported issues." in text for text in texts)
+
+
+@patch("stats_core.reports.jira_weekly.generate_file_suffix", return_value="")
+@patch("stats_core.reports.jira_weekly.build_monthly_summary_df")
+@patch("stats_core.reports.jira_weekly.build_resolved_issues_snapshot")
+@patch("stats_core.reports.jira_weekly.fetch_jira_activity_data")
+@patch("stats_core.reports.jira_weekly.fetch_jira_data")
+@patch("stats_core.reports.jira_weekly.JiraSource")
+def test_jira_weekly_report_excel_contains_developer_activity_sheet(
+    mock_jira_source_cls,
+    mock_fetch_jira_data,
+    mock_fetch_jira_activity_data,
+    mock_build_resolved,
+    mock_build_summary,
+    mock_suffix,
+    tmp_path,
+):
+    config = ConfigParser()
+    config.add_section("jira")
+    config.set("jira", "jira-url", "https://test-jira.com")
+    config.set("jira", "username", "testuser")
+    config.set("jira", "password", "testpass")
+    config.add_section("reporting")
+    config.set("reporting", "output_dir", str(tmp_path))
+
+    mock_jira_source = Mock(spec=JiraSource)
+    mock_jira_source.jira_url = "https://test-jira.com"
+    mock_jira_source_cls.return_value = mock_jira_source
+
+    mock_fetch_jira_data.return_value = pd.DataFrame(
+        [
+            {
+                "Issue_key": "ABC-1",
+                "Summary": "First task",
+                "Assignee": "Alice Dev",
+                "Final_Assignee": "Alice Dev",
+                "Status": "In progress",
+                "Resolution_Date": "",
+                "Created_Date": "2025-01-13",
+                "Week": "2025-W03",
+                "Epic_Link": "",
+                "Epic_Name": "",
+                "Parent_Key": "",
+                "Parent_Summary": "",
+                "Type": "Task",
+            },
+            {
+                "Issue_key": "ABC-2",
+                "Summary": "Second task",
+                "Assignee": "Bob Dev",
+                "Final_Assignee": "Bob Dev",
+                "Status": "In progress",
+                "Resolution_Date": "",
+                "Created_Date": "2025-01-13",
+                "Week": "2025-W03",
+                "Epic_Link": "",
+                "Epic_Name": "",
+                "Parent_Key": "",
+                "Parent_Summary": "",
+                "Type": "Task",
+            },
+        ]
+    )
+    mock_fetch_jira_activity_data.return_value = (
+        pd.DataFrame(
+            [
+                {
+                    "Issue_key": "ABC-1",
+                    "Summary": "First task",
+                    "Assignee": "Alice Dev",
+                    "Assignee_norm": "alice dev",
+                    "Week": "2025-W03",
+                    "WorklogSeconds": 3600,
+                    "WorklogDate": datetime(2025, 1, 14).date(),
+                    "WorklogDateStr": "2025-01-14",
+                    "WorklogComment": "Investigated root cause",
+                    "Status": "In progress",
+                    "Resolution": "",
+                    "Epic_Link": "",
+                    "Epic_Name": "",
+                    "Parent_Key": "",
+                    "Parent_Summary": "",
+                    "Type": "Task",
+                },
+                {
+                    "Issue_key": "ABC-1",
+                    "Summary": "First task",
+                    "Assignee": "Alice Dev",
+                    "Assignee_norm": "alice dev",
+                    "Week": "2025-W03",
+                    "WorklogSeconds": 1800,
+                    "WorklogDate": datetime(2025, 1, 15).date(),
+                    "WorklogDateStr": "2025-01-15",
+                    "WorklogComment": "",
+                    "Status": "In progress",
+                    "Resolution": "",
+                    "Epic_Link": "",
+                    "Epic_Name": "",
+                    "Parent_Key": "",
+                    "Parent_Summary": "",
+                    "Type": "Task",
+                },
+                {
+                    "Issue_key": "ABC-3",
+                    "Summary": "Only worklog comment task",
+                    "Assignee": "Carol Dev",
+                    "Assignee_norm": "carol dev",
+                    "Week": "2025-W03",
+                    "WorklogSeconds": 1200,
+                    "WorklogDate": datetime(2025, 1, 16).date(),
+                    "WorklogDateStr": "2025-01-16",
+                    "WorklogComment": "Logged time only",
+                    "Status": "In progress",
+                    "Resolution": "",
+                    "Epic_Link": "",
+                    "Epic_Name": "",
+                    "Parent_Key": "",
+                    "Parent_Summary": "",
+                    "Type": "Task",
+                },
+            ]
+        ),
+        pd.DataFrame(
+            [
+                {
+                    "Issue_key": "ABC-1",
+                    "Summary": "First task",
+                    "CommentId": "c1",
+                    "CommentBody": "Implemented API changes",
+                    "CommentAuthor": "Alice Dev",
+                    "CommentAuthor_norm": "alice dev",
+                    "CommentCreated": "2025-01-14",
+                    "CommentUpdated": "2025-01-14",
+                    "CommentDate": datetime(2025, 1, 14).date(),
+                    "CommentDateStr": "2025-01-14",
+                    "Week": "2025-W03",
+                    "Status": "In progress",
+                    "Resolution": "",
+                    "Epic_Link": "",
+                    "Epic_Name": "",
+                    "Parent_Key": "",
+                    "Parent_Summary": "",
+                    "Type": "Task",
+                    "Is_Worklog_Comment": False,
+                },
+                {
+                    "Issue_key": "ABC-1",
+                    "Summary": "First task",
+                    "CommentId": "c2",
+                    "CommentBody": "Added tests",
+                    "CommentAuthor": "Alice Dev",
+                    "CommentAuthor_norm": "alice dev",
+                    "CommentCreated": "2025-01-15",
+                    "CommentUpdated": "2025-01-15",
+                    "CommentDate": datetime(2025, 1, 15).date(),
+                    "CommentDateStr": "2025-01-15",
+                    "Week": "2025-W03",
+                    "Status": "In progress",
+                    "Resolution": "",
+                    "Epic_Link": "",
+                    "Epic_Name": "",
+                    "Parent_Key": "",
+                    "Parent_Summary": "",
+                    "Type": "Task",
+                    "Is_Worklog_Comment": False,
+                },
+                {
+                    "Issue_key": "ABC-2",
+                    "Summary": "Second task",
+                    "CommentId": "c3",
+                    "CommentBody": "Waiting for review",
+                    "CommentAuthor": "Bob Dev",
+                    "CommentAuthor_norm": "bob dev",
+                    "CommentCreated": "2025-01-16",
+                    "CommentUpdated": "2025-01-16",
+                    "CommentDate": datetime(2025, 1, 16).date(),
+                    "CommentDateStr": "2025-01-16",
+                    "Week": "2025-W03",
+                    "Status": "In progress",
+                    "Resolution": "",
+                    "Epic_Link": "",
+                    "Epic_Name": "",
+                    "Parent_Key": "",
+                    "Parent_Summary": "",
+                    "Type": "Task",
+                    "Is_Worklog_Comment": False,
+                },
+                {
+                    "Issue_key": "ABC-3",
+                    "Summary": "Only worklog comment task",
+                    "CommentId": "",
+                    "CommentBody": "Logged time only",
+                    "CommentAuthor": "Carol Dev",
+                    "CommentAuthor_norm": "carol dev",
+                    "CommentCreated": "2025-01-16",
+                    "CommentUpdated": "2025-01-16",
+                    "CommentDate": datetime(2025, 1, 16).date(),
+                    "CommentDateStr": "2025-01-16",
+                    "Week": "2025-W03",
+                    "Status": "In progress",
+                    "Resolution": "",
+                    "Epic_Link": "",
+                    "Epic_Name": "",
+                    "Parent_Key": "",
+                    "Parent_Summary": "",
+                    "Type": "Task",
+                    "Is_Worklog_Comment": True,
+                },
+            ]
+        ),
+    )
+    mock_build_resolved.return_value = pd.DataFrame()
+    mock_build_summary.return_value = pd.DataFrame()
+
+    report = JiraWeeklyReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["excel"],
+        extra_params={
+            "project": "TEST",
+            "start": "2025-01-13",
+            "end": "2025-01-19",
+            "output_dir": str(tmp_path),
+        },
+    )
+
+    excel_path = tmp_path / "jira_report_TEST_2025-01-13-2025-01-19.xlsx"
+    assert excel_path.exists()
+
+    wb = load_workbook(excel_path)
+    assert "Weekly_Grid" in wb.sheetnames
+    assert "Developer_Activity" in wb.sheetnames
+
+    ws = wb["Developer_Activity"]
+    headers = [cell.value for cell in ws[1]]
+    assert headers == ["Developer", "Issue", "Title", "Logged_Hours", "Worklog", "Comments"]
+
+    rows = list(ws.iter_rows(min_row=2, values_only=False))
+    assert len(rows) == 2
+
+    data_rows = []
+    for row in rows:
+        row_map = {headers[idx]: cell.value for idx, cell in enumerate(row)}
+        issue_cell = row[headers.index("Issue")]
+        row_map["IssueHyperlink"] = issue_cell.hyperlink.target if issue_cell.hyperlink else None
+        data_rows.append(row_map)
+
+    alice_row = next(row for row in data_rows if row["Developer"] == "Alice Dev")
+    assert alice_row["Issue"] == "ABC-1"
+    assert alice_row["IssueHyperlink"] == "https://test-jira.com/browse/ABC-1"
+    assert alice_row["Title"] == "First task"
+    assert alice_row["Logged_Hours"] == 1.5
+    assert "2025-01-14" in str(alice_row["Worklog"])
+    assert "Investigated root cause" in str(alice_row["Worklog"])
+    assert "2025-01-15" in str(alice_row["Worklog"])
+    assert "Implemented API changes" in str(alice_row["Comments"])
+    assert "Added tests" in str(alice_row["Comments"])
+
+    bob_row = next(row for row in data_rows if row["Developer"] == "Bob Dev")
+    assert bob_row["Issue"] == "ABC-2"
+    assert bob_row["Logged_Hours"] in (0, 0.0)
+    assert bob_row["Worklog"] in ("", None)
+    assert "Waiting for review" in str(bob_row["Comments"])
+
+    developers = {row["Developer"] for row in data_rows}
+    assert "Carol Dev" not in developers

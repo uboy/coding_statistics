@@ -16,6 +16,7 @@ from docx import Document
 from . import registry
 from .jira_comprehensive import build_monthly_summary_df
 from .jira_utils import (
+    build_developer_activity_df,
     fetch_jira_data,
     fetch_jira_activity_data,
     build_resolved_issues_snapshot,
@@ -35,7 +36,6 @@ from .jira_epic_report import (
     add_resolved_tasks_section,
 )
 from ..sources.jira import JiraSource
-from ..export import excel as excel_export
 from ..utils.members import read_member_list
 from ..utils.parallel import parallel_map
 from ..utils.progress import NoopProgressManager
@@ -80,6 +80,7 @@ def generate_excel_report(
     end_date: str,
     project: str,
     headers: list[str],
+    developer_activity_df: pd.DataFrame,
     output_file: Path,
 ) -> None:
     """
@@ -104,9 +105,40 @@ def generate_excel_report(
 
     grouped_data.columns = headers
 
+    activity_columns = ["Developer", "Issue", "Title", "Logged_Hours", "Worklog", "Comments"]
+    if developer_activity_df is None or developer_activity_df.empty:
+        developer_activity_export = pd.DataFrame(columns=activity_columns)
+    else:
+        developer_activity_export = developer_activity_df.copy()
+        for column in activity_columns:
+            if column not in developer_activity_export.columns:
+                developer_activity_export[column] = ""
+        developer_activity_export = developer_activity_export[activity_columns + ["Issue_Url"] if "Issue_Url" in developer_activity_export.columns else activity_columns]
+
     excel_path = Path(f"{output_file}.xlsx")
-    grouped_data.to_excel(excel_path)
-    logger.info("Excel report successfully created: %s", excel_path)
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        grouped_data.to_excel(writer, sheet_name="Weekly_Grid")
+        developer_activity_export[activity_columns].to_excel(writer, sheet_name="Developer_Activity", index=False)
+
+        weekly_sheet = writer.book["Weekly_Grid"]
+        activity_sheet = writer.book["Developer_Activity"]
+        weekly_sheet.freeze_panes = "B2"
+        activity_sheet.freeze_panes = "A2"
+
+        if "Issue_Url" in developer_activity_export.columns:
+            issue_col_idx = activity_columns.index("Issue") + 1
+            for row_idx, issue_url in enumerate(developer_activity_export["Issue_Url"].tolist(), start=2):
+                if not issue_url:
+                    continue
+                issue_cell = activity_sheet.cell(row=row_idx, column=issue_col_idx)
+                issue_cell.hyperlink = str(issue_url)
+                issue_cell.style = "Hyperlink"
+
+    logger.info(
+        "Excel report successfully created: %s (sheets: %s)",
+        excel_path,
+        ["Weekly_Grid", "Developer_Activity"],
+    )
 
 
 def _to_weekly_summary_source_df(resolved_issues_df: pd.DataFrame) -> pd.DataFrame:
@@ -302,6 +334,38 @@ class JiraWeeklyReport:
         epic_progress_summary = generate_epic_progress_from_worklogs(worklogs_df)
         weekly_summary_source_df = _to_weekly_summary_source_df(resolved_issues_df)
         weekly_summary_df = build_monthly_summary_df(weekly_summary_source_df, config, extra_params)
+        developer_activity_df = pd.DataFrame()
+
+        if output_excel:
+            activity_comments_df = comments_df.copy()
+            activity_worklogs_df = worklogs_df.copy()
+            if member_list_file:
+                required_assignees_norm = {norm_name(name) for name in required_assignees}
+                if not activity_comments_df.empty:
+                    if "CommentAuthor_norm" not in activity_comments_df.columns:
+                        activity_comments_df["CommentAuthor_norm"] = activity_comments_df.get("CommentAuthor", "").map(norm_name)
+                    activity_comments_df = activity_comments_df[
+                        activity_comments_df["CommentAuthor_norm"].isin(required_assignees_norm)
+                    ].copy()
+                if not activity_worklogs_df.empty:
+                    if "Assignee_norm" not in activity_worklogs_df.columns:
+                        activity_worklogs_df["Assignee_norm"] = activity_worklogs_df.get("Assignee", "").map(norm_name)
+                    activity_worklogs_df = activity_worklogs_df[
+                        activity_worklogs_df["Assignee_norm"].isin(required_assignees_norm)
+                    ].copy()
+
+            developer_activity_df = build_developer_activity_df(
+                activity_comments_df,
+                activity_worklogs_df,
+                jira_url,
+            )
+            logger.info(
+                "Developer activity sheet rows=%s developers=%s issues=%s total_hours=%.2f",
+                len(developer_activity_df.index),
+                developer_activity_df["Developer"].nunique() if not developer_activity_df.empty else 0,
+                developer_activity_df["Issue"].nunique() if not developer_activity_df.empty else 0,
+                float(pd.to_numeric(developer_activity_df.get("Logged_Hours", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()),
+            )
 
         # Generate file suffix
         file_suffix = generate_file_suffix()
@@ -316,7 +380,15 @@ class JiraWeeklyReport:
         # Generate Excel report if requested
         if output_excel:
             with progress.step("Export Excel"):
-                generate_excel_report(data, start_date, end_date, project, headers, output_file)
+                generate_excel_report(
+                    data,
+                    start_date,
+                    end_date,
+                    project,
+                    headers,
+                    developer_activity_df,
+                    output_file,
+                )
 
         # Generate Word report if requested
         if output_word:
