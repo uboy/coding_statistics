@@ -37,16 +37,20 @@ sources -> stats.collector -> reports -> export
 - Outputs: Word + Excel
 - Excel sheets:
   - `Weekly_Grid`
-  - `Developer_Activity` for comment-driven developer rows with task link, title, logged hours, worklog details, and comments
 - Key params: `include_empty_weeks`, `member_list_file`
-- Notes: `Developer_Activity` is filtered by `member_list_file` when provided and only includes issues where the developer added a Jira comment in period.
 
 ### jira_comprehensive
-- Purpose: comprehensive Jira export to Excel, includes issue details and comments.
+- Purpose: comprehensive Jira export to Excel, includes issue details, comments, and developer activity.
 - Inputs: `--start`, `--end` or `--params jql=...` or `version=...` or `epic=...`
 - Outputs: Excel only
+- Excel sheets:
+  - `Comments_Period`
+  - `Worklog_Activity`
+  - `Worklog_Entries`
+  - `Developer_Activity` for comment-driven developer rows with task link, title, logged hours, worklog details, and comments
 - Notes: JQL defaults to `resolved` date filtering if `project+dates` are used.
-- Notes: Includes `Comments_Period` sheet with `Comments`, `Comments_In_Period`, `AI_Comments`. AI is off by default; enable via `--params ai_comments_enabled=true`.
+- Notes: `Developer_Activity` is filtered by `member_list_file` when provided and only includes issues where the developer added a Jira comment in period.
+- Notes: `Comments_Period` keeps issue-level comment aggregation; AI is off by default and can be enabled via `--params ai_comments_enabled=true`.
 
 ### jira_weekly_email
 - Purpose: Outlook-friendly HTML email, with highlights/achievements/next week plans/vacations.

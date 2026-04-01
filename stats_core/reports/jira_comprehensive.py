@@ -28,9 +28,11 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from ..pathing import resolve_member_list_path
 from ..sources.jira import JiraSource
 from ..utils.ai_retry import retry_ai_call
+from ..utils.members import read_member_list as read_member_identity_list
 from ..utils.parallel import parallel_map
 from ..utils.progress import NoopProgressManager
 from . import registry
+from .jira_utils import build_developer_activity_df
 
 logger = logging.getLogger(__name__)
 
@@ -1157,17 +1159,44 @@ def _comment_activity_date(
     return (updated_dt or created_dt), bool(updated_dt and updated_dt != created_dt)
 
 
-def build_comments_period_df(
-    jira,
-    jql_query: str,
-    start_date: str | None,
-    end_date: str | None,
-    config: ConfigParser,
-    extra_params: dict[str, Any],
-) -> pd.DataFrame:
-    start_dt = _parse_iso_date(start_date) if start_date else None
-    end_dt = _parse_iso_date(end_date) if end_date else None
+def _empty_comments_period_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "Issue_Key",
+            "Summary",
+            "Type",
+            "Status",
+            "Priority",
+            "Assignee",
+            "Created",
+            "Epic_Name",
+            "Parent",
+            "Description",
+            "Comments",
+            "AI_Comments",
+            "Comments_In_Period",
+        ]
+    )
 
+
+def _empty_comment_entries_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "Issue_Key",
+            "Summary",
+            "Assignee",
+            "Comment_Author",
+            "Comment_Author_Username",
+            "Comment_Author_Norm",
+            "Comment_Author_Username_Norm",
+            "Comment_Date",
+            "Comment_Date_Str",
+            "Comment_Body",
+        ]
+    )
+
+
+def _search_issues_with_comments(jira, jql_query: str) -> list[Any]:
     start_at = 0
     max_results = 100
     all_issues: list[Any] = []
@@ -1194,25 +1223,13 @@ def build_comments_period_df(
         if len(issues) < max_results:
             break
         start_at += max_results
+    return all_issues
 
-    if not all_issues:
-        columns = [
-            "Issue_Key",
-            "Summary",
-            "Type",
-            "Status",
-            "Priority",
-            "Assignee",
-            "Created",
-            "Epic_Name",
-            "Parent",
-            "Description",
-            "Comments",
-            "AI_Comments",
-            "Comments_In_Period",
-        ]
-        return pd.DataFrame(columns=columns)
 
+def _resolve_comment_issue_epics(
+    jira,
+    all_issues: list[Any],
+) -> tuple[dict[str, str], dict[str, str]]:
     issue_epic_map: dict[str, str] = {}
     parent_keys_needed: set[str] = set()
     for issue in all_issues:
@@ -1242,8 +1259,28 @@ def build_comments_period_df(
 
     epic_metadata_map = _fetch_epic_metadata(jira, list({value for value in issue_epic_map.values() if value}))
     epic_name_map = {key: value.get("name", "") for key, value in epic_metadata_map.items()}
+    return issue_epic_map, epic_name_map
+
+
+def build_comments_period_data(
+    jira,
+    jql_query: str,
+    start_date: str | None,
+    end_date: str | None,
+    config: ConfigParser,
+    extra_params: dict[str, Any],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    start_dt = _parse_iso_date(start_date) if start_date else None
+    end_dt = _parse_iso_date(end_date) if end_date else None
+
+    all_issues = _search_issues_with_comments(jira, jql_query)
+    if not all_issues:
+        return _empty_comments_period_df(), _empty_comment_entries_df()
+
+    issue_epic_map, epic_name_map = _resolve_comment_issue_epics(jira, all_issues)
 
     rows: list[dict[str, Any]] = []
+    comment_entries: list[dict[str, Any]] = []
     ai_inputs: list[dict[str, str]] = []
 
     for issue in all_issues:
@@ -1269,7 +1306,14 @@ def build_comments_period_df(
                 comment_text = _compact_text(_comment_body_to_text(comment.body))
                 if not comment_text:
                     continue
-                comment_author = comment.author.displayName if comment.author else "Unknown"
+                comment_author_obj = getattr(comment, "author", None)
+                comment_author = getattr(comment_author_obj, "displayName", None) or "Unknown"
+                comment_author_username = (
+                    getattr(comment_author_obj, "name", None)
+                    or getattr(comment_author_obj, "key", None)
+                    or getattr(comment_author_obj, "accountId", None)
+                    or ""
+                )
                 created_dt = _parse_jira_date(getattr(comment, "created", None))
                 updated_dt = _parse_jira_date(getattr(comment, "updated", None))
                 created_str = created_dt.strftime("%Y-%m-%d") if created_dt else ""
@@ -1280,6 +1324,20 @@ def build_comments_period_df(
                     activity_str = activity_dt.strftime("%Y-%m-%d")
                     tag = f"{activity_str} updated" if used_updated else activity_str
                     comments_in_period.append(f"[{tag}] {comment_author}: {comment_text}")
+                    comment_entries.append(
+                        {
+                            "Issue_Key": key,
+                            "Summary": summary,
+                            "Assignee": assignee,
+                            "Comment_Author": comment_author,
+                            "Comment_Author_Username": str(comment_author_username or "").strip(),
+                            "Comment_Author_Norm": _normalize_text(comment_author),
+                            "Comment_Author_Username_Norm": _normalize_text(comment_author_username),
+                            "Comment_Date": activity_dt,
+                            "Comment_Date_Str": activity_str,
+                            "Comment_Body": comment_text,
+                        }
+                    )
 
         if start_dt and end_dt and not comments_in_period:
             continue
@@ -1317,33 +1375,44 @@ def build_comments_period_df(
             row.get("Comments_In_Period"),
         )
 
-    if not rows:
-        return pd.DataFrame(
-            columns=[
-                "Issue_Key",
-                "Summary",
-                "Type",
-                "Status",
-                "Priority",
-                "Assignee",
-                "Created",
-                "Epic_Name",
-                "Parent",
-                "Description",
-                "Comments",
-                "AI_Comments",
-                "Comments_In_Period",
-            ]
+    comments_period_df = _empty_comments_period_df()
+    if rows:
+        comments_period_df = pd.DataFrame(rows)
+        comments_period_df["_epic_sort"] = comments_period_df["Epic_Name"].fillna("").astype(str).map(_normalize_text)
+        comments_period_df["_parent_sort"] = comments_period_df["Parent"].fillna("").astype(str).map(_normalize_text)
+        comments_period_df["_issue_sort"] = comments_period_df["Issue_Key"].fillna("").astype(str).map(_normalize_text)
+        comments_period_df = comments_period_df.sort_values(by=["_epic_sort", "_parent_sort", "_issue_sort"]).drop(
+            columns=["_epic_sort", "_parent_sort", "_issue_sort"]
         )
 
-    df = pd.DataFrame(rows)
-    df["_epic_sort"] = df["Epic_Name"].fillna("").astype(str).map(_normalize_text)
-    df["_parent_sort"] = df["Parent"].fillna("").astype(str).map(_normalize_text)
-    df["_issue_sort"] = df["Issue_Key"].fillna("").astype(str).map(_normalize_text)
-    df = df.sort_values(by=["_epic_sort", "_parent_sort", "_issue_sort"]).drop(
-        columns=["_epic_sort", "_parent_sort", "_issue_sort"]
+    comment_entries_df = _empty_comment_entries_df()
+    if comment_entries:
+        comment_entries_df = pd.DataFrame(comment_entries)
+        comment_entries_df = comment_entries_df.sort_values(
+            by=["Comment_Author_Norm", "Issue_Key", "Comment_Date_Str"],
+            kind="mergesort",
+        ).reset_index(drop=True)
+
+    return comments_period_df, comment_entries_df
+
+
+def build_comments_period_df(
+    jira,
+    jql_query: str,
+    start_date: str | None,
+    end_date: str | None,
+    config: ConfigParser,
+    extra_params: dict[str, Any],
+) -> pd.DataFrame:
+    comments_period_df, _ = build_comments_period_data(
+        jira,
+        jql_query,
+        start_date,
+        end_date,
+        config,
+        extra_params,
     )
-    return df
+    return comments_period_df
 
 
 def _rewrite_summary_items_with_ollama(
@@ -2138,7 +2207,18 @@ def fetch_worklog_entries(
     """
     if issues_df.empty:
         return pd.DataFrame(
-            columns=["Issue_Key", "Summary", "Assignee", "Worklog_Author", "Date", "Time_Spent_Hours", "Comment"]
+            columns=[
+                "Issue_Key",
+                "Summary",
+                "Assignee",
+                "Worklog_Author",
+                "Worklog_Author_Username",
+                "Worklog_Author_Norm",
+                "Worklog_Author_Username_Norm",
+                "Date",
+                "Time_Spent_Hours",
+                "Comment",
+            ]
         )
 
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
@@ -2153,7 +2233,14 @@ def fetch_worklog_entries(
         worklogs = jira_source.get_all_worklogs(issue_key)
         for log in worklogs:
             try:
-                author = log.get("author", {}).get("displayName", "") or "Unknown"
+                author_payload = log.get("author", {}) if isinstance(log, dict) else {}
+                author = author_payload.get("displayName", "") or "Unknown"
+                author_username = (
+                    author_payload.get("name")
+                    or author_payload.get("key")
+                    or author_payload.get("accountId")
+                    or ""
+                )
                 log_date = datetime.strptime(log["started"].split("T")[0], "%Y-%m-%d").date()
             except Exception:
                 continue
@@ -2170,9 +2257,12 @@ def fetch_worklog_entries(
                     "Summary": summary_map.get(issue_key, ""),
                     "Assignee": assignee_map.get(issue_key, ""),
                     "Worklog_Author": author,
+                    "Worklog_Author_Username": str(author_username or "").strip(),
+                    "Worklog_Author_Norm": _normalize_text(author),
+                    "Worklog_Author_Username_Norm": _normalize_text(author_username),
                     "Date": log_date.strftime("%Y-%m-%d"),
                     "Time_Spent_Hours": round(time_spent / 3600, 2),
-                    "Comment": log.get("comment", "") or "",
+                    "Comment": _to_plain_text(log.get("comment", "") or ""),
                 }
             )
 
@@ -2484,6 +2574,88 @@ def calculate_pm_metrics(
     return pd.DataFrame(metrics)
 
 
+def _build_member_identity_set(member_list_file: str | None) -> set[str]:
+    if not member_list_file:
+        return set()
+
+    identities: set[str] = set()
+    for prefer in ("name", "login"):
+        try:
+            values = read_member_identity_list(member_list_file, prefer=prefer)
+        except Exception:
+            continue
+        for value in values:
+            normalized = _normalize_text(value)
+            if normalized:
+                identities.add(normalized)
+    return identities
+
+
+def _build_comprehensive_developer_activity_df(
+    comment_entries_df: pd.DataFrame,
+    worklog_entries_df: pd.DataFrame,
+    jira_url: str,
+    member_list_file: str | None,
+) -> pd.DataFrame:
+    comments_source = comment_entries_df.copy() if comment_entries_df is not None else _empty_comment_entries_df()
+    worklogs_source = worklog_entries_df.copy() if worklog_entries_df is not None else pd.DataFrame()
+
+    member_identities = _build_member_identity_set(member_list_file)
+    if member_identities:
+        if not comments_source.empty:
+            comment_author_norm = comments_source.get("Comment_Author_Norm", pd.Series("", index=comments_source.index, dtype=object)).fillna("").astype(str)
+            comment_author_username_norm = comments_source.get("Comment_Author_Username_Norm", pd.Series("", index=comments_source.index, dtype=object)).fillna("").astype(str)
+            comment_mask = comment_author_norm.isin(member_identities) | comment_author_username_norm.isin(member_identities)
+            comments_source = comments_source[comment_mask].copy()
+        if not worklogs_source.empty:
+            worklog_author_norm = worklogs_source.get("Worklog_Author_Norm", pd.Series("", index=worklogs_source.index, dtype=object)).fillna("").astype(str)
+            worklog_author_username_norm = worklogs_source.get("Worklog_Author_Username_Norm", pd.Series("", index=worklogs_source.index, dtype=object)).fillna("").astype(str)
+            worklog_mask = worklog_author_norm.isin(member_identities) | worklog_author_username_norm.isin(member_identities)
+            worklogs_source = worklogs_source[worklog_mask].copy()
+
+    adapted_comments = _empty_comment_entries_df().rename(
+        columns={
+            "Issue_Key": "Issue_key",
+            "Comment_Author": "CommentAuthor",
+            "Comment_Author_Norm": "CommentAuthor_norm",
+            "Comment_Date": "CommentDate",
+            "Comment_Date_Str": "CommentDateStr",
+            "Comment_Body": "CommentBody",
+        }
+    )
+    if not comments_source.empty:
+        adapted_comments = comments_source.rename(
+            columns={
+                "Issue_Key": "Issue_key",
+                "Comment_Author": "CommentAuthor",
+                "Comment_Author_Norm": "CommentAuthor_norm",
+                "Comment_Date": "CommentDate",
+                "Comment_Date_Str": "CommentDateStr",
+                "Comment_Body": "CommentBody",
+            }
+        ).copy()
+        adapted_comments["Is_Worklog_Comment"] = False
+
+    adapted_worklogs = pd.DataFrame()
+    if not worklogs_source.empty:
+        adapted_worklogs = worklogs_source.copy()
+        adapted_worklogs["Issue_key"] = adapted_worklogs.get("Issue_Key", "")
+        adapted_worklogs["Assignee"] = adapted_worklogs.get("Worklog_Author", "")
+        adapted_worklogs["Assignee_norm"] = adapted_worklogs.get("Worklog_Author_Norm", pd.Series(dtype=object)).fillna("").astype(str)
+        adapted_worklogs["WorklogSeconds"] = (
+            pd.to_numeric(adapted_worklogs.get("Time_Spent_Hours", pd.Series(dtype=float)), errors="coerce")
+            .fillna(0)
+            .mul(3600)
+            .round()
+            .astype(int)
+        )
+        adapted_worklogs["WorklogDateStr"] = adapted_worklogs.get("Date", pd.Series(dtype=object)).fillna("").astype(str)
+        adapted_worklogs["WorklogDate"] = pd.to_datetime(adapted_worklogs.get("Date", pd.Series(dtype=object)), errors="coerce").dt.date
+        adapted_worklogs["WorklogComment"] = adapted_worklogs.get("Comment", "")
+
+    return build_developer_activity_df(adapted_comments, adapted_worklogs, jira_url)
+
+
 def export_to_excel(
     issues_df: pd.DataFrame,
     links_df: pd.DataFrame,
@@ -2495,9 +2667,35 @@ def export_to_excel(
     pm_metrics: pd.DataFrame,
     worklog_activity_df: pd.DataFrame,
     worklog_entries_df: pd.DataFrame,
+    developer_activity_df: pd.DataFrame,
     output_file: str | Path,
 ) -> None:
     """Export all data to Excel file with multiple sheets."""
+    worklog_entries_export_df = worklog_entries_df.copy()
+    if not worklog_entries_export_df.empty:
+        visible_worklog_columns = [
+            "Issue_Key",
+            "Summary",
+            "Assignee",
+            "Worklog_Author",
+            "Date",
+            "Time_Spent_Hours",
+            "Comment",
+        ]
+        for column in visible_worklog_columns:
+            if column not in worklog_entries_export_df.columns:
+                worklog_entries_export_df[column] = ""
+        worklog_entries_export_df = worklog_entries_export_df[visible_worklog_columns]
+
+    activity_columns = ["Developer", "Issue", "Title", "Logged_Hours", "Worklog", "Comments"]
+    if developer_activity_df is None or developer_activity_df.empty:
+        developer_activity_export_df = pd.DataFrame(columns=activity_columns)
+    else:
+        developer_activity_export_df = developer_activity_df.copy()
+        for column in activity_columns:
+            if column not in developer_activity_export_df.columns:
+                developer_activity_export_df[column] = ""
+
     issues_df = _sanitize_dataframe_for_excel(issues_df)
     links_df = _sanitize_dataframe_for_excel(links_df)
     results_df = _sanitize_dataframe_for_excel(results_df)
@@ -2507,7 +2705,8 @@ def export_to_excel(
     qa_metrics = _sanitize_dataframe_for_excel(qa_metrics)
     pm_metrics = _sanitize_dataframe_for_excel(pm_metrics)
     worklog_activity_df = _sanitize_dataframe_for_excel(worklog_activity_df)
-    worklog_entries_df = _sanitize_dataframe_for_excel(worklog_entries_df)
+    worklog_entries_export_df = _sanitize_dataframe_for_excel(worklog_entries_export_df)
+    developer_activity_export_df = _sanitize_dataframe_for_excel(developer_activity_export_df)
 
     output_path = Path(output_file)
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
@@ -2536,10 +2735,22 @@ def export_to_excel(
         if not worklog_activity_df.empty:
             worklog_activity_df.to_excel(writer, sheet_name="Worklog_Activity", index=False)
 
-        if not worklog_entries_df.empty:
-            worklog_entries_df.to_excel(writer, sheet_name="Worklog_Entries", index=False)
+        if not worklog_entries_export_df.empty:
+            worklog_entries_export_df.to_excel(writer, sheet_name="Worklog_Entries", index=False)
+
+        developer_activity_export_df[activity_columns].to_excel(writer, sheet_name="Developer_Activity", index=False)
 
         workbook = writer.book
+        activity_sheet = workbook["Developer_Activity"]
+        activity_sheet.freeze_panes = "A2"
+        if "Issue_Url" in developer_activity_export_df.columns:
+            issue_col_idx = activity_columns.index("Issue") + 1
+            for row_idx, issue_url in enumerate(developer_activity_export_df["Issue_Url"].tolist(), start=2):
+                if not issue_url:
+                    continue
+                issue_cell = activity_sheet.cell(row=row_idx, column=issue_col_idx)
+                issue_cell.hyperlink = str(issue_url)
+                issue_cell.style = "Hyperlink"
         for sheet_name in workbook.sheetnames:
             worksheet = workbook[sheet_name]
 
@@ -2647,7 +2858,7 @@ class JiraComprehensiveReport:
             return
         with progress.step("Build summaries"):
             summary_df = build_monthly_summary_df(issues_df, config, extra_params)
-            comments_period_df = build_comments_period_df(
+            comments_period_df, comment_entries_df = build_comments_period_data(
                 jira,
                 comments_jql,
                 params.get("start_date"),
@@ -2695,6 +2906,30 @@ class JiraComprehensiveReport:
                     params.get("start_date"),
                     params.get("end_date"),
                 )
+
+        developer_activity_worklog_entries_df = pd.DataFrame()
+        if not comment_entries_df.empty:
+            developer_activity_issues_df = comment_entries_df[["Issue_Key", "Summary", "Assignee"]].drop_duplicates()
+            developer_activity_worklog_entries_df = fetch_worklog_entries(
+                jira_source,
+                developer_activity_issues_df,
+                params.get("start_date"),
+                params.get("end_date"),
+            )
+
+        developer_activity_df = _build_comprehensive_developer_activity_df(
+            comment_entries_df,
+            developer_activity_worklog_entries_df,
+            jira_source.jira_url,
+            params.get("member_list_file"),
+        )
+        logger.info(
+            "Developer activity sheet rows=%s developers=%s issues=%s total_hours=%.2f",
+            len(developer_activity_df.index),
+            developer_activity_df["Developer"].nunique() if not developer_activity_df.empty else 0,
+            developer_activity_df["Issue"].nunique() if not developer_activity_df.empty else 0,
+            float(pd.to_numeric(developer_activity_df.get("Logged_Hours", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()),
+        )
 
         members_df = read_member_list(params["member_list_file"])
         code_volume_df = read_code_volume(params["code_volume_file"])
@@ -2745,6 +2980,7 @@ class JiraComprehensiveReport:
                 pm_metrics,
                 worklog_activity_df,
                 worklog_entries_df,
+                developer_activity_df,
                 output_path,
             )
 

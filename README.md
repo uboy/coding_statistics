@@ -66,9 +66,7 @@ python stats_main.py run \
 - Для `jira_weekly_email` формат `--output-formats` можно не указывать: отчёт всегда генерируется в HTML.
 - Для `jira_weekly_email` неделю можно задать через `week_date=YYYY-MM-DD` или `week=WWwYY` / `week=WWwYYYY` / `week=WW`.
 - `jira_weekly_email` строит HTML для Outlook, хранит weekly snapshot в том же каталоге, что и HTML (по умолчанию `reports`) с именем `jira_weekly_email_<PROJECT>_<WEEK>.json`, и выводит diff только в консоль.
-- `jira_weekly` Excel теперь создаёт workbook с листами `Weekly_Grid` и `Developer_Activity`.
-- `Developer_Activity` содержит только задачи, где разработчик оставил Jira comment в выбранный период, и показывает колонки `Developer`, `Issue`, `Title`, `Logged_Hours`, `Worklog`, `Comments`.
-- Если передан `member_list_file`, лист `Developer_Activity` фильтруется по этому списку так же, как Word-секция `Engineer Weekly Activity`.
+- `jira_weekly` Excel создаёт лист `Weekly_Grid` с группировкой по assignee и неделям.
 - Для `member_list_file` в `members.xlsx` предпочтительны колонки с именем, затем fallback по login; legacy fallback column `E` всё ещё поддерживается.
 - Labels для глав настраиваются через `labels_highlights` и `labels_report`.
 - Для `labels_report` можно указать `@all`, чтобы отключить label-фильтр и включать эпики/задачи с любыми метками.
@@ -85,6 +83,8 @@ python stats_main.py run \
 - `jira_comprehensive` включает лист `Worklog_Activity` (агрегация времени по задаче и инженеру, только задачи с несколькими авторами).
 - `jira_comprehensive` включает лист `Worklog_Entries` (все логи времени за период).
 - `jira_comprehensive` включает лист `Comments_Period` (задачи с комментариями в период; колонки `Comments`, `Comments_In_Period`, `AI_Comments`). AI включается через `--params ai_comments_enabled=true`.
+- `jira_comprehensive` включает лист `Developer_Activity` с колонками `Developer`, `Issue`, `Title`, `Logged_Hours`, `Worklog`, `Comments`.
+- `Developer_Activity` в `jira_comprehensive` содержит только задачи, где разработчик оставил Jira comment в выбранный период; `member_list_file` применяется и к этому листу.
 - `Assistance_Provided` считается по метке `dev_assistance`.
 - Все отчёты выводят прогресс-бар и шаги выполнения.
 - AI-запросы при таймаутах повторяются до 3 раз.
@@ -126,7 +126,6 @@ Worklog-driven attribution: if time is logged on an issue within the selected pe
 
 Each view is generated as a separate section in the Word document. Excel export contains:
 - `Weekly_Grid` - grouped by assignee and week
-- `Developer_Activity` - one row per developer and issue where that developer commented in the selected period, with task link, title, logged hours, worklog details, and comments
 
 # Caching
 

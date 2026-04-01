@@ -1020,3 +1020,199 @@ def test_build_monthly_summary_df_filters_report_epics_and_groups_subtasks():
     assert row["Planned_Tasks_Resolved"] == 3
     summary_text = str(row["Summary"])
     assert summary_text.count("- ") == 1
+
+
+@patch("stats_core.reports.jira_comprehensive.rewrite_comment_items_with_ai")
+@patch("stats_core.reports.jira_comprehensive.JiraSource")
+def test_jira_comprehensive_report_adds_developer_activity_sheet(
+    mock_jira_source_cls,
+    mock_rewrite_comments,
+    tmp_path: Path,
+):
+    mock_rewrite_comments.return_value = {}
+
+    issue_one = _make_issue(
+        "ABC-1",
+        summary="First task",
+        issue_type="Task",
+        status="Released",
+        assignee_display="Alice Dev",
+        assignee_username="alice.dev",
+        reporter_display="Bob",
+        reporter_username="bob",
+        resolved_at="2025-01-18T10:00:00.000+0000",
+    )
+    issue_one.fields.comment.comments = [
+        SimpleNamespace(
+            body="Implemented API changes",
+            author=SimpleNamespace(displayName="Alice Dev", name="alice.dev"),
+            created="2025-01-14T10:00:00.000+0000",
+            updated="2025-01-14T10:00:00.000+0000",
+            id="101",
+        ),
+        SimpleNamespace(
+            body="Added tests",
+            author=SimpleNamespace(displayName="Alice Dev", name="alice.dev"),
+            created="2025-01-15T12:00:00.000+0000",
+            updated="2025-01-15T12:00:00.000+0000",
+            id="102",
+        ),
+    ]
+
+    issue_two = _make_issue(
+        "ABC-2",
+        summary="Second task",
+        issue_type="Task",
+        status="In QA",
+        assignee_display="Bob Dev",
+        assignee_username="bob.dev",
+        reporter_display="Carol",
+        reporter_username="carol",
+        resolved_at="2025-01-19T10:00:00.000+0000",
+    )
+    issue_two.fields.comment.comments = [
+        SimpleNamespace(
+            body="Waiting for review",
+            author=SimpleNamespace(displayName="Bob Dev", name="bob.dev"),
+            created="2025-01-16T09:00:00.000+0000",
+            updated="2025-01-16T09:00:00.000+0000",
+            id="201",
+        )
+    ]
+
+    issue_three = _make_issue(
+        "ABC-3",
+        summary="Only worklog task",
+        issue_type="Task",
+        status="In Progress",
+        assignee_display="Carol Dev",
+        assignee_username="carol.dev",
+        reporter_display="Dan",
+        reporter_username="dan",
+        resolved_at="2025-01-20T10:00:00.000+0000",
+    )
+    issue_three.fields.comment.comments = []
+
+    issues = [issue_one, issue_two, issue_three]
+    epic_issues: list[SimpleNamespace] = []
+
+    fake_jira = Mock()
+    fake_jira._options = {"server": "https://jira.example.com"}
+
+    def _search_issues_side_effect(jql_query, *args, **kwargs):
+        if "issuekey in" in jql_query:
+            return epic_issues
+        return issues
+
+    fake_jira.search_issues.side_effect = _search_issues_side_effect
+
+    fake_source = Mock()
+    fake_source.jira = fake_jira
+    fake_source.jira_url = "https://jira.example.com"
+
+    def _worklogs(issue_key):
+        if issue_key == "ABC-1":
+            return [
+                {
+                    "author": {"displayName": "Alice Dev", "name": "alice.dev"},
+                    "started": "2025-01-14T10:00:00.000+0000",
+                    "timeSpentSeconds": 3600,
+                    "comment": "Investigated root cause",
+                },
+                {
+                    "author": {"displayName": "Alice Dev", "name": "alice.dev"},
+                    "started": "2025-01-15T11:00:00.000+0000",
+                    "timeSpentSeconds": 1800,
+                    "comment": "",
+                },
+                {
+                    "author": {"displayName": "Reviewer", "name": "reviewer"},
+                    "started": "2025-01-15T12:00:00.000+0000",
+                    "timeSpentSeconds": 1200,
+                    "comment": "Review support",
+                },
+            ]
+        if issue_key == "ABC-2":
+            return []
+        if issue_key == "ABC-3":
+            return [
+                {
+                    "author": {"displayName": "Carol Dev", "name": "carol.dev"},
+                    "started": "2025-01-16T10:00:00.000+0000",
+                    "timeSpentSeconds": 1200,
+                    "comment": "Logged time only",
+                }
+            ]
+        return []
+
+    fake_source.get_all_worklogs.side_effect = _worklogs
+    mock_jira_source_cls.return_value = fake_source
+
+    members_file = tmp_path / "members.xlsx"
+    pd.DataFrame(
+        [
+            {"name": "Alice Dev", "username": "alice.dev", "role": "engineer"},
+            {"name": "Bob Dev", "username": "bob.dev", "role": "engineer"},
+            {"name": "Carol Dev", "username": "carol.dev", "role": "engineer"},
+        ]
+    ).to_excel(members_file, index=False)
+
+    config = ConfigParser()
+    config.read_dict(
+        {
+            "jira": {"jira-url": "https://jira.example.com", "username": "u", "password": "p"},
+            "reporting": {"output_dir": str(tmp_path)},
+        }
+    )
+
+    report = JiraComprehensiveReport()
+    report.run(
+        dataset={},
+        config=config,
+        output_formats=["excel"],
+        extra_params={
+            "project": "ABC",
+            "start": "2025-01-01",
+            "end": "2025-01-31",
+            "member_list_file": str(members_file),
+            "output": "developer_activity.xlsx",
+        },
+    )
+
+    workbook_path = tmp_path / "developer_activity.xlsx"
+    assert workbook_path.exists()
+
+    wb = load_workbook(workbook_path)
+    assert "Developer_Activity" in wb.sheetnames
+
+    ws = wb["Developer_Activity"]
+    headers = [cell.value for cell in ws[1]]
+    assert headers == ["Developer", "Issue", "Title", "Logged_Hours", "Worklog", "Comments"]
+
+    rows = list(ws.iter_rows(min_row=2, values_only=False))
+    assert len(rows) == 2
+
+    data_rows = []
+    for row in rows:
+        row_map = {headers[idx]: cell.value for idx, cell in enumerate(row)}
+        issue_cell = row[headers.index("Issue")]
+        row_map["IssueHyperlink"] = issue_cell.hyperlink.target if issue_cell.hyperlink else None
+        data_rows.append(row_map)
+
+    alice_row = next(row for row in data_rows if row["Developer"] == "Alice Dev")
+    assert alice_row["Issue"] == "ABC-1"
+    assert alice_row["IssueHyperlink"] == "https://jira.example.com/browse/ABC-1"
+    assert alice_row["Title"] == "First task"
+    assert alice_row["Logged_Hours"] == 1.5
+    assert "Investigated root cause" in str(alice_row["Worklog"])
+    assert "Implemented API changes" in str(alice_row["Comments"])
+    assert "Added tests" in str(alice_row["Comments"])
+
+    bob_row = next(row for row in data_rows if row["Developer"] == "Bob Dev")
+    assert bob_row["Issue"] == "ABC-2"
+    assert bob_row["Logged_Hours"] in (0, 0.0)
+    assert bob_row["Worklog"] in ("", None)
+    assert "Waiting for review" in str(bob_row["Comments"])
+
+    developers = {row["Developer"] for row in data_rows}
+    assert "Carol Dev" not in developers

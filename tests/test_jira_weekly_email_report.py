@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from configparser import ConfigParser
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -574,13 +575,19 @@ def test_parse_vacations_excel_accepts_string_dates_in_header(tmp_path: Path):
 
 def test_parse_vacations_excel_real_template_60_days_from_2026_02_18():
     path = Path(__file__).parent / "fixtures" / "vacation_template.xlsx"
-    lines = parse_vacations_excel(
-        path,
-        sheet="Vacations2026",
-        markers={"a", "p"},
-        horizon_start=date(2026, 2, 18),
-        horizon_days=60,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Conditional Formatting extension is not supported and will be removed",
+            category=UserWarning,
+        )
+        lines = parse_vacations_excel(
+            path,
+            sheet="Vacations2026",
+            markers={"a", "p"},
+            horizon_start=date(2026, 2, 18),
+            horizon_days=60,
+        )
     assert lines == [
         "Alexey Horaskin vacation 23.03.2026 - 29.03.2026",
         "Andrey Khudenkikh vacation 17.04.2026 - 30.04.2026",
