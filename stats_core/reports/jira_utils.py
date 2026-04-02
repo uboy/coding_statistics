@@ -453,7 +453,8 @@ def build_resolved_issues_snapshot(
 
         epic_link = getattr(issue.fields, "customfield_10000", None)
         if (not epic_link) and parent_key:
-            epic_link = issue_epic_map.get(parent_key, "")
+            parent_fields = getattr(parent, "fields", None)
+            epic_link = getattr(parent_fields, "customfield_10000", None) or issue_epic_map.get(parent_key, "")
 
         epic_name = epic_names.get(epic_link, "Unknown Epic") if epic_link else "Unknown Epic"
         epic_status = issue_status_map.get(epic_link or "", "")

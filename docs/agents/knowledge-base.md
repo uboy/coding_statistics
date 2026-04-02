@@ -38,6 +38,8 @@ sources -> stats.collector -> reports -> export
 - Excel sheets:
   - `Weekly_Grid`
 - Key params: `include_empty_weeks`, `member_list_file`
+- Word `Summary`: grouped as `epic -> parent task group`; resolved subtasks stay attached to their parent task even when the parent is still open.
+- Word `Summary`: AI rewrite uses grouped titles/descriptions/comments and strips links, paths, filenames, and repository noise before rendering.
 
 ### jira_comprehensive
 - Purpose: comprehensive Jira export to Excel, includes issue details, comments, and developer activity.

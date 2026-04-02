@@ -155,3 +155,69 @@ class JiraSource:
         
         return epic_names
 
+    def fetch_issue_details(self, issue_keys: list[str]) -> dict[str, dict[str, str]]:
+        """
+        Fetch focused issue metadata for the provided keys.
+
+        Args:
+            issue_keys: List of Jira issue keys
+
+        Returns:
+            Dictionary mapping issue key to a normalized metadata dictionary
+        """
+        if not issue_keys:
+            return {}
+
+        normalized_keys = [str(key).strip() for key in issue_keys if str(key).strip()]
+        if not normalized_keys:
+            return {}
+
+        details: dict[str, dict[str, str]] = {}
+        chunk_size = 50
+        for i in range(0, len(normalized_keys), chunk_size):
+            chunk = normalized_keys[i : i + chunk_size]
+            issues = self.jira.search_issues(
+                f"issuekey in ({', '.join(chunk)})",
+                maxResults=1000,
+                fields=[
+                    "key",
+                    "summary",
+                    "status",
+                    "resolution",
+                    "resolutiondate",
+                    "customfield_10000",
+                    "parent",
+                    "issuetype",
+                    "description",
+                    "labels",
+                ],
+            )
+            for issue in issues:
+                parent = getattr(issue.fields, "parent", None)
+                issue_type = getattr(issue.fields, "issuetype", None)
+                status = getattr(issue.fields, "status", None)
+                resolution = getattr(issue.fields, "resolution", None)
+                resolved_raw = getattr(issue.fields, "resolutiondate", "") or ""
+                labels_raw = getattr(issue.fields, "labels", None)
+                if isinstance(labels_raw, (list, tuple, set)):
+                    labels_text = ", ".join(str(label) for label in labels_raw if str(label).strip())
+                elif isinstance(labels_raw, str):
+                    labels_text = labels_raw.strip()
+                else:
+                    labels_text = ""
+
+                details[issue.key] = {
+                    "Issue_Key": issue.key,
+                    "Summary": str(getattr(issue.fields, "summary", "") or ""),
+                    "Status": str(getattr(status, "name", "") or ""),
+                    "Resolution": str(getattr(resolution, "name", "") or ""),
+                    "Resolved": str(resolved_raw)[:10] if resolved_raw else "",
+                    "Epic_Link": str(getattr(issue.fields, "customfield_10000", "") or ""),
+                    "Parent_Key": str(getattr(parent, "key", "") or ""),
+                    "Type": str(getattr(issue_type, "name", "") or ""),
+                    "Description": str(getattr(issue.fields, "description", "") or ""),
+                    "Labels": labels_text,
+                }
+
+        return details
+

@@ -18,6 +18,7 @@ from stats_core.reports.jira_utils import (
     norm_name,
     is_empty_task,
 )
+import stats_core.reports.jira_weekly as jira_weekly_module
 from stats_core.reports.jira_weekly import JiraWeeklyReport
 from stats_core.reports.jira_epic_report import (
     generate_epic_resolved_hierarchy,
@@ -452,8 +453,110 @@ def test_add_resolved_tasks_section_lists_subtask_under_parent():
     assert any("SUB-1: Subtask" in text for text in texts)
 
 
+def test_build_weekly_epic_summary_df_recovers_epic_from_open_parent_and_groups_subtasks():
+    config = ConfigParser()
+
+    resolved_df = pd.DataFrame(
+        [
+            {
+                "Issue_key": "SUB-1",
+                "Summary": "Finalize lifecycle cleanup",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolution_Date": "2025-01-15",
+                "Epic_Link": "",
+                "Epic_Name": "",
+                "Parent": "FEATURE-1",
+                "Parent_Key": "FEATURE-1",
+                "Parent_Summary": "",
+                "Type": "Sub-task",
+                "Description": "Cleanup final implementation.",
+                "Last_Comment": "",
+            },
+            {
+                "Issue_key": "SUB-2",
+                "Summary": "Add teardown regression coverage",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolution_Date": "2025-01-17",
+                "Epic_Link": "",
+                "Epic_Name": "",
+                "Parent": "FEATURE-1",
+                "Parent_Key": "FEATURE-1",
+                "Parent_Summary": "",
+                "Type": "Sub-task",
+                "Description": "Coverage for repeated mount and unmount.",
+                "Last_Comment": "",
+            },
+        ]
+    )
+    comments_df = pd.DataFrame(
+        [
+            {
+                "Issue_key": "FEATURE-1",
+                "CommentBody": (
+                    "Implemented cleanup for detached nodes. "
+                    "See https://example.com/report and \\\\server\\share\\weekly\\result.txt"
+                ),
+                "CommentDate": datetime(2025, 1, 15).date(),
+                "CommentId": "10",
+                "Is_Worklog_Comment": False,
+            },
+            {
+                "Issue_key": "SUB-2",
+                "CommentBody": (
+                    "Regression fixed, attachment build.log uploaded and C:\\temp\\trace.txt checked."
+                ),
+                "CommentDate": datetime(2025, 1, 17).date(),
+                "CommentId": "11",
+                "Is_Worklog_Comment": False,
+            },
+        ]
+    )
+
+    jira_source = Mock()
+    jira_source.fetch_issue_details = Mock(
+        return_value={
+            "FEATURE-1": {
+                "Issue_Key": "FEATURE-1",
+                "Summary": "Component teardown stability",
+                "Type": "Story",
+                "Status": "In Progress",
+                "Description": "Stabilize teardown and cleanup behavior.",
+                "Epic_Link": "EPIC-1",
+            }
+        }
+    )
+    jira_source.fetch_epic_names = Mock(return_value={"EPIC-1": "Epic One"})
+
+    summary_df = jira_weekly_module.build_weekly_epic_summary_df(
+        jira_source,
+        resolved_df,
+        comments_df,
+        "2025-01-13",
+        "2025-01-19",
+        config,
+        {"ollama_enabled": False, "webui_enabled": False},
+    )
+
+    assert len(summary_df) == 1
+    row = summary_df.iloc[0]
+    assert row["Epic_Link"] == "EPIC-1"
+    assert row["Epic_Name"] == "Epic One"
+    assert row["Planned_Tasks_Resolved"] == 2
+    assert row["Reported_Issues_Resolved"] == 0
+
+    summary_text = str(row["Summary"])
+    assert summary_text.count("- ") == 1
+    assert "Component teardown stability" in summary_text
+    assert "Resolved 2 planned tasks on time." in summary_text
+    assert "https://" not in summary_text
+    assert "\\\\server\\share" not in summary_text
+    assert "build.log" not in summary_text
+    assert "C:\\temp\\trace.txt" not in summary_text
+
+
 @patch("stats_core.reports.jira_weekly.generate_file_suffix", return_value="")
-@patch("stats_core.reports.jira_weekly.build_monthly_summary_df")
 @patch("stats_core.reports.jira_weekly.build_resolved_issues_snapshot")
 @patch("stats_core.reports.jira_weekly.fetch_jira_activity_data")
 @patch("stats_core.reports.jira_weekly.fetch_jira_data")
@@ -463,7 +566,6 @@ def test_jira_weekly_report_excel_contains_only_weekly_grid_sheet(
     mock_fetch_jira_data,
     mock_fetch_jira_activity_data,
     mock_build_resolved,
-    mock_build_summary,
     mock_suffix,
     tmp_path,
 ):
@@ -500,7 +602,6 @@ def test_jira_weekly_report_excel_contains_only_weekly_grid_sheet(
     )
     mock_fetch_jira_activity_data.return_value = (pd.DataFrame(), pd.DataFrame())
     mock_build_resolved.return_value = pd.DataFrame()
-    mock_build_summary.return_value = pd.DataFrame()
 
     report = JiraWeeklyReport()
     report.run(

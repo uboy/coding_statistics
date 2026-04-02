@@ -16,7 +16,7 @@ import re
 from configparser import ConfigParser
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import pandas as pd
@@ -1416,9 +1416,11 @@ def build_comments_period_df(
 
 
 def _rewrite_summary_items_with_ollama(
-    items: list[dict[str, str]],
+    items: list[dict[str, Any]],
     config: ConfigParser,
     extra_params: dict[str, Any],
+    prompt_builder: Callable[[list[dict[str, Any]], int], tuple[dict[str, str], str]] | None = None,
+    result_sanitizer: Callable[[Any], str] | None = None,
 ) -> dict[str, str]:
     ollama_enabled = _bool_value(
         extra_params.get("ollama_enabled", config.get("ollama", "enabled", fallback="true")),
@@ -1450,6 +1452,9 @@ def _rewrite_summary_items_with_ollama(
     if ollama_api_key:
         headers["Authorization"] = f"Bearer {ollama_api_key}"
 
+    build_prompt = prompt_builder or _build_summary_prompt
+    sanitize_result = result_sanitizer or _sanitize_summary_ai_text
+
     rewritten: dict[str, str] = {}
     batch_size = 8
     batches = [(i, items[i : i + batch_size]) for i in range(0, len(items), batch_size)]
@@ -1458,7 +1463,7 @@ def _rewrite_summary_items_with_ollama(
 
     def _run_batch(batch_info: tuple[int, list[dict[str, str]]]) -> dict[str, str]:
         start_index, batch = batch_info
-        target_map, prompt = _build_summary_prompt(batch, start_index=start_index + 1)
+        target_map, prompt = build_prompt(batch, start_index=start_index + 1)
 
         def _request():
             response = requests.post(
@@ -1490,7 +1495,7 @@ def _rewrite_summary_items_with_ollama(
             rewrite_map = _extract_json_object(response_text) or {}
             batch_result: dict[str, str] = {}
             for target_id, issue_id in target_map.items():
-                candidate = _sanitize_summary_ai_text(rewrite_map.get(target_id))
+                candidate = sanitize_result(rewrite_map.get(target_id))
                 if candidate:
                     batch_result[issue_id] = candidate
             return batch_result
@@ -1511,9 +1516,12 @@ def _rewrite_summary_items_with_ollama(
 
 
 def _rewrite_summary_items_with_webui(
-    items: list[dict[str, str]],
+    items: list[dict[str, Any]],
     config: ConfigParser,
     extra_params: dict[str, Any],
+    prompt_builder: Callable[[list[dict[str, Any]], int], tuple[dict[str, str], str]] | None = None,
+    result_sanitizer: Callable[[Any], str] | None = None,
+    system_prompt: str | None = None,
 ) -> dict[str, str]:
     webui_section = config["webui"] if config.has_section("webui") else {}
     webui_enabled = _bool_value(
@@ -1582,6 +1590,13 @@ def _rewrite_summary_items_with_webui(
     if webui_api_key:
         headers["Authorization"] = f"Bearer {webui_api_key}"
 
+    build_prompt = prompt_builder or _build_summary_prompt
+    sanitize_result = result_sanitizer or _sanitize_summary_ai_text
+    system_message = system_prompt or (
+        "You rewrite software task evidence into short, business-facing achievement statements. "
+        "Return only strict JSON."
+    )
+
     rewritten: dict[str, str] = {}
     batch_size = 8
     batches = [(i, items[i : i + batch_size]) for i in range(0, len(items), batch_size)]
@@ -1590,7 +1605,7 @@ def _rewrite_summary_items_with_webui(
 
     def _run_batch(batch_info: tuple[int, list[dict[str, str]]]) -> dict[str, str]:
         start_index, batch = batch_info
-        target_map, prompt = _build_summary_prompt(batch, start_index=start_index + 1)
+        target_map, prompt = build_prompt(batch, start_index=start_index + 1)
 
         def _request():
             response = requests.post(
@@ -1601,10 +1616,7 @@ def _rewrite_summary_items_with_webui(
                     "messages": [
                         {
                             "role": "system",
-                            "content": (
-                                "You rewrite software task evidence into short, business-facing achievement statements. "
-                                "Return only strict JSON."
-                            ),
+                            "content": system_message,
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -1640,7 +1652,7 @@ def _rewrite_summary_items_with_webui(
             rewrite_map = _extract_json_object(response_text) or {}
             batch_result: dict[str, str] = {}
             for target_id, issue_id in target_map.items():
-                candidate = _sanitize_summary_ai_text(rewrite_map.get(target_id))
+                candidate = sanitize_result(rewrite_map.get(target_id))
                 if candidate:
                     batch_result[issue_id] = candidate
             return batch_result
@@ -1661,9 +1673,12 @@ def _rewrite_summary_items_with_webui(
 
 
 def rewrite_summary_items_with_ai(
-    items: list[dict[str, str]],
+    items: list[dict[str, Any]],
     config: ConfigParser,
     extra_params: dict[str, Any],
+    prompt_builder: Callable[[list[dict[str, Any]], int], tuple[dict[str, str], str]] | None = None,
+    result_sanitizer: Callable[[Any], str] | None = None,
+    system_prompt: str | None = None,
 ) -> dict[str, str]:
     section = config["jira_comprehensive"] if config.has_section("jira_comprehensive") else {}
     provider_raw = _compact_text(extra_params.get("ai_provider") or section.get("ai_provider"))
@@ -1676,10 +1691,23 @@ def rewrite_summary_items_with_ai(
         )
         provider = "webui" if webui_enabled else "ollama"
     if provider == "webui":
-        return _rewrite_summary_items_with_webui(items, config, extra_params)
+        return _rewrite_summary_items_with_webui(
+            items,
+            config,
+            extra_params,
+            prompt_builder=prompt_builder,
+            result_sanitizer=result_sanitizer,
+            system_prompt=system_prompt,
+        )
     if provider not in {"", "ollama"}:
         logger.warning("Summary AI: unknown ai_provider=%s, falling back to ollama.", provider)
-    return _rewrite_summary_items_with_ollama(items, config, extra_params)
+    return _rewrite_summary_items_with_ollama(
+        items,
+        config,
+        extra_params,
+        prompt_builder=prompt_builder,
+        result_sanitizer=result_sanitizer,
+    )
 
 
 def _rewrite_comment_items_with_ollama(

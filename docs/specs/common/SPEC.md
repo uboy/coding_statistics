@@ -19,7 +19,9 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
 - **jira_weekly** (`stats_core/reports/jira_weekly.py`):
   - Builds weekly Jira views based on worklogs + resolutions.
   - Produces Word sections (table view, list view, engineer activity, epic progress, summary, resolved tasks).
-  - `Summary` section is epic-grouped and supports AI rewriting through Ollama/Open WebUI (`ai_provider` + provider settings).
+  - `Summary` section is grouped by epic and then by parent task group; resolved subtasks are attached to their parent task even if the parent remains open.
+  - Weekly summary enriches missing parent/epic context, uses grouped title/description/comment evidence, and strips links/paths/file-name noise from final text.
+  - `Summary` supports AI rewriting through Ollama/Open WebUI (`ai_provider` + provider settings) with deterministic fallback when AI is unavailable.
   - Produces Excel workbook with `Weekly_Grid` grouped by assignee/week.
 - **jira_comprehensive** (`stats_core/reports/jira_comprehensive.py`):
   - Generates multi-sheet Excel: Issues, Links, Engineer/QA/PM metrics, Worklog activity, Worklog entries.
@@ -72,7 +74,7 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
 - **Jira**: `[jira] jira-url, username, password` (API token for Atlassian Cloud).
 - **Git sources**: Provide tokens and `repository` lists per source in config sections (`[gitee]`, `[gitcode]`, `[github]`, `[gitlab]`, `[codehub]`, `[gerrit]`).
 - **Reporting** (optional): `[reporting] links_file, output_dir, review_word_template`.
-- **Ollama** (optional for jira_weekly_email): `[ollama] url, model, timeout_seconds, temperature, enabled`.
+- **Ollama** (optional for jira_weekly / jira_weekly_email): `[ollama] url, model, timeout_seconds, temperature, enabled`.
 - **jira_weekly_email** (optional defaults): labels (`labels_highlights`, `labels_report`), vacation settings, chapter titles.
 - **Cache** (optional): `[cache] enabled, file, ttl_days`.
 - **Proxy/SSL** (optional): `[proxy]` and `[ssl]` settings.

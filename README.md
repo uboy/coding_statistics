@@ -26,7 +26,7 @@ templates/
    - Default config path: `configs/local/config.ini`.
    - Prompts for tokens if they are missing (GitHub, Gitee, etc.).
 3. Fill in relevant sections `[gitee]`, `[gitcode]`, `[github]`, `[gitlab]`, `[codehub]`, `[gerrit]`, `[jira]`, `[reporting]`.
-   - For AI weekly email report also configure `[ollama]` and optional defaults in `[jira_weekly_email]`.
+  - For AI-assisted `jira_weekly` / `jira_weekly_email` also configure `[ollama]` and/or `[webui]`; optional weekly-email defaults live in `[jira_weekly_email]`.
    - `repository`/`project` accepts comma-separated list.
    - Branch filter is optional; absence implies “all branches”.
 
@@ -117,7 +117,11 @@ Worklog-driven attribution: if time is logged on an issue within the selected pe
 2. **List View** - Tasks grouped by assignee and week, showing weekly progress
 3. **Engineer Weekly Activity** - Per engineer weekly breakdown with time logged by that engineer, status/resolution, and comments (including worklog comments) added/updated in the week
 4. **Epic Progress** - Resolved tasks grouped by epics, plus Progressed Tasks (issues with worklogs but no resolution during the period) with parent/sub-task hierarchy
-5. **Summary** - Epic-level weekly achievements (AI-assisted, 1-2 sentences per resolved planned task/sub-task) with mandatory counters:
+5. **Summary** - Epic-level weekly achievements grouped by parent task/feature/bug:
+   - resolved subtasks are attributed to their parent task even if the parent is still open
+   - AI input is built from grouped task titles, descriptions, and sanitized period comments instead of only the latest comment
+   - final text strips links, file names, absolute paths, UNC paths, and repository noise
+   - output stays concise and report-ready with mandatory counters:
    - `Resolved xx planned tasks on time.`
    - `Resolved xx reported issues.` (if bugs were resolved in epic)
 6. **Resolved Tasks** - Chronological list of resolved tasks by week
