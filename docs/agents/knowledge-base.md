@@ -39,7 +39,9 @@ sources -> stats.collector -> reports -> export
   - `Weekly_Grid`
 - Key params: `include_empty_weeks`, `member_list_file`
 - Word `Summary`: grouped as `epic -> parent task group`; resolved subtasks stay attached to their parent task even when the parent is still open.
-- Word `Summary`: AI rewrite uses grouped titles/descriptions/comments and strips links, paths, filenames, and repository noise before rendering.
+- Word `Summary`: open parent groups with resolved subtasks explicitly mention the subtask names, and latest meaningful subtask comments are used as the main evidence source.
+- Word `Summary`: measurable outcomes such as `%`, `ms`, `MB`, and counts are preserved when they describe delivered results.
+- Word `Summary`: cleanup strips links, paths, filenames, Jira markup, and repository noise without aggressively shrinking the final achievement text.
 
 ### jira_comprehensive
 - Purpose: comprehensive Jira export to Excel, includes issue details, comments, and developer activity.

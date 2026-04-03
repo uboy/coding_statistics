@@ -119,9 +119,10 @@ Worklog-driven attribution: if time is logged on an issue within the selected pe
 4. **Epic Progress** - Resolved tasks grouped by epics, plus Progressed Tasks (issues with worklogs but no resolution during the period) with parent/sub-task hierarchy
 5. **Summary** - Epic-level weekly achievements grouped by parent task/feature/bug:
    - resolved subtasks are attributed to their parent task even if the parent is still open
-   - AI input is built from grouped task titles, descriptions, and sanitized period comments instead of only the latest comment
-   - final text strips links, file names, absolute paths, UNC paths, and repository noise
-   - output stays concise and report-ready with mandatory counters:
+   - when the parent stays open but subtasks were completed, the summary explicitly names the resolved subtasks
+   - AI input is built from parent context plus latest meaningful comments for resolved subtasks and preserves measurable outcomes like `%`, `ms`, `MB`, counts, and similar metrics
+   - final cleanup strips links, file names, absolute paths, UNC paths, Jira markup, and repository noise without aggressively collapsing the result text
+   - output can use a slightly fuller 2-4 sentence achievement paragraph when needed, with mandatory counters:
    - `Resolved xx planned tasks on time.`
    - `Resolved xx reported issues.` (if bugs were resolved in epic)
 6. **Resolved Tasks** - Chronological list of resolved tasks by week

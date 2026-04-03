@@ -560,6 +560,124 @@ def test_build_weekly_epic_summary_df_recovers_epic_from_open_parent_and_groups_
     assert "![" not in summary_text
 
 
+def test_build_weekly_epic_summary_df_preserves_all_resolved_subtasks_and_metrics():
+    config = ConfigParser()
+
+    resolved_df = pd.DataFrame(
+        [
+            {
+                "Issue_key": "SUB-10",
+                "Summary": "Optimize frame scheduling",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolution_Date": "2025-01-15",
+                "Epic_Link": "",
+                "Epic_Name": "",
+                "Parent": "FEATURE-10",
+                "Parent_Key": "FEATURE-10",
+                "Parent_Summary": "",
+                "Type": "Sub-task",
+                "Description": "Improve frame scheduling on repeated updates.",
+                "Last_Comment": "",
+            },
+            {
+                "Issue_key": "SUB-11",
+                "Summary": "Reduce teardown memory usage",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolution_Date": "2025-01-16",
+                "Epic_Link": "",
+                "Epic_Name": "",
+                "Parent": "FEATURE-10",
+                "Parent_Key": "FEATURE-10",
+                "Parent_Summary": "",
+                "Type": "Sub-task",
+                "Description": "Reduce teardown memory pressure.",
+                "Last_Comment": "",
+            },
+            {
+                "Issue_key": "SUB-12",
+                "Summary": "Stabilize repeated mount and unmount scenario",
+                "Status": "Done",
+                "Resolution": "Done",
+                "Resolution_Date": "2025-01-17",
+                "Epic_Link": "",
+                "Epic_Name": "",
+                "Parent": "FEATURE-10",
+                "Parent_Key": "FEATURE-10",
+                "Parent_Summary": "",
+                "Type": "Sub-task",
+                "Description": "Prevent repeated lifecycle regressions.",
+                "Last_Comment": "",
+            },
+        ]
+    )
+    comments_df = pd.DataFrame(
+        [
+            {
+                "Issue_key": "SUB-10",
+                "CommentBody": "Completed scheduler cleanup and moved callbacks to the fast path.",
+                "CommentDate": datetime(2025, 1, 15).date(),
+                "CommentId": "20",
+                "Is_Worklog_Comment": False,
+            },
+            {
+                "Issue_key": "SUB-11",
+                "CommentBody": (
+                    "Peak memory usage reduced by 18% and peak allocation down by 42 MB. "
+                    "Frame response time improved by 35 ms."
+                ),
+                "CommentDate": datetime(2025, 1, 16).date(),
+                "CommentId": "21",
+                "Is_Worklog_Comment": False,
+            },
+            {
+                "Issue_key": "SUB-12",
+                "CommentBody": (
+                    "Repeated mount and unmount scenario is now stable in regression coverage and no longer crashes."
+                ),
+                "CommentDate": datetime(2025, 1, 17).date(),
+                "CommentId": "22",
+                "Is_Worklog_Comment": False,
+            },
+        ]
+    )
+
+    jira_source = Mock()
+    jira_source.fetch_issue_details = Mock(
+        return_value={
+            "FEATURE-10": {
+                "Issue_Key": "FEATURE-10",
+                "Summary": "Rendering engine stability improvements",
+                "Type": "Story",
+                "Status": "In Progress",
+                "Description": "Improve rendering stability and teardown behavior.",
+                "Epic_Link": "EPIC-10",
+            }
+        }
+    )
+    jira_source.fetch_epic_names = Mock(return_value={"EPIC-10": "Rendering Epic"})
+
+    summary_df = jira_weekly_module.build_weekly_epic_summary_df(
+        jira_source,
+        resolved_df,
+        comments_df,
+        "2025-01-13",
+        "2025-01-19",
+        config,
+        {"ollama_enabled": False, "webui_enabled": False},
+    )
+
+    assert len(summary_df) == 1
+    summary_text = str(summary_df.iloc[0]["Summary"])
+    assert "Optimize frame scheduling" in summary_text
+    assert "Reduce teardown memory usage" in summary_text
+    assert "Stabilize repeated mount and unmount scenario" in summary_text
+    assert "18%" in summary_text
+    assert "42 MB" in summary_text
+    assert "35 ms" in summary_text
+
+
 @patch("stats_core.reports.jira_weekly.generate_file_suffix", return_value="")
 @patch("stats_core.reports.jira_weekly.build_resolved_issues_snapshot")
 @patch("stats_core.reports.jira_weekly.fetch_jira_activity_data")

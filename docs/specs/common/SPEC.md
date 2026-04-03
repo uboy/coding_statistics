@@ -20,7 +20,9 @@ Unified toolkit for gathering coding and Jira activity statistics across Git-lik
   - Builds weekly Jira views based on worklogs + resolutions.
   - Produces Word sections (table view, list view, engineer activity, epic progress, summary, resolved tasks).
   - `Summary` section is grouped by epic and then by parent task group; resolved subtasks are attached to their parent task even if the parent remains open.
-  - Weekly summary enriches missing parent/epic context, uses grouped title/description/comment evidence, and strips links/paths/file-name noise from final text.
+  - Weekly summary enriches missing parent/epic context, explicitly names resolved subtasks inside open parent groups, and prefers latest meaningful subtask comments as evidence.
+  - Weekly summary preserves measurable outcomes from comments (for example percentages, latency, memory, counts) when they describe delivered results.
+  - Final weekly summary cleanup removes links/paths/file-name noise and Jira markup without aggressively truncating the achievement text.
   - `Summary` supports AI rewriting through Ollama/Open WebUI (`ai_provider` + provider settings) with deterministic fallback when AI is unavailable.
   - Produces Excel workbook with `Weekly_Grid` grouped by assignee/week.
 - **jira_comprehensive** (`stats_core/reports/jira_comprehensive.py`):

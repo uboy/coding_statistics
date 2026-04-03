@@ -59,6 +59,14 @@ _JIRA_BLOCK_MACRO_PATTERN = re.compile(
     r"\{(?:code(?::[^}]*)?|noformat)\}.*?\{(?:code|noformat)\}",
     re.IGNORECASE | re.DOTALL,
 )
+_MEANINGFUL_COMMENT_HINT_PATTERN = re.compile(
+    r"\b(?:complete(?:d)?|deliver(?:ed|y)?|finish(?:ed)?|fix(?:ed)?|improv(?:e(?:d|ment)?)|"
+    r"reduc(?:e(?:d|tion)?)|increas(?:e(?:d)?)|stabiliz(?:e(?:d)?)|optimiz(?:e(?:d|ation)?)|"
+    r"cover(?:ed|age)|prevent(?:ed)?|avoid(?:ed)?|remove(?:d)?|enable(?:d)?|support(?:ed)?|"
+    r"pass(?:ed)?|regression|latency|memory|performance|throughput|allocation|response time|"
+    r"no longer|crash(?:es|ed)?)\b",
+    re.IGNORECASE,
+)
 
 
 def _compact_text(value: Any) -> str:
@@ -132,13 +140,18 @@ def _limit_summary_text(text: Any, *, max_sentences: int = 2, max_words: int = 4
         if chunk.strip(" -,:;")
     ]
     if not sentences:
-        return ""
+        words = cleaned.split()
+        if len(words) > max_words:
+            return " ".join(words[:max_words]).rstrip(" ,;:-") + "..."
+        return cleaned if cleaned[-1] in ".!?" else f"{cleaned}."
     limited = " ".join(sentences[:max_sentences]).strip()
+    truncated = len(sentences) > max_sentences
     words = limited.split()
     if len(words) > max_words:
         limited = " ".join(words[:max_words]).rstrip(" ,;:-")
-        if limited and limited[-1] not in ".!?":
-            limited += "."
+        truncated = True
+    if truncated:
+        limited = limited.rstrip(" .!?") + "..."
     elif limited and limited[-1] not in ".!?":
         limited += "."
     return limited
@@ -157,52 +170,92 @@ def _append_unique_text(target: list[str], values: list[str]) -> None:
         target.append(cleaned)
 
 
-def _extract_comment_fact_map(comments_df: pd.DataFrame) -> dict[str, list[str]]:
+def _join_summary_items(values: list[str]) -> str:
+    items = [_compact_text(value) for value in values if _compact_text(value)]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _extract_metric_hints(text: Any) -> list[str]:
+    cleaned = _sanitize_weekly_summary_evidence(text)
+    if not cleaned:
+        return []
+    metric_hints: list[str] = []
+    sentences = [
+        chunk.strip(" -,:;")
+        for chunk in re.split(r"(?<=[.!?])\s+", cleaned)
+        if chunk.strip(" -,:;")
+    ] or [cleaned]
+    for sentence in sentences:
+        if not re.search(r"\d", sentence):
+            continue
+        if re.search(r"\d+(?:\.\d+)?\s*%", sentence):
+            _append_unique_text(metric_hints, [sentence if sentence[-1] in ".!?" else f"{sentence}."])
+            continue
+        if re.search(r"\b\d+(?:\.\d+)?\s*(?:ms|s|sec(?:ond)?s?|kb|mb|gb|fps)\b", sentence, flags=re.IGNORECASE):
+            _append_unique_text(metric_hints, [sentence if sentence[-1] in ".!?" else f"{sentence}."])
+            continue
+        if re.search(r"\b\d+\s+(?:api|apis|test|tests|issue|issues|bug|bugs)\b", sentence, flags=re.IGNORECASE):
+            _append_unique_text(metric_hints, [sentence if sentence[-1] in ".!?" else f"{sentence}."])
+            continue
+    return metric_hints[:4]
+
+
+def _is_meaningful_summary_comment(text: Any) -> bool:
+    cleaned = _sanitize_weekly_summary_evidence(text)
+    if not cleaned:
+        return False
+    marker = _normalize_text(cleaned)
+    if marker in {"result", "results", "plan", "update", "updated", "done", "fixed", "completed"}:
+        return False
+    if _extract_metric_hints(cleaned):
+        return True
+    if _MEANINGFUL_COMMENT_HINT_PATTERN.search(cleaned):
+        return True
+    return len(cleaned.split()) >= 8
+
+
+def _extract_issue_comment_evidence_maps(comments_df: pd.DataFrame) -> tuple[dict[str, str], dict[str, list[str]]]:
     if comments_df is None or comments_df.empty:
-        return {}
+        return {}, {}
 
     filtered_df = comments_df.copy()
     if "Is_Worklog_Comment" in filtered_df.columns:
         filtered_df = filtered_df[~filtered_df["Is_Worklog_Comment"].fillna(False).astype(bool)]
     if filtered_df.empty:
-        return {}
+        return {}, {}
 
     sort_columns = [column for column in ("Issue_key", "CommentDate", "CommentId") if column in filtered_df.columns]
     if sort_columns:
         filtered_df = filtered_df.sort_values(by=sort_columns, kind="mergesort")
 
-    fact_map: dict[str, list[str]] = {}
+    latest_comment_map: dict[str, str] = {}
+    metric_hint_map: dict[str, list[str]] = {}
     for issue_key, issue_comments in filtered_df.groupby("Issue_key", dropna=False, sort=True):
         normalized_key = _compact_text(issue_key)
         if not normalized_key:
             continue
-        facts: list[str] = []
-        for _, row in issue_comments.iterrows():
+        latest_meaningful = ""
+        latest_non_empty = ""
+        issue_metric_hints: list[str] = []
+        rows = list(issue_comments.iterrows())
+        for _, row in reversed(rows):
             cleaned = _sanitize_weekly_summary_evidence(row.get("CommentBody"))
             if not cleaned:
                 continue
-            fragments = [
-                _compact_text(fragment).strip(" -,:;")
-                for fragment in re.split(r"(?:\n+|(?<=[.!?])\s+)", cleaned)
-                if _compact_text(fragment).strip(" -,:;")
-            ]
-            normalized_facts: list[str] = []
-            for fragment in fragments:
-                if len(fragment) < 8:
-                    continue
-                fragment_norm = _normalize_text(fragment)
-                if fragment_norm.startswith("see ") and len(fragment.split()) <= 4:
-                    continue
-                if fragment[-1] not in ".!?":
-                    fragment += "."
-                normalized_facts.append(fragment)
-                if len(normalized_facts) >= 4:
-                    break
-            _append_unique_text(facts, normalized_facts)
-            if len(facts) >= 6:
-                break
-        fact_map[normalized_key] = facts
-    return fact_map
+            if not latest_non_empty:
+                latest_non_empty = cleaned
+            _append_unique_text(issue_metric_hints, _extract_metric_hints(cleaned))
+            if not latest_meaningful and _is_meaningful_summary_comment(cleaned):
+                latest_meaningful = cleaned
+        latest_comment_map[normalized_key] = latest_meaningful or latest_non_empty
+        metric_hint_map[normalized_key] = issue_metric_hints[:4]
+    return latest_comment_map, metric_hint_map
 
 
 def _fetch_parent_details(
@@ -265,34 +318,46 @@ def _build_epic_name_map(
 def _build_weekly_summary_fallback(
     anchor_title: str,
     anchor_resolved: bool,
-    resolved_items: list[str],
-    comment_facts: list[str],
+    resolved_subtasks: list[dict[str, str]],
+    parent_result_comment: str,
     anchor_description: str,
+    metric_hints: list[str],
 ) -> str:
     base = _sanitize_weekly_summary_evidence(anchor_title) or "Task group"
-    delivered_items = [
-        _sanitize_weekly_summary_evidence(item)
-        for item in resolved_items
-        if _sanitize_weekly_summary_evidence(item)
-        and _normalize_text(_sanitize_weekly_summary_evidence(item)) != _normalize_text(base)
+    subtask_titles = [
+        _sanitize_weekly_summary_evidence(item.get("title"))
+        for item in resolved_subtasks
+        if _sanitize_weekly_summary_evidence(item.get("title"))
     ]
-    if delivered_items:
-        if len(delivered_items) == 1:
-            first = f"{base}: completed {delivered_items[0]}."
-        elif len(delivered_items) == 2:
-            first = f"{base}: completed {delivered_items[0]} and {delivered_items[1]}."
-        else:
-            first = f"{base}: completed {delivered_items[0]}, {delivered_items[1]}, and additional scoped work."
-    elif anchor_resolved:
-        first = f"{base} was completed."
-    else:
-        first = f"{base}: delivered progress through resolved subtasks."
+    sentences: list[str] = []
 
-    detail_source = comment_facts[0] if comment_facts else anchor_description
-    detail = _limit_summary_text(detail_source, max_sentences=1, max_words=18)
-    if detail and _normalize_text(detail) != _normalize_text(first):
-        return _limit_summary_text(f"{first} {detail}", max_sentences=2, max_words=50)
-    return _limit_summary_text(first, max_sentences=2, max_words=50)
+    if subtask_titles:
+        joined_titles = _join_summary_items(subtask_titles)
+        sentences.append(f"{base}: completed {joined_titles}.")
+        for item in resolved_subtasks[:3]:
+            subtask_title = _sanitize_weekly_summary_evidence(item.get("title"))
+            latest_comment = _limit_summary_text(item.get("latest_comment"), max_sentences=2, max_words=34)
+            if not subtask_title or not latest_comment:
+                continue
+            if _normalize_text(subtask_title) in _normalize_text(latest_comment):
+                sentences.append(latest_comment)
+            else:
+                sentences.append(f"{subtask_title}: {latest_comment}")
+    elif anchor_resolved:
+        sentences.append(f"{base} was completed.")
+    else:
+        sentences.append(f"{base}: delivered progress through resolved work items.")
+
+    parent_detail = _limit_summary_text(parent_result_comment or anchor_description, max_sentences=2, max_words=36)
+    if parent_detail and all(_normalize_text(parent_detail) not in _normalize_text(sentence) for sentence in sentences):
+        sentences.append(parent_detail)
+
+    for metric_hint in metric_hints[:2]:
+        hint = _limit_summary_text(metric_hint, max_sentences=1, max_words=20)
+        if hint and all(_normalize_text(hint) not in _normalize_text(sentence) for sentence in sentences):
+            sentences.append(hint)
+
+    return _limit_summary_text(" ".join(sentences), max_sentences=4, max_words=120)
 
 
 def _build_weekly_summary_prompt(
@@ -309,17 +374,20 @@ def _build_weekly_summary_prompt(
         "- anchor_type: parent issue type",
         "- anchor_status: current parent issue status",
         "- anchor_description: sanitized parent task context",
-        "- resolved_items: completed tasks and subtasks for this group in the selected period",
-        "- comment_facts: sanitized factual statements extracted from period comments across the group",
+        "- resolved_subtasks: completed subtasks for this group, each with title and latest meaningful comment",
+        "- parent_result_comment: latest meaningful parent-task result comment when available",
+        "- metric_hints: measurable outcomes extracted from comments",
         "Strict rules:",
         "1) Output language: English.",
         "2) Treat resolved subtasks as achievements of the parent task.",
         "3) Describe what was delivered during the selected period for the whole task group.",
-        "4) Use only provided facts; do not invent details.",
-        "5) Ignore links, Jira keys, PR/MR mentions, repository references, commit hashes, file names, uploaded artifact names, absolute paths, and UNC paths.",
-        "6) Do not mention where evidence was stored.",
-        "7) Write 1-2 short complete sentences, factual and report-ready.",
-        "8) Return ONLY one valid JSON object mapping id to rewritten text.",
+        "4) If resolved_subtasks are present, mention their names explicitly.",
+        "5) Preserve measurable outcomes such as percentages, memory, latency, performance, counts, and similar metrics when provided.",
+        "6) Use only provided facts; do not invent details.",
+        "7) Use 2-4 complete sentences when needed. The first sentence should state what was delivered; later sentences may explain key results or metrics.",
+        "8) Ignore links, Jira keys, PR/MR mentions, repository references, commit hashes, file names, uploaded artifact names, absolute paths, and UNC paths.",
+        "9) Do not mention where evidence was stored.",
+        "10) Return ONLY one valid JSON object mapping id to rewritten text.",
         "JSON example: {\"t1\":\"...\", \"t2\":\"...\"}",
         "---",
         "Input items:",
@@ -331,22 +399,23 @@ def _build_weekly_summary_prompt(
         prompt_lines.append(
             "ID={target_id}; epic_name={epic_name}; anchor_title={anchor_title}; "
             "anchor_type={anchor_type}; anchor_status={anchor_status}; anchor_description={anchor_description}; "
-            "resolved_items={resolved_items}; comment_facts={comment_facts}".format(
+            "resolved_subtasks={resolved_subtasks}; parent_result_comment={parent_result_comment}; metric_hints={metric_hints}".format(
                 target_id=target_id,
                 epic_name=json.dumps(str(item.get("epic_name", ""))),
                 anchor_title=json.dumps(str(item.get("anchor_title", ""))),
                 anchor_type=json.dumps(str(item.get("anchor_type", ""))),
                 anchor_status=json.dumps(str(item.get("anchor_status", ""))),
                 anchor_description=json.dumps(str(item.get("anchor_description", ""))),
-                resolved_items=json.dumps(" | ".join(str(value) for value in item.get("resolved_items", []))),
-                comment_facts=json.dumps(" | ".join(str(value) for value in item.get("comment_facts", []))),
+                resolved_subtasks=json.dumps(item.get("resolved_subtasks", []), ensure_ascii=False),
+                parent_result_comment=json.dumps(str(item.get("parent_result_comment", ""))),
+                metric_hints=json.dumps(item.get("metric_hints", []), ensure_ascii=False),
             )
         )
     return target_map, "\n".join(prompt_lines)
 
 
 def _sanitize_weekly_summary_ai_text(text: Any) -> str:
-    return _limit_summary_text(text, max_sentences=2, max_words=50)
+    return _limit_summary_text(text, max_sentences=4, max_words=120)
 
 
 def build_weekly_epic_summary_df(
@@ -393,7 +462,7 @@ def build_weekly_epic_summary_df(
 
     parent_details = _fetch_parent_details(jira_source, resolved_df)
     epic_name_map = _build_epic_name_map(jira_source, resolved_df, parent_details)
-    comment_fact_map = _extract_comment_fact_map(comments_df)
+    latest_comment_map, metric_hint_map = _extract_issue_comment_evidence_maps(comments_df)
     issue_row_map = {
         _compact_text(row.get("Issue_key")): row.to_dict()
         for _, row in resolved_df.iterrows()
@@ -465,8 +534,10 @@ def build_weekly_epic_summary_df(
                 "anchor_description": anchor_description,
                 "anchor_resolved": anchor_key == issue_key,
                 "resolved_items": [],
-                "resolved_item_titles": [],
-                "comment_issue_keys": [],
+                "resolved_subtasks": [],
+                "resolved_subtask_keys": set(),
+                "parent_result_comment": _sanitize_weekly_summary_evidence(latest_comment_map.get(anchor_key, "")),
+                "metric_hints": list(metric_hint_map.get(anchor_key, [])),
             }
             group_order.append(group_key)
 
@@ -481,27 +552,35 @@ def build_weekly_epic_summary_df(
                 group["anchor_status"] = anchor_status
             if anchor_description:
                 group["anchor_description"] = anchor_description
+            latest_anchor_comment = _sanitize_weekly_summary_evidence(latest_comment_map.get(issue_key, ""))
+            if latest_anchor_comment:
+                group["parent_result_comment"] = latest_anchor_comment
+            _append_unique_text(group["metric_hints"], metric_hint_map.get(issue_key, []))
         item_title = _sanitize_weekly_summary_evidence(row.get("Summary"))
         label = f"{issue_type}: {item_title}" if issue_type and item_title else item_title
         if label:
             _append_unique_text(group["resolved_items"], [label])
-        if item_title:
-            _append_unique_text(group["resolved_item_titles"], [item_title])
-        _append_unique_text(group["comment_issue_keys"], [anchor_key, issue_key])
+        if is_subtask and issue_key not in group["resolved_subtask_keys"]:
+            group["resolved_subtask_keys"].add(issue_key)
+            group["resolved_subtasks"].append(
+                {
+                    "issue_key": issue_key,
+                    "title": item_title or issue_key,
+                    "latest_comment": _sanitize_weekly_summary_evidence(latest_comment_map.get(issue_key, "")),
+                }
+            )
+            _append_unique_text(group["metric_hints"], metric_hint_map.get(issue_key, []))
 
     ai_items: list[dict[str, Any]] = []
     for group_key in group_order:
         group = groups[group_key]
-        comment_facts: list[str] = []
-        for issue_key in group["comment_issue_keys"]:
-            _append_unique_text(comment_facts, comment_fact_map.get(issue_key, []))
-        group["comment_facts"] = comment_facts
         group["fallback"] = _build_weekly_summary_fallback(
             group["anchor_title"],
             bool(group["anchor_resolved"]),
-            group["resolved_item_titles"],
-            comment_facts,
+            group["resolved_subtasks"],
+            group["parent_result_comment"],
             group["anchor_description"],
+            group["metric_hints"],
         )
         ai_items.append(
             {
@@ -511,8 +590,15 @@ def build_weekly_epic_summary_df(
                 "anchor_type": group["anchor_type"],
                 "anchor_status": group["anchor_status"],
                 "anchor_description": group["anchor_description"],
-                "resolved_items": group["resolved_items"],
-                "comment_facts": comment_facts,
+                "resolved_subtasks": [
+                    {
+                        "title": item.get("title", ""),
+                        "latest_comment": item.get("latest_comment", ""),
+                    }
+                    for item in group["resolved_subtasks"]
+                ],
+                "parent_result_comment": group["parent_result_comment"],
+                "metric_hints": group["metric_hints"],
             }
         )
 
