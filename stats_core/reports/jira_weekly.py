@@ -55,6 +55,10 @@ _FILELIKE_PATTERN = re.compile(
     r"\b[\w.\- ]+\.(?:png|jpe?g|gif|bmp|webp|svg|pdf|docx?|xlsx?|pptx?|txt|log|json|ya?ml|xml|csv|zip|rar|7z)\b",
     re.IGNORECASE,
 )
+_JIRA_BLOCK_MACRO_PATTERN = re.compile(
+    r"\{(?:code(?::[^}]*)?|noformat)\}.*?\{(?:code|noformat)\}",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _compact_text(value: Any) -> str:
@@ -91,17 +95,29 @@ def _sanitize_weekly_summary_evidence(value: Any) -> str:
     cleaned = _to_plain_text(value)
     if not cleaned:
         return ""
+    cleaned = _JIRA_BLOCK_MACRO_PATTERN.sub(" ", cleaned)
+    cleaned = re.sub(r"\{(?:code(?::[^}]*)?|noformat|quote|panel|color(?::[^}]*)?)\}", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", cleaned)
+    cleaned = re.sub(r"!\[[^\]]*\]", " ", cleaned)
     cleaned = re.sub(r"\[[^\]]+\]\([^)]+\)", " ", cleaned)
     cleaned = re.sub(r"(?:https?://|ftp://|file://|www\.)\S+", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\\\\[^\s]+", " ", cleaned)
     cleaned = re.sub(r"\b[A-Za-z]:\\[^\s]+", " ", cleaned)
     cleaned = re.sub(r"(?<![A-Za-z0-9])/(?:[\w.\-]+/)+[\w.\-]+", " ", cleaned)
     cleaned = re.sub(r"\[\^[^\]\r\n]+\]", " ", cleaned)
+    cleaned = re.sub(r"<[^>\r\n]+>", " ", cleaned)
     cleaned = _FILELIKE_PATTERN.sub(" ", cleaned)
     cleaned = re.sub(r"\b[A-Z]+-\d+\b", " ", cleaned)
     cleaned = re.sub(r"\b[0-9a-f]{7,40}\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"(?i)\b(?:pr|mr|pull request|merge request|commit)\b\s*[:#-]?\s*[A-Za-z0-9/_-]*", " ", cleaned)
     cleaned = re.sub(r"[`*_>#]+", " ", cleaned)
+    cleaned = re.sub(r"(?<!\w)[\[\]{}()]+(?=\s|$)", " ", cleaned)
+    cleaned = re.sub(r"(?<!\w)(?:!\[|\[!)+", " ", cleaned)
+    cleaned = " ".join(
+        token
+        for token in cleaned.split()
+        if not re.fullmatch(r"[\[\]{}()!|\\/:;.,+-]+", token)
+    )
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -,:;")
     return cleaned
 

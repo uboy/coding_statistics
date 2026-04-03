@@ -505,7 +505,8 @@ def test_build_weekly_epic_summary_df_recovers_epic_from_open_parent_and_groups_
             {
                 "Issue_key": "SUB-2",
                 "CommentBody": (
-                    "Regression fixed, attachment build.log uploaded and C:\\temp\\trace.txt checked."
+                    "Regression fixed, attachment build.log uploaded and C:\\temp\\trace.txt checked. "
+                    "{code:java}\nSystem.out.println(\"debug\");\n{code} ![image](https://example.com/img.png) [! leftover"
                 ),
                 "CommentDate": datetime(2025, 1, 17).date(),
                 "CommentId": "11",
@@ -554,6 +555,9 @@ def test_build_weekly_epic_summary_df_recovers_epic_from_open_parent_and_groups_
     assert "\\\\server\\share" not in summary_text
     assert "build.log" not in summary_text
     assert "C:\\temp\\trace.txt" not in summary_text
+    assert "{code" not in summary_text
+    assert "System.out" not in summary_text
+    assert "![" not in summary_text
 
 
 @patch("stats_core.reports.jira_weekly.generate_file_suffix", return_value="")
