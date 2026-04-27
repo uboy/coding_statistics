@@ -94,6 +94,7 @@ class ProgressManager:
         self._children_enabled = children_enabled
         self._total = max(int(total_steps or 0), 1)
         self.current = 0
+        self._lock = threading.RLock()
         self._children: list[ChildProgress] = []
         self._child_base_position = 1
         self._tty = bool(sys.stderr.isatty()) if enabled else False
@@ -106,23 +107,26 @@ class ProgressManager:
                 dynamic_ncols=True,
                 leave=True,
                 file=sys.stderr,
+                disable=not self._tty,
             )
         else:
             self._bar = None
 
     def set_total(self, total_steps: int) -> None:
-        self._total = max(int(total_steps), 1)
-        if self._bar is not None:
-            self._bar.total = self._total
-            self._bar.refresh()
+        with self._lock:
+            self._total = max(int(total_steps), 1)
+            if self._bar is not None:
+                self._bar.total = self._total
+                self._bar.refresh()
 
     def step(self, name: str) -> ProgressStep:
         return ProgressStep(self, name)
 
     def advance(self, n: int = 1) -> None:
-        self.current += n
-        if self._bar is not None:
-            self._bar.update(n)
+        with self._lock:
+            self.current += n
+            if self._bar is not None:
+                self._bar.update(n)
 
     def close(self) -> None:
         for child in self._children:
@@ -155,10 +159,12 @@ class NoopProgressManager(ProgressManager):
         super().__init__(total_steps=1, report_name="report", enabled=False)
 
     def set_total(self, total_steps: int) -> None:
-        self._total = max(int(total_steps), 1)
+        with self._lock:
+            self._total = max(int(total_steps), 1)
 
     def advance(self, n: int = 1) -> None:
-        self.current += n
+        with self._lock:
+            self.current += n
 
 
 @dataclass

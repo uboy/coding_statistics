@@ -190,8 +190,8 @@ class UnifiedReviewReport:
                 max_workers=max_workers,
                 progress_manager=progress,
                 child_label="Links",
+                advance_main=True,
             )
-            progress.advance(len(links))
             for link, row in zip(links, results):
                 if not row:
                     logger.warning("Failed to process %s", link)

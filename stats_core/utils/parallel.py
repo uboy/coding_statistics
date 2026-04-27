@@ -16,12 +16,19 @@ def parallel_map(
     max_workers: int = 4,
     progress_manager=None,
     child_label: str = "worker",
+    advance_main: bool = False,
 ) -> list[R]:
     items_list = list(items)
     if not items_list:
         return []
     if max_workers <= 1:
-        return [func(item) for item in items_list]
+        results = []
+        for item in items_list:
+            result = func(item)
+            if advance_main and progress_manager is not None:
+                progress_manager.advance(1)
+            results.append(result)
+        return results
     child_bars = []
     bar_map: dict[str, int] = {}
     bar_lock = threading.Lock()
@@ -31,6 +38,8 @@ def parallel_map(
 
     def _wrap(item: T) -> R:
         result = func(item)
+        if advance_main and progress_manager is not None:
+            progress_manager.advance(1)
         if child_bars:
             thread_name = threading.current_thread().name
             with bar_lock:
